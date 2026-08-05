@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-clob-client-v2"
+version = "1.0.0+local"
+description = "Python client for the Polymarket CLOBV2"
+readme = "README.md"
+requires-python = ">=3.9.10"
+authors = [
+  { name = "Polymarket Engineering", email = "engineering@polymarket.com" },
+]
+maintainers = [
+  { name = "Polymarket Engineering", email = "engineering@polymarket.com" },
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "eth-account>=0.13.0",
+  "eth-utils>=4.1.1",
+  "poly_eip712_structs>=0.0.1",
+  "py-order-utils>=0.3.2",
+  "httpx[http2]>=0.27.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Polymarket/py-clob-client-v2"
+"Bug Tracker" = "https://github.com/Polymarket/py-clob-client-v2/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["py_clob_client_v2*"]

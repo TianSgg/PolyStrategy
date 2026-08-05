@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build from source and restart services. Run from the repo root on the VPS.
+#
+# Optional env:
+#   APP_DIR=/home/$USER/weathertaker
+#   BACKEND_PORT=9090
+#   PYTHON_BIN=python3.11
+#   VITE_API_BASE=        # empty means same-origin /api
+#   VITE_WS_BASE=         # empty means ws(s)://current-host
+
+APP_DIR="${APP_DIR:-$PWD}"
+BACKEND_PORT="${BACKEND_PORT:-9090}"
+MIN_PYTHON_VERSION="${MIN_PYTHON_VERSION:-3.11}"
+PYTHON_BIN="${PYTHON_BIN:-}"
+NGINX_CONF="${NGINX_CONF:-/etc/nginx/weathertaker-nginx.conf}"
+NGINX_PID="${NGINX_PID:-/run/weathertaker-nginx.pid}"
+STATE_DIR="$APP_DIR/deploy/state"
+PID_FILE="$STATE_DIR/backend.pid"
+STDOUT_LOG="$STATE_DIR/backend.out.log"
+
+python_satisfies_min_version() {
+  "$1" - "$MIN_PYTHON_VERSION" <<'PY'
+import sys
+
+minimum = tuple(int(part) for part in sys.argv[1].split("."))
+raise SystemExit(0 if sys.version_info[: len(minimum)] >= minimum else 1)
+PY
+}
+
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo "missing command: sudo" >&2
+    exit 1
+  fi
+}
+
+install_python() {
+  echo "Python $MIN_PYTHON_VERSION+ was not found; attempting to install python3.11..." >&2
+
+  if command -v dnf >/dev/null 2>&1; then
+    run_privileged dnf install -y python3.11 python3.11-pip
+    return
+  fi
+
+  if command -v yum >/dev/null 2>&1; then
+    run_privileged yum install -y python3.11 python3.11-pip
+    return
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    run_privileged apt-get update
+    run_privileged apt-get install -y python3.11 python3.11-venv
+    return
+  fi
+
+  echo "No supported package manager found. Install Python $MIN_PYTHON_VERSION+ manually." >&2
+  exit 1
+}
+
+find_python() {
+  local candidate
+  for candidate in python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && python_satisfies_min_version "$candidate"; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+select_python() {
+  if [ -n "$PYTHON_BIN" ]; then
+    if command -v "$PYTHON_BIN" >/dev/null 2>&1 && python_satisfies_min_version "$PYTHON_BIN"; then
+      PYTHON_BIN="$(command -v "$PYTHON_BIN")"
+      return
+    fi
+
+    install_python
+    if command -v "$PYTHON_BIN" >/dev/null 2>&1 && python_satisfies_min_version "$PYTHON_BIN"; then
+      PYTHON_BIN="$(command -v "$PYTHON_BIN")"
+      return
+    fi
+
+    echo "PYTHON_BIN=$PYTHON_BIN is missing or older than Python $MIN_PYTHON_VERSION after install attempt" >&2
+    exit 1
+  fi
+
+  if PYTHON_BIN="$(find_python)"; then
+    return
+  fi
+
+  install_python
+  if PYTHON_BIN="$(find_python)"; then
+    return
+  fi
+
+  echo "Python $MIN_PYTHON_VERSION+ is required for backend/requirements.txt." >&2
+  echo "Install Python $MIN_PYTHON_VERSION+ manually or rerun with PYTHON_BIN=/path/to/python3.11." >&2
+  exit 1
+}
+
+ensure_backend_venv() {
+  if [ -x backend/.venv/bin/python ]; then
+    if python_satisfies_min_version backend/.venv/bin/python; then
+      return
+    fi
+    echo "backend/.venv was created with Python older than $MIN_PYTHON_VERSION; recreating it." >&2
+    rm -rf backend/.venv
+  fi
+
+  "$PYTHON_BIN" -m venv backend/.venv
+}
+
+install_backend_requirements() {
+  backend/.venv/bin/python -m pip install --upgrade pip
+  (
+    cd backend
+    .venv/bin/pip install -r requirements.txt
+  )
+}
+
+is_backend_running() {
+  local pid="$1"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  ps -p "$pid" -o command= | grep -F "$APP_DIR/backend/main.py" >/dev/null 2>&1
+}
+
+stop_backend() {
+  local pid=""
+  if [ -f "$PID_FILE" ]; then
+    pid="$(cat "$PID_FILE")"
+  fi
+
+  if is_backend_running "$pid"; then
+    echo "Stopping backend pid=$pid"
+    kill "$pid"
+    for _ in $(seq 1 20); do
+      if ! is_backend_running "$pid"; then
+        break
+      fi
+      sleep 1
+    done
+    if is_backend_running "$pid"; then
+      echo "Backend did not stop in time; killing pid=$pid"
+      kill -9 "$pid"
+    fi
+  fi
+
+  rm -f "$PID_FILE"
+}
+
+start_backend() {
+  mkdir -p "$STATE_DIR"
+  : >> "$STDOUT_LOG"
+  (
+    cd "$APP_DIR/backend"
+    ENV=prod PORT="$BACKEND_PORT" nohup "$APP_DIR/backend/.venv/bin/python" "$APP_DIR/backend/main.py" >> "$STDOUT_LOG" 2>&1 &
+    echo $! > "$PID_FILE"
+  )
+
+  local pid
+  pid="$(cat "$PID_FILE")"
+  sleep 2
+  if ! is_backend_running "$pid"; then
+    echo "Backend failed to start. Last logs:" >&2
+    tail -80 "$STDOUT_LOG" >&2
+    exit 1
+  fi
+  echo "Backend started pid=$pid"
+}
+
+reload_or_start_nginx() {
+  if sudo nginx -t -c "$NGINX_CONF" && sudo nginx -s reload -c "$NGINX_CONF"; then
+    return
+  fi
+
+  local master_pid=""
+  if [ -s "$NGINX_PID" ]; then
+    master_pid="$(cat "$NGINX_PID")"
+  fi
+  if [ -n "$master_pid" ]; then
+    echo "reloading weathertaker nginx master pid=$master_pid"
+    sudo kill -HUP "$master_pid"
+    return
+  fi
+
+  echo "weathertaker nginx was not running; starting it"
+  if [ -f "$NGINX_PID" ] && [ ! -s "$NGINX_PID" ]; then
+    sudo rm -f "$NGINX_PID"
+  fi
+  sudo nginx -c "$NGINX_CONF"
+}
+
+cd "$APP_DIR"
+select_python
+
+if ! grep -q "^PORT=$BACKEND_PORT$" backend/.env.prod; then
+  echo "backend/.env.prod PORT must match BACKEND_PORT=$BACKEND_PORT" >&2
+  exit 1
+fi
+
+ensure_backend_venv
+
+install_backend_requirements
+
+npm --prefix frontend ci
+VITE_API_BASE="${VITE_API_BASE:-}" \
+VITE_WS_BASE="${VITE_WS_BASE:-}" \
+  npm --prefix frontend run build
+
+stop_backend
+start_backend
+reload_or_start_nginx
+
+tail -20 "$STDOUT_LOG"
+echo "Deployed $APP_DIR"

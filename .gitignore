@@ -1,0 +1,40 @@
+# Node
+node_modules/
+dist/
+*.log
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.development
+.env.dev
+.env.production
+.env.prod
+
+*.key
+*.log
+
+# 机器相关配置
+deploy/backend.service
+deploy/nginx.conf
+deploy/deploy_prod.sh
+deploy/state/
+
+*.png
+
+scripts/
+backend/test/

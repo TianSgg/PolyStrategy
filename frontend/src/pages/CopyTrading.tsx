@@ -1,0 +1,2329 @@
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { apiFetch } from '../api'
+import { useBalance } from '../contexts/BalanceContext'
+import { toast } from '../components/Toast'
+import PositionHistoryChart, { type PositionHistoryChartPoint } from '../components/PositionHistoryChart'
+import TradeScatterChart, { type Trade, parseUtc8Timestamp as parseTs } from '../components/TradeScatterChart'
+import './CopyTrading.css'
+
+interface CopyTradingConfig {
+  id: number
+  leader_proxy_wallet: string
+  leader_name: string
+  follower_proxy_wallet: string
+  follower_name: string
+  share_ratio: number
+  enabled: boolean
+  threshold: number
+  allowance: number
+  gtd_expiration_sec: number
+  buy_spread_thr: number
+  sell_spread_thr: number
+  buy_exceed_thr: boolean
+  sell_exceed_thr: boolean
+  buy_follow_taker: boolean
+  sell_follow_taker: boolean
+  auto_merge_enabled: boolean
+  auto_merge_threshold: number
+  buy_only: boolean
+  buy_price_min: number
+  buy_price_max: number
+  sell_price_min: number
+  sell_price_max: number
+  buy_price_filter_min: number
+  buy_price_filter_max: number
+}
+
+interface Account {
+  id: number
+  name: string
+  wallet_address: string
+  proxy_wallet: string
+}
+
+interface Leader {
+  id: number
+  proxy_wallet: string
+  name: string
+  created_at: string | null
+  updated_at: string | null
+}
+
+interface PositionHistoryPoint {
+  id: number
+  created_at: string
+  asset_id: string
+  share_ratio: number
+  leader_position: number
+  follower_position: number
+  follower_pending_buy: number
+  follower_pending_sell: number
+  leader_value: number
+  follower_value: number
+  source: string
+  side: string | null
+  event_size: number | null
+  event_price: number | null
+  order_id: string | null
+  leader_tx_hash: string | null
+}
+
+interface PositionAssetOption {
+  asset_id: string
+  question: string
+  outcome: string
+  last_seen_at?: string
+}
+
+interface PositionHistoryState {
+  assetId: string
+  start: string
+  end: string
+  normalized: boolean
+  loading: boolean
+  error: string
+  points: PositionHistoryPoint[]
+}
+
+interface Schedule {
+  id: number
+  config_id: number
+  start_cron: string | null
+  stop_cron: string | null
+  enabled: boolean
+  last_triggered_at: string | null
+}
+
+interface SlugFilter {
+  id: number
+  config_id: number
+  mode: 'blacklist' | 'whitelist'
+  slugs: string[]
+}
+
+interface Props {
+  darkMode: boolean
+  visible?: boolean
+}
+
+const defaultHistoryState = (): PositionHistoryState => ({
+  assetId: '',
+  start: '',
+  end: '',
+  normalized: false,
+  loading: false,
+  error: '',
+  points: [],
+})
+
+const parseUtc8Timestamp = (value: unknown) => {
+  if (!value) return 0
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0
+  }
+  const text = String(value)
+  const normalized = text.includes('T') ? text : text.replace(' ', 'T')
+  const withTimezone = /(?:Z|[+-]\d{2}:\d{2})$/.test(normalized)
+    ? normalized
+    : `${normalized}+08:00`
+  const time = Date.parse(withTimezone)
+  return Number.isNaN(time) ? 0 : time
+}
+
+const formatAssetOptionLabel = (asset: PositionAssetOption) => {
+  const title = asset.question.trim()
+  const outcome = asset.outcome.trim()
+  const shortAsset = asset.asset_id.length > 18
+    ? `${asset.asset_id.slice(0, 10)}...${asset.asset_id.slice(-6)}`
+    : asset.asset_id
+  if (title && outcome) return `${title} / ${outcome}`
+  if (title) return title
+  if (outcome) return `${outcome} (${shortAsset})`
+  return shortAsset
+}
+
+const normalizePositionAsset = (asset: unknown): PositionAssetOption | null => {
+  if (typeof asset === 'string') {
+    return { asset_id: asset, question: '', outcome: '' }
+  }
+  if (!asset || typeof asset !== 'object') {
+    return null
+  }
+  const item = asset as Record<string, unknown>
+  const assetId = String(item.asset_id || item.assetId || '')
+  if (!assetId) {
+    return null
+  }
+  return {
+    asset_id: assetId,
+    question: String(item.question || ''),
+    outcome: String(item.outcome || ''),
+    last_seen_at: item.last_seen_at ? String(item.last_seen_at) : undefined,
+  }
+}
+
+export default function CopyTrading({ darkMode, visible }: Props) {
+  const { accountBalances, leaderBalances, refreshAllAccounts, refreshAllLeaders } = useBalance()
+  const [configs, setConfigs] = useState<CopyTradingConfig[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [leaders, setLeaders] = useState<Leader[]>([])
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [refreshingConfigIds, setRefreshingConfigIds] = useState<Set<number>>(new Set())
+  const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<number>>(new Set())
+  const [positionAssets, setPositionAssets] = useState<Record<number, PositionAssetOption[]>>({})
+  const [positionHistory, setPositionHistory] = useState<Record<number, PositionHistoryState>>({})
+  const [assetFilterDays, setAssetFilterDays] = useState<Record<number, number>>({})
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState<'configs' | 'leaders'>('configs')
+
+  const [loadingLeaderAddrs, setLoadingLeaderAddrs] = useState<Set<string>>(new Set())
+
+  // 配置卡片中的余额：从 context 派生
+  const configBalances = useMemo(() => {
+    const map: Record<string, { total: number; position: number } | null> = {}
+    for (const c of configs) {
+      const lw = c.leader_proxy_wallet.toLowerCase()
+      const fw = c.follower_proxy_wallet.toLowerCase()
+      if (leaderBalances[lw]) map[lw] = { total: leaderBalances[lw].total_balance, position: leaderBalances[lw].position_value }
+      if (accountBalances[fw]) map[fw] = { total: accountBalances[fw].total_value, position: accountBalances[fw].total_position_value }
+    }
+    return map
+  }, [configs, leaderBalances, accountBalances])
+
+  // Leader 管理状态
+  const [showAddLeaderForm, setShowAddLeaderForm] = useState(false)
+  const [editingLeaderId, setEditingLeaderId] = useState<number | null>(null)
+  const [editingLeaderName, setEditingLeaderName] = useState('')
+  const [newLeaderWallet, setNewLeaderWallet] = useState('')
+  const [leaderError, setLeaderError] = useState('')
+
+  // Form fields
+  const [leaderAddr, setLeaderAddr] = useState('')
+  const [followerAccountId, setFollowerAccountId] = useState<number | ''>('')
+  const [showCustomFollowerInput, setShowCustomFollowerInput] = useState(false)
+  const [customFollowerPrivateKey, setCustomFollowerPrivateKey] = useState('')
+  const [shareRatio, setShareRatio] = useState('0.1')
+  const [threshold, setthreshold] = useState('')
+  const [showCustomLeaderInput, setShowCustomLeaderInput] = useState(false)
+
+  useEffect(() => {
+    fetchConfigs()
+    fetchAccounts()
+    fetchLeaders()
+  }, [])
+
+  // 当页面变为可见时刷新配置和 Leader 列表
+  useEffect(() => {
+    if (visible) {
+      fetchConfigs()
+      fetchLeaders()
+    }
+  }, [visible])
+
+  // Ratio editing
+  const [editingRatioConfigId, setEditingRatioConfigId] = useState<number | null>(null)
+  const [editingRatioValue, setEditingRatioValue] = useState('')
+
+  // GTD expiration editing
+  const [editingGtdConfigId, setEditingGtdConfigId] = useState<number | null>(null)
+  const [editingGtdValue, setEditingGtdValue] = useState('')
+
+  // Spread threshold editing
+  const [editingSpreadConfigId, setEditingSpreadConfigId] = useState<number | null>(null)
+  const [editingSpreadSide, setEditingSpreadSide] = useState<'buy' | 'sell'>('buy')
+  const [editingSpreadValue, setEditingSpreadValue] = useState('')
+
+  // Price min/max editing
+  const [editingPriceConfigId, setEditingPriceConfigId] = useState<number | null>(null)
+  const [editingPriceField, setEditingPriceField] = useState<'buy' | 'sell'>('buy')
+  const [editingPriceMin, setEditingPriceMin] = useState('')
+  const [editingPriceMax, setEditingPriceMax] = useState('')
+  const [editingFilterConfigId, setEditingFilterConfigId] = useState<number | null>(null)
+  const [editingFilterMin, setEditingFilterMin] = useState('')
+  const [editingFilterMax, setEditingFilterMax] = useState('')
+
+  // 曲线时间范围
+  const [historyRangeDays, setHistoryRangeDays] = useState<Record<number, number | 'custom'>>({})
+  const [showCustomRange, setShowCustomRange] = useState<Set<number>>(new Set())
+
+  // 右侧图表面板
+  const [selectedConfigId, setSelectedConfigId] = useState<number | null>(null)
+  const [scatterAssets, setScatterAssets] = useState<Record<number, PositionAssetOption[]>>({})
+  const [scatterState, setScatterState] = useState<Record<number, { assetId: string; loading: boolean; trades: Trade[]; error: string; midPrice?: number | null }>>({})
+  const [scatterAssetFilterDays, setScatterAssetFilterDays] = useState<Record<number, number>>({})
+  const [scatterRangeDays, setScatterRangeDays] = useState<Record<number, number | 'custom'>>({})
+  const [scatterCustomRange, setScatterCustomRange] = useState<Record<number, { start: string; end: string }>>({})
+  const [scatterShowZeroMatched, setScatterShowZeroMatched] = useState<Record<number, boolean>>({})
+  const [scatterNormalize, setScatterNormalize] = useState<Record<number, boolean>>({})
+
+  // Schedule states
+  const [schedules, setSchedules] = useState<Record<number, Schedule | null>>({})
+  const [editingScheduleConfigId, setEditingScheduleConfigId] = useState<number | null>(null)
+  const [editingStartCron, setEditingStartCron] = useState('')
+  const [editingStopCron, setEditingStopCron] = useState('')
+  const schedulePopoverRef = useRef<HTMLDivElement>(null)
+
+  const handleScheduleClickOutside = useCallback((e: MouseEvent) => {
+    if (schedulePopoverRef.current && !schedulePopoverRef.current.contains(e.target as Node)) {
+      setEditingScheduleConfigId(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (editingScheduleConfigId !== null) {
+      document.addEventListener('mousedown', handleScheduleClickOutside)
+      return () => document.removeEventListener('mousedown', handleScheduleClickOutside)
+    }
+  }, [editingScheduleConfigId, handleScheduleClickOutside])
+
+  // Slug filter states
+  const [slugFilters, setSlugFilters] = useState<Record<number, SlugFilter | null>>({})
+  const [editingSlugFilterConfigId, setEditingSlugFilterConfigId] = useState<number | null>(null)
+  const [editingSlugMode, setEditingSlugMode] = useState<'blacklist' | 'whitelist'>('blacklist')
+  const [editingSlugText, setEditingSlugText] = useState('')
+  const slugFilterPopoverRef = useRef<HTMLDivElement>(null)
+
+  const handleSlugFilterClickOutside = useCallback((e: MouseEvent) => {
+    if (slugFilterPopoverRef.current && !slugFilterPopoverRef.current.contains(e.target as Node)) {
+      setEditingSlugFilterConfigId(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (editingSlugFilterConfigId !== null) {
+      document.addEventListener('mousedown', handleSlugFilterClickOutside)
+      return () => document.removeEventListener('mousedown', handleSlugFilterClickOutside)
+    }
+  }, [editingSlugFilterConfigId, handleSlugFilterClickOutside])
+
+  const fetchAllSchedules = async () => {
+    try {
+      const res = await apiFetch('/api/copy-trading/schedules')
+      if (!res.ok) return
+      const data = await res.json()
+      const map: Record<number, Schedule | null> = {}
+      for (const [k, v] of Object.entries(data.schedules || {})) {
+        map[Number(k)] = v as Schedule
+      }
+      setSchedules(map)
+    } catch (e) {
+      console.error('Failed to fetch schedules:', e)
+    }
+  }
+
+  const fetchAllSlugFilters = async () => {
+    try {
+      const res = await apiFetch('/api/copy-trading/slug-filters')
+      if (!res.ok) return
+      const data = await res.json()
+      const map: Record<number, SlugFilter | null> = {}
+      for (const [k, v] of Object.entries(data.slug_filters || {})) {
+        map[Number(k)] = v as SlugFilter
+      }
+      setSlugFilters(map)
+    } catch (e) {
+      console.error('Failed to fetch slug filters:', e)
+    }
+  }
+
+  const fetchConfigs = async () => {
+    try {
+      const res = await apiFetch('/api/copy-trading/configs')
+      if (!res.ok) return
+      const data = await res.json()
+      const cfgs = data.configs || []
+      setConfigs(cfgs)
+      fetchConfigBalances(cfgs)
+      fetchAllSchedules()
+      fetchAllSlugFilters()
+    } catch (e) {
+      console.error('Failed to fetch configs:', e)
+    }
+  }
+
+  const fetchAccounts = async () => {
+    try {
+      const res = await apiFetch('/api/account/list')
+      if (!res.ok) return
+      const data = await res.json()
+      setAccounts(Array.isArray(data) ? data : [])
+    } catch (e) {
+      console.error('Failed to fetch accounts:', e)
+    }
+  }
+
+  const fetchLeaders = async () => {
+    try {
+      const res = await apiFetch('/api/leaders')
+      if (!res.ok) return
+      const data = await res.json()
+      setLeaders(data.leaders || [])
+    } catch (e) {
+      console.error('Failed to fetch leaders:', e)
+    }
+  }
+
+  const fetchConfigBalances = async (cfgs: CopyTradingConfig[]) => {
+    const leaderWallets: string[] = []
+    const followerWallets: string[] = []
+    for (const c of cfgs) {
+      leaderWallets.push(c.leader_proxy_wallet.toLowerCase())
+      followerWallets.push(c.follower_proxy_wallet.toLowerCase())
+    }
+    await Promise.all([
+      refreshAllLeaders([...new Set(leaderWallets)]),
+      refreshAllAccounts([...new Set(followerWallets)]),
+    ])
+  }
+
+  const fetchLeaderBalances = async () => {
+    const wallets = leaders.map(l => l.proxy_wallet.toLowerCase())
+    setLoadingLeaderAddrs(new Set(wallets))
+    await refreshAllLeaders(wallets)
+    setLoadingLeaderAddrs(new Set())
+  }
+
+  const handleAddConfig = async () => {
+    setError('')
+
+    if (!leaderAddr || !leaderAddr.startsWith('0x') || leaderAddr.length !== 42) {
+      setError('请输入有效的 leader 地址')
+      return
+    }
+
+    let followerWallet = ''
+
+    if (showCustomFollowerInput) {
+      if (!customFollowerPrivateKey || !customFollowerPrivateKey.startsWith('0x') || customFollowerPrivateKey.length !== 66) {
+        setError('请输入有效的私钥（0x 开头，66 位）')
+        return
+      }
+    } else {
+      if (followerAccountId === '') {
+        setError('请选择 follower 账户')
+        return
+      }
+      const selectedAccount = accounts.find(a => a.id === followerAccountId)
+      if (!selectedAccount) {
+        setError('选择的账户不存在')
+        return
+      }
+      if (selectedAccount.proxy_wallet.toLowerCase() === leaderAddr.toLowerCase()) {
+        setError('Leader 和 Follower 不能是同一个地址')
+        return
+      }
+      followerWallet = selectedAccount.proxy_wallet
+    }
+
+    const ratio = parseFloat(shareRatio)
+    if (isNaN(ratio) || ratio <= 0 || ratio > 1) {
+      setError('跟单比例需在 0 到 1 之间')
+      return
+    }
+
+    setLoading(true)
+    try {
+      // 如果是手动输入的新 Leader 地址，先创建 Leader 记录
+      if (showCustomLeaderInput) {
+        const leaderRes = await apiFetch('/api/leaders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ proxy_wallet: leaderAddr })
+        })
+        // 409 表示已存在，忽略；其他错误抛出
+        if (!leaderRes.ok && leaderRes.status !== 409) {
+          const data = await leaderRes.json()
+          throw new Error(data.detail || 'Leader 创建失败')
+        }
+      }
+
+      let followerWalletForConfig = followerWallet
+
+      if (showCustomFollowerInput) {
+        // 先创建账户
+        const accountRes = await apiFetch('/api/account/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ private_key: customFollowerPrivateKey })
+        })
+        if (!accountRes.ok) {
+          const data = await accountRes.json()
+          throw new Error(data.detail || '账户创建失败')
+        }
+        const newAccount = await accountRes.json()
+        followerWalletForConfig = newAccount.proxy_wallet
+      }
+
+      const res = await apiFetch('/api/copy-trading/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leader_proxy_wallet: leaderAddr,
+          follower_proxy_wallet: followerWalletForConfig,
+          share_ratio: ratio,
+          threshold: threshold ? parseFloat(threshold) : 0
+        })
+      })
+
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || '创建失败')
+      }
+
+      setLeaderAddr('')
+      setFollowerAccountId('')
+      setShareRatio('0.1')
+      setthreshold('')
+      setShowAddForm(false)
+      setShowCustomLeaderInput(false)
+      setShowCustomFollowerInput(false)
+      setCustomFollowerPrivateKey('')
+      fetchConfigs()
+      fetchLeaders()
+      fetchAccounts()
+    } catch (e: any) {
+      setError(e.message || '创建失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleScheduleClick = (config: CopyTradingConfig) => {
+    const sched = schedules[config.id]
+    setEditingScheduleConfigId(config.id)
+    setEditingStartCron(sched?.start_cron || '')
+    setEditingStopCron(sched?.stop_cron || '')
+  }
+
+  const handleScheduleSave = async (configId: number) => {
+    if (!editingStartCron && !editingStopCron) {
+      toast('start_cron 和 stop_cron 不能同时为空')
+      return
+    }
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${configId}/schedule`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start_cron: editingStartCron || null,
+          stop_cron: editingStopCron || null,
+          enabled: true,
+        })
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        toast(err.detail || '保存失败')
+        return
+      }
+      toast('定时调度已保存')
+      setEditingScheduleConfigId(null)
+      fetchAllSchedules()
+    } catch (e: any) {
+      toast(e.message || '保存失败')
+    }
+  }
+
+  const handleScheduleDelete = async (configId: number) => {
+    try {
+      await apiFetch(`/api/copy-trading/configs/${configId}/schedule`, { method: 'DELETE' })
+      setSchedules(prev => ({ ...prev, [configId]: null }))
+      setEditingScheduleConfigId(null)
+      toast('定时调度已删除')
+    } catch (e: any) {
+      toast(e.message || '删除失败')
+    }
+  }
+
+  const handleSlugFilterClick = (config: CopyTradingConfig) => {
+    const f = slugFilters[config.id]
+    setEditingSlugFilterConfigId(config.id)
+    setEditingSlugMode(f?.mode || 'blacklist')
+    setEditingSlugText(f?.slugs?.join('\n') || '')
+  }
+
+  const handleSlugFilterSave = async (configId: number) => {
+    const slugs = [...new Set(editingSlugText.split('\n').map(s => s.trim().toLowerCase()).filter(Boolean))]
+    if (!slugs.length) {
+      toast('关键词列表不能为空')
+      return
+    }
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${configId}/slug-filter`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: editingSlugMode, slugs })
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        toast(err.detail || '保存失败')
+        return
+      }
+      toast('市场过滤已保存')
+      setEditingSlugFilterConfigId(null)
+      fetchAllSlugFilters()
+    } catch (e: any) {
+      toast(e.message || '保存失败')
+    }
+  }
+
+  const handleSlugFilterDelete = async (configId: number) => {
+    try {
+      await apiFetch(`/api/copy-trading/configs/${configId}/slug-filter`, { method: 'DELETE' })
+      setSlugFilters(prev => ({ ...prev, [configId]: null }))
+      setEditingSlugFilterConfigId(null)
+      toast('市场过滤已删除')
+    } catch (e: any) {
+      toast(e.message || '删除失败')
+    }
+  }
+
+  const handleToggleEnabled = async (config: CopyTradingConfig) => {
+    try {
+      await apiFetch(`/api/copy-trading/configs/${config.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !config.enabled })
+      })
+      setConfigs(prev => prev.map(c =>
+        c.id === config.id ? { ...c, enabled: !c.enabled } : c
+      ))
+    } catch (e) {
+      console.error('Failed to toggle config:', e)
+    }
+  }
+
+  const handleRatioClick = (config: CopyTradingConfig) => {
+    setEditingRatioConfigId(config.id)
+    setEditingRatioValue(config.share_ratio.toString())
+  }
+
+  const handleRatioSave = async (configId: number) => {
+    const ratio = parseFloat(editingRatioValue)
+    if (isNaN(ratio) || ratio <= 0 || ratio > 1) {
+      toast('比例需在 0 到 1 之间')
+      return
+    }
+    try {
+      await apiFetch(`/api/copy-trading/configs/${configId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ share_ratio: ratio })
+      })
+      setConfigs(prev => prev.map(c =>
+        c.id === configId ? { ...c, share_ratio: ratio } : c
+      ))
+    } catch (e) {
+      console.error('Failed to update ratio:', e)
+    } finally {
+      setEditingRatioConfigId(null)
+    }
+  }
+
+  const handleRatioCancel = () => {
+    setEditingRatioConfigId(null)
+  }
+
+  const handleGtdClick = (config: CopyTradingConfig) => {
+    setEditingGtdConfigId(config.id)
+    setEditingGtdValue(String(Math.round((config.gtd_expiration_sec || 1800) / 60)))
+  }
+
+  const handleGtdSave = async (configId: number) => {
+    const minutes = parseInt(editingGtdValue)
+    if (isNaN(minutes) || minutes < 1 || minutes > 1440) {
+      toast('过期时间需在 1 ~ 1440 分钟之间')
+      return
+    }
+    const sec = minutes * 60
+    try {
+      await apiFetch(`/api/copy-trading/configs/${configId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gtd_expiration_sec: sec })
+      })
+      setConfigs(prev => prev.map(c =>
+        c.id === configId ? { ...c, gtd_expiration_sec: sec } : c
+      ))
+    } catch (e) {
+      console.error('Failed to update gtd expiration:', e)
+    } finally {
+      setEditingGtdConfigId(null)
+    }
+  }
+
+  const handleGtdCancel = () => {
+    setEditingGtdConfigId(null)
+  }
+
+  const handleSpreadClick = (config: CopyTradingConfig, side: 'buy' | 'sell') => {
+    setEditingSpreadConfigId(config.id)
+    setEditingSpreadSide(side)
+    setEditingSpreadValue(String(side === 'buy' ? (config.buy_spread_thr ?? 0.05) : (config.sell_spread_thr ?? 0.05)))
+  }
+
+  const handleSpreadSave = async (configId: number) => {
+    const val = parseFloat(editingSpreadValue)
+    if (isNaN(val) || val < 0.01 || val > 0.5) {
+      toast('价差阈值需在 0.01 ~ 0.5 之间')
+      return
+    }
+    const field = editingSpreadSide === 'buy' ? 'buy_spread_thr' : 'sell_spread_thr'
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${configId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: val })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || '更新失败')
+      }
+      setConfigs(prev => prev.map(c =>
+        c.id === configId ? { ...c, [field]: val } : c
+      ))
+    } catch (e: any) {
+      toast(e.message || `Failed to update ${field}`)
+    } finally {
+      setEditingSpreadConfigId(null)
+    }
+  }
+
+  const handleSpreadCancel = () => {
+    setEditingSpreadConfigId(null)
+  }
+
+  const handleToggleExceedOrder = async (config: CopyTradingConfig, side: 'buy' | 'sell') => {
+    const field = side === 'buy' ? 'buy_exceed_thr' : 'sell_exceed_thr'
+    const newVal = !config[field]
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${config.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: newVal })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || '更新失败')
+      }
+      setConfigs(prev => prev.map(c =>
+        c.id === config.id ? { ...c, [field]: newVal } : c
+      ))
+    } catch (e: any) {
+      toast(e.message || `Failed to toggle ${field}`)
+    }
+  }
+
+  const handleToggleFollowTaker = async (config: CopyTradingConfig, side: 'buy' | 'sell') => {
+    const field = side === 'buy' ? 'buy_follow_taker' : 'sell_follow_taker'
+    const newVal = !config[field]
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${config.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: newVal })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || '更新失败')
+      }
+      setConfigs(prev => prev.map(c =>
+        c.id === config.id ? { ...c, [field]: newVal } : c
+      ))
+    } catch (e: any) {
+      toast(e.message || `Failed to toggle ${field}`)
+    }
+  }
+
+  const handleToggleAutoMerge = async (config: CopyTradingConfig) => {
+    const newVal = !config.auto_merge_enabled
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${config.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_merge_enabled: newVal })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || '更新失败')
+      }
+      setConfigs(prev => prev.map(c =>
+        c.id === config.id ? { ...c, auto_merge_enabled: newVal } : c
+      ))
+    } catch (e: any) {
+      toast(e.message || 'Failed to toggle auto_merge')
+    }
+  }
+
+  const handleToggleBuyOnly = async (config: CopyTradingConfig) => {
+    const newVal = !config.buy_only
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${config.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ buy_only: newVal })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || '更新失败')
+      }
+      setConfigs(prev => prev.map(c =>
+        c.id === config.id ? { ...c, buy_only: newVal } : c
+      ))
+    } catch (e: any) {
+      toast(e.message || 'Failed to toggle buy_only')
+    }
+  }
+
+  const [editingMergeThresholdId, setEditingMergeThresholdId] = useState<number | null>(null)
+  const [editingMergeThresholdValue, setEditingMergeThresholdValue] = useState('')
+
+  const handleMergeThresholdClick = (config: CopyTradingConfig) => {
+    setEditingMergeThresholdId(config.id)
+    setEditingMergeThresholdValue(String(config.auto_merge_threshold ?? 100))
+  }
+
+  const handleMergeThresholdSave = async () => {
+    if (editingMergeThresholdId == null) return
+    const val = parseFloat(editingMergeThresholdValue)
+    if (isNaN(val) || val < 1) {
+      toast('阈值必须 >= 1')
+      return
+    }
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${editingMergeThresholdId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_merge_threshold: val })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || '更新失败')
+      }
+      setConfigs(prev => prev.map(c =>
+        c.id === editingMergeThresholdId ? { ...c, auto_merge_threshold: val } : c
+      ))
+      setEditingMergeThresholdId(null)
+    } catch (e: any) {
+      toast(e.message || 'Failed to update threshold')
+    }
+  }
+
+  const handlePriceClick = (config: CopyTradingConfig, side: 'buy' | 'sell') => {
+    setEditingPriceConfigId(config.id)
+    setEditingPriceField(side)
+    setEditingPriceMin(String(side === 'buy' ? (config.buy_price_min ?? 0.001) : (config.sell_price_min ?? 0.001)))
+    setEditingPriceMax(String(side === 'buy' ? (config.buy_price_max ?? 0.999) : (config.sell_price_max ?? 0.999)))
+  }
+
+  const handlePriceSave = async (configId: number) => {
+    const min = parseFloat(editingPriceMin)
+    const max = parseFloat(editingPriceMax)
+    if (isNaN(min) || isNaN(max) || min < 0.001 || max > 0.999 || min >= max) {
+      toast('价格范围需满足 0.001 ≤ min < max ≤ 0.999')
+      return
+    }
+    const minField = editingPriceField === 'buy' ? 'buy_price_min' : 'sell_price_min'
+    const maxField = editingPriceField === 'buy' ? 'buy_price_max' : 'sell_price_max'
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${configId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [minField]: min, [maxField]: max })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || '更新失败')
+      }
+      setConfigs(prev => prev.map(c =>
+        c.id === configId ? { ...c, [minField]: min, [maxField]: max } : c
+      ))
+    } catch (e: any) {
+      toast(e.message || '更新价格范围失败')
+    } finally {
+      setEditingPriceConfigId(null)
+    }
+  }
+
+  const handlePriceCancel = () => {
+    setEditingPriceConfigId(null)
+  }
+
+  const handleFilterClick = (config: CopyTradingConfig) => {
+    setEditingFilterConfigId(config.id)
+    setEditingFilterMin(String(config.buy_price_filter_min ?? 0.001))
+    setEditingFilterMax(String(config.buy_price_filter_max ?? 0.998))
+  }
+
+  const handleFilterSave = async (configId: number) => {
+    const min = parseFloat(editingFilterMin)
+    const max = parseFloat(editingFilterMax)
+    if (isNaN(min) || isNaN(max) || min < 0.001 || max > 0.999 || min >= max) {
+      toast('过滤范围需满足 0.001 ≤ min < max ≤ 0.999')
+      return
+    }
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${configId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ buy_price_filter_min: min, buy_price_filter_max: max })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || '更新失败')
+      }
+      setConfigs(prev => prev.map(c =>
+        c.id === configId ? { ...c, buy_price_filter_min: min, buy_price_filter_max: max } : c
+      ))
+      setEditingFilterConfigId(null)
+    } catch (e: any) {
+      toast(e.message || 'Failed to update filter')
+    }
+  }
+
+  const handleFilterCancel = () => {
+    setEditingFilterConfigId(null)
+  }
+
+  const handleDeleteConfig = async (configId: number) => {
+    if (!confirm('确定删除此跟单配置？')) return
+    try {
+      await apiFetch(`/api/copy-trading/configs/${configId}`, {
+        method: 'DELETE'
+      })
+      setConfigs(prev => prev.filter(c => c.id !== configId))
+    } catch (e) {
+      console.error('Failed to delete config:', e)
+    }
+  }
+
+  const updateHistoryState = (configId: number, patch: Partial<PositionHistoryState>) => {
+    setPositionHistory(prev => ({
+      ...prev,
+      [configId]: {
+        ...(prev[configId] || defaultHistoryState()),
+        ...patch,
+      },
+    }))
+  }
+
+  const loadPositionAssets = async (configId: number, days?: number) => {
+    try {
+      let url = `/api/copy-trading/configs/${configId}/position-assets`
+      if (days && days > 0) {
+        const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ')
+        url += `?since=${encodeURIComponent(since)}`
+      }
+      const res = await apiFetch(url)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '获取 asset 失败')
+      const seen = new Set<string>()
+      const rawAssets: unknown[] = Array.isArray(data.assets) ? data.assets : []
+      const assets: PositionAssetOption[] = rawAssets
+        .map(normalizePositionAsset)
+        .filter((asset): asset is PositionAssetOption => {
+          if (!asset || seen.has(asset.asset_id)) {
+            return false
+          }
+          seen.add(asset.asset_id)
+          return true
+        })
+      setPositionAssets(prev => ({ ...prev, [configId]: assets }))
+      return assets
+    } catch (e) {
+      console.error('Failed to fetch positions:', e)
+      return []
+    }
+  }
+
+  const handleAssetFilterChange = async (configId: number, days: number) => {
+    setAssetFilterDays(prev => ({ ...prev, [configId]: days }))
+    const assets = await loadPositionAssets(configId, days)
+    const currentState = positionHistory[configId] || defaultHistoryState()
+    const assetId = assets[0]?.asset_id || ''
+    const nextState = { ...currentState, assetId }
+    updateHistoryState(configId, nextState)
+    if (assetId) {
+      void fetchPositionHistory(configId, nextState)
+    }
+  }
+
+  const handleHistoryRangeChange = (configId: number, days: number | 'custom') => {
+    setHistoryRangeDays(prev => ({ ...prev, [configId]: days }))
+    if (days === 'custom') {
+      setShowCustomRange(prev => new Set(prev).add(configId))
+      return
+    }
+    setShowCustomRange(prev => { const n = new Set(prev); n.delete(configId); return n })
+    const start = new Date(Date.now() - days * 86400000).toISOString().slice(0, 16)
+    const end = ''
+    const currentState = positionHistory[configId] || defaultHistoryState()
+    const nextState = { ...currentState, start, end }
+    updateHistoryState(configId, nextState)
+    void fetchPositionHistory(configId, nextState)
+  }
+
+  const fetchPositionHistory = async (configId: number, stateOverride?: PositionHistoryState) => {
+    const state = stateOverride || positionHistory[configId] || defaultHistoryState()
+    const assetId = state.assetId.trim()
+    if (!assetId) {
+      updateHistoryState(configId, { error: '请输入 asset id', points: [] })
+      return
+    }
+
+    updateHistoryState(configId, { loading: true, error: '' })
+    try {
+      const params = new URLSearchParams({
+        asset_id: assetId,
+        normalized: String(state.normalized),
+        limit: '2000',
+      })
+      if (state.start) params.set('start', state.start)
+      if (state.end) params.set('end', state.end)
+      const res = await apiFetch(`/api/copy-trading/configs/${configId}/position-history?${params.toString()}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '查询失败')
+      updateHistoryState(configId, { loading: false, points: data.points || [] })
+    } catch (e: any) {
+      updateHistoryState(configId, { loading: false, error: e.message || '查询失败', points: [] })
+    }
+  }
+
+  const handlePositionAssetChange = (configId: number, assetId: string) => {
+    const currentState = positionHistory[configId] || defaultHistoryState()
+    const nextState = { ...currentState, assetId }
+    updateHistoryState(configId, nextState)
+    if (assetId) {
+      void fetchPositionHistory(configId, nextState)
+    }
+  }
+
+  const handleTogglePositionHistory = async (configId: number) => {
+    const willOpen = !expandedHistoryIds.has(configId)
+    setExpandedHistoryIds(prev => {
+      const next = new Set(prev)
+      if (willOpen) next.add(configId)
+      else next.delete(configId)
+      return next
+    })
+    if (!willOpen) return
+
+    const existingState = positionHistory[configId] || defaultHistoryState()
+    updateHistoryState(configId, {})
+    const assets = await loadPositionAssets(configId)
+    const assetId = existingState.assetId || assets[0]?.asset_id || ''
+    const nextState = { ...existingState, assetId }
+    updateHistoryState(configId, nextState)
+    if (assetId) {
+      await fetchPositionHistory(configId, nextState)
+    }
+  }
+
+  const handleViewOrders = async (configId: number) => {
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${configId}/orders`)
+      const data = await res.json()
+      console.log('Orders:', data)
+    } catch (e) {
+      console.error('Failed to fetch orders:', e)
+    }
+  }
+
+  const handleRefreshConfig = async (configId: number) => {
+    if (refreshingConfigIds.has(configId)) return
+    setRefreshingConfigIds(prev => new Set(prev).add(configId))
+    try {
+      const res = await apiFetch(`/api/copy-trading/configs/${configId}/sync`, { method: 'POST' })
+      const data = await res.json()
+      console.log('[Refresh] Sync result:', data)
+    } catch (e) {
+      console.error('Failed to refresh config:', e)
+    } finally {
+      setRefreshingConfigIds(prev => {
+        const next = new Set(prev)
+        next.delete(configId)
+        return next
+      })
+    }
+  }
+
+  // ==================== 散点图面板 ====================
+
+  const loadScatterAssets = async (configId: number, days?: number) => {
+    try {
+      let url = `/api/copy-trading/configs/${configId}/position-assets`
+      if (days && days > 0) {
+        const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ')
+        url += `?since=${encodeURIComponent(since)}`
+      }
+      const res = await apiFetch(url)
+      const data = await res.json()
+      if (!res.ok) return []
+      const seen = new Set<string>()
+      const rawAssets: unknown[] = Array.isArray(data.assets) ? data.assets : []
+      const assets: PositionAssetOption[] = rawAssets
+        .map(normalizePositionAsset)
+        .filter((asset): asset is PositionAssetOption => {
+          if (!asset || seen.has(asset.asset_id)) return false
+          seen.add(asset.asset_id)
+          return true
+        })
+      setScatterAssets(prev => ({ ...prev, [configId]: assets }))
+      return assets
+    } catch {
+      return []
+    }
+  }
+
+  const handleScatterAssetFilterChange = async (configId: number, days: number) => {
+    setScatterAssetFilterDays(prev => ({ ...prev, [configId]: days }))
+    const assets = await loadScatterAssets(configId, days)
+    const assetId = assets[0]?.asset_id || ''
+    setScatterState(prev => ({ ...prev, [configId]: { assetId, loading: false, trades: [], error: '' } }))
+    if (assetId) {
+      const { start, end } = getScatterRange(configId)
+      fetchTradeScatter(configId, assetId, start, end)
+    }
+  }
+
+  const handleSelectConfig = async (configId: number) => {
+    if (selectedConfigId === configId) {
+      setSelectedConfigId(null)
+      return
+    }
+    setSelectedConfigId(configId)
+    if (!scatterAssets[configId]) {
+      const days = scatterAssetFilterDays[configId] ?? 0
+      const assets = await loadScatterAssets(configId, days)
+      if (assets.length > 0 && !scatterState[configId]?.assetId) {
+        const assetId = assets[0].asset_id
+        setScatterState(prev => ({ ...prev, [configId]: { assetId, loading: false, trades: [], error: '' } }))
+        const { start, end } = getScatterRange(configId)
+        fetchTradeScatter(configId, assetId, start, end)
+      }
+    } else if (scatterState[configId]?.assetId) {
+      const { start, end } = getScatterRange(configId)
+      fetchTradeScatter(configId, scatterState[configId].assetId, start, end)
+    }
+  }
+
+  const fetchMidPrice = async (assetId: string): Promise<number | null> => {
+    try {
+      const res = await apiFetch(`/api/market/price?asset_id=${assetId}`)
+      if (res.ok) {
+        const data = await res.json()
+        return data.price ?? null
+      }
+    } catch {}
+    return null
+  }
+
+  const fetchTradeScatter = async (configId: number, assetId: string, start?: string, end?: string) => {
+    if (!assetId) return
+    setScatterState(prev => ({ ...prev, [configId]: { ...prev[configId], assetId, loading: true, error: '' } }))
+    try {
+      const params = new URLSearchParams({ asset_id: assetId })
+      if (start) params.set('start', start)
+      if (end) params.set('end', end)
+      const [res, midPrice] = await Promise.all([
+        apiFetch(`/api/copy-trading/configs/${configId}/trade-scatter?${params.toString()}`),
+        fetchMidPrice(assetId),
+      ])
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const trades: Trade[] = (data.trades || []).map((t: any) => ({
+        ...t,
+        createdAtMs: parseTs(t.created_at),
+      }))
+      setScatterState(prev => ({ ...prev, [configId]: { assetId, loading: false, trades, error: '', midPrice } }))
+    } catch (e: any) {
+      setScatterState(prev => ({ ...prev, [configId]: { assetId, loading: false, trades: [], error: e.message || '加载失败' } }))
+    }
+  }
+
+  const getScatterRange = (configId: number): { start?: string; end?: string } => {
+    const days = scatterRangeDays[configId]
+    if (!days || days === 'custom') {
+      const custom = scatterCustomRange[configId]
+      return { start: custom?.start || undefined, end: custom?.end || undefined }
+    }
+    return { start: new Date(Date.now() - days * 86400000).toISOString().slice(0, 16) }
+  }
+
+  const handleScatterRangeChange = (configId: number, days: number | 'custom') => {
+    setScatterRangeDays(prev => ({ ...prev, [configId]: days }))
+    if (days === 'custom') return
+    const assetId = scatterState[configId]?.assetId
+    if (!assetId) return
+    const start = new Date(Date.now() - days * 86400000).toISOString().slice(0, 16)
+    fetchTradeScatter(configId, assetId, start)
+  }
+
+
+  const handleScatterAssetChange = (configId: number, assetId: string) => {
+    setScatterState(prev => ({ ...prev, [configId]: { ...prev[configId], assetId, loading: false, trades: [], error: '' } }))
+    if (assetId) {
+      const { start, end } = getScatterRange(configId)
+      fetchTradeScatter(configId, assetId, start, end)
+    }
+  }
+
+  // ==================== Leader 管理 ====================
+
+  const handleAddLeader = async () => {
+    setLeaderError('')
+    if (!newLeaderWallet || !newLeaderWallet.startsWith('0x') || newLeaderWallet.length !== 42) {
+      setLeaderError('请输入有效的钱包地址')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const res = await apiFetch('/api/leaders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proxy_wallet: newLeaderWallet })
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || '添加失败')
+      }
+      setNewLeaderWallet('')
+      setShowAddLeaderForm(false)
+      fetchLeaders()
+    } catch (e: any) {
+      setLeaderError(e.message || '添加失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleUpdateLeader = async (id: number) => {
+    if (!editingLeaderName.trim()) return
+    try {
+      await apiFetch(`/api/leaders/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editingLeaderName.trim() })
+      })
+      setEditingLeaderId(null)
+      fetchLeaders()
+    } catch (e) {
+      console.error('Failed to update leader:', e)
+    }
+  }
+
+  const handleDeleteLeader = async (id: number) => {
+    if (!confirm('确定删除此 Leader？')) return
+    try {
+      await apiFetch(`/api/leaders/${id}`, { method: 'DELETE' })
+      fetchLeaders()
+    } catch (e) {
+      console.error('Failed to delete leader:', e)
+    }
+  }
+
+  const formatAddress = (addr: string) => {
+    if (!addr) return ''
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`
+  }
+
+  const getAccountName = (accountId: number) => {
+    const account = accounts.find(a => a.id === accountId)
+    if (!account) return `#${accountId}`
+    return account.name ? `${account.name} (${formatAddress(account.proxy_wallet)})` : formatAddress(account.proxy_wallet)
+  }
+
+  const handleLeaderSelectChange = (value: string) => {
+    if (value === '__custom__') {
+      setLeaderAddr('')
+      setShowCustomLeaderInput(true)
+    } else {
+      setLeaderAddr(value)
+      setShowCustomLeaderInput(false)
+    }
+  }
+
+  const handleFollowerSelectChange = (value: string) => {
+    if (value === '__custom__') {
+      setCustomFollowerPrivateKey('')
+      setShowCustomFollowerInput(true)
+      setFollowerAccountId('')
+    } else {
+      setFollowerAccountId(value ? Number(value) : '')
+      setShowCustomFollowerInput(false)
+      setCustomFollowerPrivateKey('')
+    }
+  }
+
+  return (
+    <div className="copytrading-page" data-theme={darkMode ? 'dark' : 'light'}>
+      <div className="copytrading-header-wrap">
+        <div className="page-header">
+          <h2 className="page-title">跟单</h2>
+          {activeTab === 'configs' && (
+            <button onClick={() => setShowAddForm(true)} className="btn btn-primary">
+              + 添加配置
+            </button>
+          )}
+          {activeTab === 'leaders' && !showAddLeaderForm && (
+            <button onClick={() => setShowAddLeaderForm(true)} className="btn btn-primary">
+              + 添加 Leader
+            </button>
+          )}
+        </div>
+        <div className="tab-bar" style={{ marginBottom: 24, display: 'flex', gap: 8 }}>
+          <button
+            className={`btn ${activeTab === 'configs' ? 'btn-primary' : 'btn-outline'}`}
+            onClick={() => { setActiveTab('configs'); fetchConfigs() }}
+          >
+            跟单配置
+          </button>
+          <button
+            className={`btn ${activeTab === 'leaders' ? 'btn-primary' : 'btn-outline'}`}
+            onClick={() => { setActiveTab('leaders'); fetchLeaders(); fetchLeaderBalances() }}
+          >
+            Leader 管理
+          </button>
+        </div>
+      </div>
+
+        {/* ==================== 跟单配置 Tab ==================== */}
+        {activeTab === 'configs' && (
+          <div className={selectedConfigId ? 'configs-tab-content configs-tab-content--wide' : 'configs-tab-content'}>
+            {showAddForm && (
+              <div className="card">
+                <h3 className="card-title">添加跟单配置</h3>
+                <div className="form-group">
+                  <label className="form-label">Leader</label>
+                  {!showCustomLeaderInput ? (
+                    <select
+                      value={leaderAddr}
+                      onChange={e => handleLeaderSelectChange(e.target.value)}
+                      onClick={fetchLeaders}
+                      className="form-select"
+                    >
+                      <option value="">选择 Leader...</option>
+                      {leaders.map(l => (
+                        <option key={l.id} value={l.proxy_wallet}>
+                          {l.name} ({formatAddress(l.proxy_wallet)})
+                        </option>
+                      ))}
+                      <option value="__custom__">+ 输入新地址...</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={leaderAddr}
+                      onChange={e => setLeaderAddr(e.target.value)}
+                      className="form-input"
+                      placeholder="0x..."
+                    />
+                  )}
+                  {showCustomLeaderInput && (
+                    <button
+                      onClick={() => setShowCustomLeaderInput(false)}
+                      className="btn btn-outline"
+                      style={{ marginTop: 8, fontSize: 12, padding: '4px 8px' }}
+                    >
+                      返回选择已有 Leader
+                    </button>
+                  )}
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Follower 账户</label>
+                  {!showCustomFollowerInput ? (
+                    <select
+                      value={followerAccountId}
+                      onChange={e => handleFollowerSelectChange(e.target.value)}
+                      onClick={fetchAccounts}
+                      className="form-select"
+                    >
+                      <option value="">选择账户...</option>
+                      {accounts.map(account => (
+                        <option key={account.id} value={account.id}>
+                          {getAccountName(account.id)}
+                        </option>
+                      ))}
+                      <option value="__custom__">+ 输入新地址...</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={customFollowerPrivateKey}
+                      onChange={e => setCustomFollowerPrivateKey(e.target.value)}
+                      className="form-input"
+                      placeholder="0x 私钥..."
+                    />
+                  )}
+                  {showCustomFollowerInput && (
+                    <button
+                      onClick={() => { setShowCustomFollowerInput(false); setCustomFollowerPrivateKey('') }}
+                      className="btn btn-outline"
+                      style={{ marginTop: 8, fontSize: 12, padding: '4px 8px' }}
+                    >
+                      返回选择已有账户
+                    </button>
+                  )}
+                </div>
+                <div className="form-group">
+                  <label className="form-label">分享比例</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max="1"
+                    value={shareRatio}
+                    onChange={e => setShareRatio(e.target.value)}
+                    className="form-input"
+                    placeholder="0.1"
+                  />
+                  <span className="form-hint">0.01 ~ 1.0，表示跟单的 share 比例</span>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">最大投入 USDC（可选）</label>
+                  <input
+                    type="number"
+                    step="10"
+                    min="0"
+                    value={threshold}
+                    onChange={e => setthreshold(e.target.value)}
+                    className="form-input"
+                    placeholder="未填代表不限制"
+                  />
+                  <span className="form-hint">超过此金额时不跟单买入（只对 BUY 生效）</span>
+                </div>
+                {error && <div className="error-msg">{error}</div>}
+                <div className="form-actions">
+                  <button onClick={handleAddConfig} disabled={loading} className="btn btn-primary">
+                    {loading ? '创建中...' : '创建'}
+                  </button>
+                  <button onClick={() => { setShowAddForm(false); setError(''); setShowCustomLeaderInput(false) }} className="btn btn-outline">
+                    取消
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {configs.length === 0 && !showAddForm ? (
+              <div className="empty-state">
+                <p>暂无跟单配置</p>
+                <p className="empty-hint">点击上方「添加配置」创建第一个跟单配置</p>
+              </div>
+            ) : (
+              <div className={`copy-trading-split ${selectedConfigId ? 'split-active' : ''}`}>
+              <div className={`configs-list ${selectedConfigId ? 'configs-list--narrow' : ''}`}>
+                {configs.map(config => {
+                  const historyState = positionHistory[config.id] || defaultHistoryState()
+                  const historyExpanded = expandedHistoryIds.has(config.id)
+                  const assets = positionAssets[config.id] || []
+                  const chartPoints: PositionHistoryChartPoint[] = historyState.points
+                    .map(point => ({
+                      ...point,
+                      createdAtMs: parseUtc8Timestamp(point.created_at),
+                      leader_value: historyState.normalized ? point.leader_position * point.share_ratio : point.leader_position,
+                      follower_value: point.follower_position,
+                    }))
+                    .filter(point => point.createdAtMs > 0)
+                    .sort((a, b) => a.createdAtMs - b.createdAtMs)
+                  return (
+                  <div key={config.id} className={`card config-card ${!config.enabled ? 'config-card--disabled' : ''} ${selectedConfigId === config.id ? 'config-card--selected' : ''}`}>
+                    <div className="config-header">
+                      <div className="config-info">
+                        <div className="config-addresses">
+                          <div className="address-row">
+                            <span className="address-label">Leader:</span>
+                            <a
+                              href={`https://polymarket.com/profile/${config.leader_proxy_wallet}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ fontWeight: 600, color: 'var(--text-color)', textDecoration: 'none' }}
+                              title={config.leader_proxy_wallet}
+                            >
+                              {config.leader_name}
+                            </a>
+                            {(() => {
+                              const b = configBalances[config.leader_proxy_wallet.toLowerCase()]
+                              return b ? (
+                                <span className="address-value" style={{ color: '#4caf50' }}>
+                                  持仓 ${b.position.toFixed(2)} / 总 ${b.total.toFixed(2)}
+                                </span>
+                              ) : <span className="address-value">...</span>
+                            })()}
+                          </div>
+                          <div className="address-row">
+                            <span className="address-label">Follower:</span>
+                            <a
+                              href={`https://polymarket.com/profile/${config.follower_proxy_wallet}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ fontWeight: 600, color: 'var(--text-color)', textDecoration: 'none' }}
+                              title={config.follower_proxy_wallet}
+                            >
+                              {config.follower_name}
+                            </a>
+                            {(() => {
+                              const b = configBalances[config.follower_proxy_wallet.toLowerCase()]
+                              return b ? (
+                                <span className="address-value" style={{ color: '#4caf50' }}>
+                                  持仓 ${b.position.toFixed(2)} / 总 ${b.total.toFixed(2)}
+                                </span>
+                              ) : <span className="address-value">...</span>
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="config-actions">
+                        <label className="toggle-switch">
+                          <input
+                            type="checkbox"
+                            checked={config.enabled}
+                            onChange={() => handleToggleEnabled(config)}
+                          />
+                          <span className="toggle-slider"></span>
+                        </label>
+                        <button onClick={() => handleSelectConfig(config.id)} className={`btn ${selectedConfigId === config.id ? 'btn-primary' : 'btn-outline'}`}>
+                          图表
+                        </button>
+                        <button onClick={() => handleTogglePositionHistory(config.id)} className={`btn ${historyExpanded ? 'btn-primary' : 'btn-outline'}`}>
+                          持仓
+                        </button>
+                        <button onClick={() => handleViewOrders(config.id)} className="btn btn-outline">订单</button>
+                        <button
+                          onClick={() => handleRefreshConfig(config.id)}
+                          className={`btn btn-outline ${refreshingConfigIds.has(config.id) ? 'btn-loading' : ''}`}
+                          disabled={refreshingConfigIds.has(config.id)}
+                        >
+                          {refreshingConfigIds.has(config.id) ? '刷新中...' : '刷新'}
+                        </button>
+                        <button onClick={() => handleDeleteConfig(config.id)} className="btn btn-danger">删除</button>
+                      </div>
+                    </div>
+                    <div className="config-meta">
+                      <span className="meta-item">ID: <strong>#{config.id}</strong></span>
+                      <span className="meta-item price-anchor">
+                            ratio:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleRatioClick(config)}
+                              title="点击修改"
+                            >
+                              {config.share_ratio}
+                            </strong>
+                            {editingRatioConfigId === config.id && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    max="1"
+                                    value={editingRatioValue}
+                                    onChange={e => setEditingRatioValue(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleRatioSave(config.id)
+                                      if (e.key === 'Escape') handleRatioCancel()
+                                    }}
+                                    autoFocus
+                                  />
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleRatioSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handleRatioCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                          {config.threshold < 1e10 && (
+                            <span className="meta-item">
+                              threshold: <strong>${config.threshold.toFixed(2)}</strong> | allowance: <strong>${config.allowance.toFixed(2)}</strong>
+                            </span>
+                          )}
+                          <span className="meta-item price-anchor">
+                            GTD:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleGtdClick(config)}
+                              title="点击修改 GTD 过期时间"
+                            >
+                              {Math.round((config.gtd_expiration_sec || 1800) / 60)}min
+                            </strong>
+                            {editingGtdConfigId === config.id && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    min="1"
+                                    max="1440"
+                                    value={editingGtdValue}
+                                    onChange={e => setEditingGtdValue(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleGtdSave(config.id)
+                                      if (e.key === 'Escape') handleGtdCancel()
+                                    }}
+                                    autoFocus
+                                  />
+                                  <span style={{ fontSize: 11 }}>min</span>
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleGtdSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handleGtdCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                          <span className="meta-item price-anchor">
+                            B吃:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleToggleFollowTaker(config, 'buy')}
+                              title="点击切换：BUY 是否跟随 leader 的 taker 行为"
+                              style={{ color: config.buy_follow_taker ? undefined : '#e57373' }}
+                            >
+                              {config.buy_follow_taker ? '跟' : '挂'}
+                            </strong>
+                            {' '}
+                            S吃:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleToggleFollowTaker(config, 'sell')}
+                              title="点击切换：SELL 是否跟随 leader 的 taker 行为"
+                              style={{ color: config.sell_follow_taker ? undefined : '#e57373' }}
+                            >
+                              {config.sell_follow_taker ? '跟' : '挂'}
+                            </strong>
+                          </span>
+                          {config.buy_follow_taker && (
+                          <span className="meta-item price-anchor">
+                            B阈:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleSpreadClick(config, 'buy')}
+                              title="点击修改 BUY 价差阈值"
+                            >
+                              {config.buy_spread_thr ?? 0.05}
+                            </strong>
+                            {editingSpreadConfigId === config.id && editingSpreadSide === 'buy' && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    max="0.5"
+                                    value={editingSpreadValue}
+                                    onChange={e => setEditingSpreadValue(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleSpreadSave(config.id)
+                                      if (e.key === 'Escape') handleSpreadCancel()
+                                    }}
+                                    autoFocus
+                                  />
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleSpreadSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handleSpreadCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                            {' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleToggleExceedOrder(config, 'buy')}
+                              title="点击切换：超过阈值时 BUY 是否挂单"
+                              style={{ color: config.buy_exceed_thr ? undefined : '#e57373' }}
+                            >
+                              {config.buy_exceed_thr ? '挂' : '跳'}
+                            </strong>
+                          </span>
+                          )}
+                          {config.sell_follow_taker && (
+                          <span className="meta-item price-anchor">
+                            S阈:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleSpreadClick(config, 'sell')}
+                              title="点击修改 SELL 价差阈值"
+                            >
+                              {config.sell_spread_thr ?? 0.05}
+                            </strong>
+                            {editingSpreadConfigId === config.id && editingSpreadSide === 'sell' && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    max="0.5"
+                                    value={editingSpreadValue}
+                                    onChange={e => setEditingSpreadValue(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleSpreadSave(config.id)
+                                      if (e.key === 'Escape') handleSpreadCancel()
+                                    }}
+                                    autoFocus
+                                  />
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleSpreadSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handleSpreadCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                            {' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleToggleExceedOrder(config, 'sell')}
+                              title="点击切换：超过阈值时 SELL 是否挂单"
+                              style={{ color: config.sell_exceed_thr ? undefined : '#e57373' }}
+                            >
+                              {config.sell_exceed_thr ? '挂' : '跳'}
+                            </strong>
+                          </span>
+                          )}
+                          <span className="meta-item price-anchor">
+                            B价:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handlePriceClick(config, 'buy')}
+                              title="点击修改 BUY 价格范围"
+                            >
+                              {config.buy_price_min ?? 0.001}~{config.buy_price_max ?? 0.999}
+                            </strong>
+                            {editingPriceConfigId === config.id && editingPriceField === 'buy' && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <label>min</label>
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    min="0.001"
+                                    max="0.999"
+                                    value={editingPriceMin}
+                                    onChange={e => setEditingPriceMin(e.target.value)}
+                                    autoFocus
+                                  />
+                                </div>
+                                <div className="price-popover-row">
+                                  <label>max</label>
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    min="0.001"
+                                    max="0.999"
+                                    value={editingPriceMax}
+                                    onChange={e => setEditingPriceMax(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handlePriceSave(config.id)
+                                      if (e.key === 'Escape') handlePriceCancel()
+                                    }}
+                                  />
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handlePriceSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handlePriceCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                          <span className="meta-item price-anchor">
+                            S价:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handlePriceClick(config, 'sell')}
+                              title="点击修改 SELL 价格范围"
+                            >
+                              {config.sell_price_min ?? 0.001}~{config.sell_price_max ?? 0.999}
+                            </strong>
+                            {editingPriceConfigId === config.id && editingPriceField === 'sell' && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <label>min</label>
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    min="0.001"
+                                    max="0.999"
+                                    value={editingPriceMin}
+                                    onChange={e => setEditingPriceMin(e.target.value)}
+                                    autoFocus
+                                  />
+                                </div>
+                                <div className="price-popover-row">
+                                  <label>max</label>
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    min="0.001"
+                                    max="0.999"
+                                    value={editingPriceMax}
+                                    onChange={e => setEditingPriceMax(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handlePriceSave(config.id)
+                                      if (e.key === 'Escape') handlePriceCancel()
+                                    }}
+                                  />
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handlePriceSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handlePriceCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                          <span className="meta-item price-anchor">
+                            B滤:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleFilterClick(config)}
+                              title="点击修改 BUY 信号价格过滤范围"
+                            >
+                              {config.buy_price_filter_min ?? 0.001}~{config.buy_price_filter_max ?? 0.998}
+                            </strong>
+                            {editingFilterConfigId === config.id && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <label>min</label>
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    min="0.001"
+                                    max="0.999"
+                                    value={editingFilterMin}
+                                    onChange={e => setEditingFilterMin(e.target.value)}
+                                    autoFocus
+                                  />
+                                </div>
+                                <div className="price-popover-row">
+                                  <label>max</label>
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    min="0.001"
+                                    max="0.999"
+                                    value={editingFilterMax}
+                                    onChange={e => setEditingFilterMax(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleFilterSave(config.id)
+                                      if (e.key === 'Escape') handleFilterCancel()
+                                    }}
+                                  />
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleFilterSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handleFilterCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                          <span className="meta-item price-anchor">
+                            Merge:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleToggleAutoMerge(config)}
+                              title="点击切换：是否开启自动 merge"
+                              style={{ color: config.auto_merge_enabled ? '#4caf50' : '#e57373' }}
+                            >
+                              {config.auto_merge_enabled ? '开' : '关'}
+                            </strong>
+                            {config.auto_merge_enabled && (
+                              <>
+                                {' '}阈值:{' '}
+                                <strong
+                                  className="ratio-text"
+                                  onClick={() => handleMergeThresholdClick(config)}
+                                  title="点击修改 merge 阈值"
+                                >
+                                  {config.auto_merge_threshold}
+                                </strong>
+                                {editingMergeThresholdId === config.id && (
+                                  <div className="price-popover">
+                                    <div className="price-popover-row">
+                                      <input
+                                        type="number"
+                                        step="1"
+                                        min="1"
+                                        value={editingMergeThresholdValue}
+                                        onChange={e => setEditingMergeThresholdValue(e.target.value)}
+                                        onKeyDown={e => {
+                                          if (e.key === 'Enter') handleMergeThresholdSave()
+                                          if (e.key === 'Escape') setEditingMergeThresholdId(null)
+                                        }}
+                                        autoFocus
+                                      />
+                                    </div>
+                                    <div className="price-popover-actions">
+                                      <button onClick={handleMergeThresholdSave} className="btn-save">✓</button>
+                                      <button onClick={() => setEditingMergeThresholdId(null)} className="btn-cancel">✕</button>
+                                    </div>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </span>
+                          <span className="meta-item">
+                            Buy Only:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleToggleBuyOnly(config)}
+                              title="点击切换：leader SELL 时转为 BUY 反向 token"
+                              style={{ color: config.buy_only ? '#4caf50' : '#e57373' }}
+                            >
+                              {config.buy_only ? '开' : '关'}
+                            </strong>
+                          </span>
+                          <span className="meta-item price-anchor">
+                            定时:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleScheduleClick(config)}
+                              title="点击配置定时启停（cron 表达式，UTC+8）"
+                              style={{ color: schedules[config.id] ? '#4caf50' : '#999' }}
+                            >
+                              {schedules[config.id] ? '已配置' : '未设置'}
+                            </strong>
+                            {editingScheduleConfigId === config.id && (
+                              <div ref={schedulePopoverRef} className="price-popover" style={{ minWidth: 240 }}>
+                                <div className="price-popover-row" style={{ flexDirection: 'column', gap: 6 }}>
+                                  <label style={{ fontSize: 11 }}>启动 cron (UTC+8)</label>
+                                  <input
+                                    type="text"
+                                    placeholder="如: 0 9 * * 1-5"
+                                    value={editingStartCron}
+                                    onChange={e => setEditingStartCron(e.target.value)}
+                                    style={{ width: '100%' }}
+                                  />
+                                  <label style={{ fontSize: 11 }}>停止 cron (UTC+8)</label>
+                                  <input
+                                    type="text"
+                                    placeholder="如: 0 23 * * *"
+                                    value={editingStopCron}
+                                    onChange={e => setEditingStopCron(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleScheduleSave(config.id)
+                                      if (e.key === 'Escape') setEditingScheduleConfigId(null)
+                                    }}
+                                    style={{ width: '100%' }}
+                                  />
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleScheduleSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={() => setEditingScheduleConfigId(null)} className="btn-cancel">✕</button>
+                                  {schedules[config.id] && (
+                                    <button onClick={() => handleScheduleDelete(config.id)} className="btn-cancel" style={{ color: '#e57373' }}>删除</button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                          <span className="meta-item price-anchor">
+                            过滤:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleSlugFilterClick(config)}
+                              title="点击配置市场关键词黑/白名单过滤"
+                              style={{ color: slugFilters[config.id] ? '#4caf50' : '#999' }}
+                            >
+                              {slugFilters[config.id] ? `${slugFilters[config.id]!.mode === 'blacklist' ? '黑' : '白'}名单(${slugFilters[config.id]!.slugs.length})` : '未设置'}
+                            </strong>
+                            {editingSlugFilterConfigId === config.id && (
+                              <div ref={slugFilterPopoverRef} className="price-popover" style={{ minWidth: 260 }}>
+                                <div className="price-popover-row" style={{ flexDirection: 'column', gap: 6 }}>
+                                  <label style={{ fontSize: 11 }}>模式</label>
+                                  <select
+                                    value={editingSlugMode}
+                                    onChange={e => setEditingSlugMode(e.target.value as 'blacklist' | 'whitelist')}
+                                    style={{ width: '100%', padding: '2px 4px' }}
+                                  >
+                                    <option value="blacklist">黑名单（排除）</option>
+                                    <option value="whitelist">白名单（仅允许）</option>
+                                  </select>
+                                  <label style={{ fontSize: 11 }}>关键词（每行一个，匹配市场链接）</label>
+                                  <textarea
+                                    rows={4}
+                                    placeholder={"如: trump\nbitcoin"}
+                                    value={editingSlugText}
+                                    onChange={e => setEditingSlugText(e.target.value)}
+                                    style={{ width: '100%', fontSize: 12, resize: 'vertical' }}
+                                  />
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleSlugFilterSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={() => setEditingSlugFilterConfigId(null)} className="btn-cancel">✕</button>
+                                  {slugFilters[config.id] && (
+                                    <button onClick={() => handleSlugFilterDelete(config.id)} className="btn-cancel" style={{ color: '#e57373' }}>删除</button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                    </div>
+                    {historyExpanded && (
+                      <div className="position-history-panel">
+                        <div className="position-history-controls">
+                          <div className="ph-row">
+                            <span className="ph-label">Asset</span>
+                            <div className="ph-filter-buttons">
+                              {[1, 2, 3, 0].map(d => (
+                                <button
+                                  key={d}
+                                  className={`btn btn-sm ${(assetFilterDays[config.id] ?? 0) === d ? 'btn-primary' : 'btn-secondary'}`}
+                                  onClick={() => handleAssetFilterChange(config.id, d)}
+                                >
+                                  {d === 0 ? '全部' : `${d}天`}
+                                </button>
+                              ))}
+                            </div>
+                            <select
+                              className="form-select ph-asset-select"
+                              value={historyState.assetId}
+                              onChange={e => handlePositionAssetChange(config.id, e.target.value)}
+                              disabled={assets.length === 0}
+                            >
+                              {assets.length === 0 && (
+                                <option value="">暂无 asset</option>
+                              )}
+                              {assets.map(asset => (
+                                <option key={asset.asset_id} value={asset.asset_id}>
+                                  {formatAssetOptionLabel(asset)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="ph-row">
+                            <span className="ph-label">范围</span>
+                            <div className="ph-filter-buttons">
+                              {[1, 3, 7].map(d => (
+                                <button
+                                  key={d}
+                                  className={`btn btn-sm ${historyRangeDays[config.id] === d ? 'btn-primary' : 'btn-secondary'}`}
+                                  onClick={() => handleHistoryRangeChange(config.id, d)}
+                                >
+                                  {d}天
+                                </button>
+                              ))}
+                              <button
+                                className={`btn btn-sm ${historyRangeDays[config.id] === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
+                                onClick={() => handleHistoryRangeChange(config.id, 'custom')}
+                              >
+                                {showCustomRange.has(config.id) && historyState.start
+                                  ? `${historyState.start.slice(5, 10)} ~ ${historyState.end ? historyState.end.slice(5, 10) : '现在'}`
+                                  : '自定义'}
+                              </button>
+                              {showCustomRange.has(config.id) && (
+                                <>
+                                  <input
+                                    className="form-input form-input--sm"
+                                    type="date"
+                                    value={historyState.start ? historyState.start.slice(0, 10) : ''}
+                                    onChange={e => {
+                                      const start = e.target.value ? `${e.target.value}T00:00` : ''
+                                      updateHistoryState(config.id, { start })
+                                    }}
+                                  />
+                                  <span className="range-sep">~</span>
+                                  <input
+                                    className="form-input form-input--sm"
+                                    type="date"
+                                    value={historyState.end ? historyState.end.slice(0, 10) : ''}
+                                    onChange={e => {
+                                      const end = e.target.value ? `${e.target.value}T23:59` : ''
+                                      updateHistoryState(config.id, { end })
+                                    }}
+                                  />
+                                </>
+                              )}
+                            </div>
+                            <label className="position-history-check">
+                              <input
+                                type="checkbox"
+                                checked={historyState.normalized}
+                                onChange={e => updateHistoryState(config.id, { normalized: e.target.checked })}
+                              />
+                              归一化
+                            </label>
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={historyState.loading}
+                              onClick={() => fetchPositionHistory(config.id)}
+                            >
+                              {historyState.loading ? '查询中...' : '刷新'}
+                            </button>
+                          </div>
+                        </div>
+                        {historyState.error && <div className="error-msg">{historyState.error}</div>}
+                        {!historyState.error && historyState.points.length === 0 && (
+                          <div className="position-history-empty">暂无历史点</div>
+                        )}
+                        {chartPoints.length > 0 && (
+                          <div className="position-history-chart">
+                            <PositionHistoryChart
+                              points={chartPoints}
+                              normalized={historyState.normalized}
+                              darkMode={darkMode}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  )
+                })}
+              </div>
+              {selectedConfigId && (
+                <div className="chart-panel">
+                  <div className="position-history-controls">
+                    <div className="ph-row">
+                      <span className="ph-label">Asset</span>
+                      <div className="ph-filter-buttons">
+                        {[1, 2, 3, 0].map(d => (
+                          <button
+                            key={d}
+                            className={`btn btn-sm ${(scatterAssetFilterDays[selectedConfigId] ?? 0) === d ? 'btn-primary' : 'btn-secondary'}`}
+                            onClick={() => handleScatterAssetFilterChange(selectedConfigId, d)}
+                          >
+                            {d === 0 ? '全部' : `${d}天`}
+                          </button>
+                        ))}
+                      </div>
+                      <select
+                        className="form-select ph-asset-select"
+                        value={scatterState[selectedConfigId]?.assetId || ''}
+                        onChange={e => handleScatterAssetChange(selectedConfigId, e.target.value)}
+                      >
+                        {(scatterAssets[selectedConfigId] || []).length === 0 && (
+                          <option value="">暂无 asset</option>
+                        )}
+                        {(scatterAssets[selectedConfigId] || []).map(asset => (
+                          <option key={asset.asset_id} value={asset.asset_id}>
+                            {formatAssetOptionLabel(asset)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="ph-row">
+                      <span className="ph-label">范围</span>
+                      <div className="ph-filter-buttons">
+                        {[1, 3, 7].map(d => (
+                          <button
+                            key={d}
+                            className={`btn btn-sm ${scatterRangeDays[selectedConfigId] === d ? 'btn-primary' : 'btn-secondary'}`}
+                            onClick={() => handleScatterRangeChange(selectedConfigId, d)}
+                          >
+                            {d}天
+                          </button>
+                        ))}
+                        <button
+                          className={`btn btn-sm ${scatterRangeDays[selectedConfigId] === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
+                          onClick={() => handleScatterRangeChange(selectedConfigId, 'custom')}
+                        >
+                          {scatterRangeDays[selectedConfigId] === 'custom' && scatterCustomRange[selectedConfigId]?.start
+                            ? `${scatterCustomRange[selectedConfigId].start.slice(5, 10)} ~ ${scatterCustomRange[selectedConfigId]?.end ? scatterCustomRange[selectedConfigId].end.slice(5, 10) : '现在'}`
+                            : '自定义'}
+                        </button>
+                        {scatterRangeDays[selectedConfigId] === 'custom' && (
+                          <>
+                            <input
+                              className="form-input form-input--sm"
+                              type="date"
+                              value={scatterCustomRange[selectedConfigId]?.start?.slice(0, 10) || ''}
+                              onChange={e => {
+                                const start = e.target.value ? `${e.target.value}T00:00` : ''
+                                setScatterCustomRange(prev => ({ ...prev, [selectedConfigId]: { ...prev[selectedConfigId], start, end: prev[selectedConfigId]?.end || '' } }))
+                              }}
+                            />
+                            <span className="range-sep">~</span>
+                            <input
+                              className="form-input form-input--sm"
+                              type="date"
+                              value={scatterCustomRange[selectedConfigId]?.end?.slice(0, 10) || ''}
+                              onChange={e => {
+                                const end = e.target.value ? `${e.target.value}T23:59` : ''
+                                setScatterCustomRange(prev => ({ ...prev, [selectedConfigId]: { ...prev[selectedConfigId], start: prev[selectedConfigId]?.start || '', end } }))
+                              }}
+                            />
+                          </>
+                        )}
+                      </div>
+                      <button
+                        className={`ph-pill${(scatterShowZeroMatched[selectedConfigId] ?? false) ? ' ph-pill--active' : ''}`}
+                        onClick={() => setScatterShowZeroMatched(prev => ({ ...prev, [selectedConfigId]: !(prev[selectedConfigId] ?? false) }))}
+                      >含未成交</button>
+                      <button
+                        className={`ph-pill${(scatterNormalize[selectedConfigId] ?? false) ? ' ph-pill--active' : ''}`}
+                        onClick={() => setScatterNormalize(prev => ({ ...prev, [selectedConfigId]: !(prev[selectedConfigId] ?? false) }))}
+                      >归一化</button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={scatterState[selectedConfigId]?.loading}
+                        onClick={() => {
+                          const assetId = scatterState[selectedConfigId]?.assetId
+                          if (assetId) {
+                            const { start, end } = getScatterRange(selectedConfigId)
+                            fetchTradeScatter(selectedConfigId, assetId, start, end)
+                          }
+                        }}
+                      >
+                        {scatterState[selectedConfigId]?.loading ? '加载中...' : '刷新'}
+                      </button>
+                    </div>
+                  </div>
+                  {scatterState[selectedConfigId]?.error && (
+                    <div className="error-msg">{scatterState[selectedConfigId].error}</div>
+                  )}
+                  {(() => {
+                    const allTrades = scatterState[selectedConfigId]?.trades || []
+                    const filteredTrades = (scatterShowZeroMatched[selectedConfigId] ?? false)
+                      ? allTrades
+                      : allTrades.filter(t => t.size_matched > 0)
+                    if (!scatterState[selectedConfigId]?.error && filteredTrades.length === 0 && !scatterState[selectedConfigId]?.loading) {
+                      return <div className="position-history-empty">暂无交易数据</div>
+                    }
+                    if (filteredTrades.length > 0) {
+                      return (
+                        <div className="chart-panel-chart" style={{ height: (scatterShowZeroMatched[selectedConfigId] ?? false) ? 520 : 360 }}>
+                          <TradeScatterChart trades={filteredTrades} darkMode={darkMode} midPrice={scatterState[selectedConfigId]?.midPrice} showLeader={scatterShowZeroMatched[selectedConfigId] ?? false} normalizePosition={scatterNormalize[selectedConfigId] ?? false} shareRatio={configs.find(c => c.id === selectedConfigId)?.share_ratio} />
+                        </div>
+                      )
+                    }
+                    return null
+                  })()}
+                </div>
+              )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ==================== Leader 管理 Tab ==================== */}
+        {activeTab === 'leaders' && (
+          <div className="copytrading-container">
+            {showAddLeaderForm && (
+              <div className="card">
+                <h3 className="card-title">添加 Leader</h3>
+                <div className="form-group">
+                  <label className="form-label">钱包地址</label>
+                  <input
+                    type="text"
+                    value={newLeaderWallet}
+                    onChange={e => setNewLeaderWallet(e.target.value)}
+                    className="form-input"
+                    placeholder="0x..."
+                  />
+                </div>
+                {leaderError && <div className="error-msg">{leaderError}</div>}
+                <div className="form-actions">
+                  <button onClick={handleAddLeader} disabled={loading} className="btn btn-primary">
+                    {loading ? '添加中...' : '添加'}
+                  </button>
+                  <button onClick={() => { setShowAddLeaderForm(false); setLeaderError('') }} className="btn btn-outline">
+                    取消
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {leaders.length === 0 && !showAddLeaderForm ? (
+              <div className="empty-state">
+                <p>暂无 Leader</p>
+                <p className="empty-hint">点击上方「添加 Leader」添加第一个 Leader</p>
+              </div>
+            ) : (
+              <div className="card">
+                <div className="leader-table">
+                  <div className="leader-table-header">
+                    <span>名字</span>
+                    <span>仓位资产</span>
+                    <span>总余额</span>
+                    <span>操作</span>
+                  </div>
+                  {leaders.map(leader => (
+                    <div key={leader.id} className="leader-table-row">
+                      {editingLeaderId === leader.id ? (
+                        <>
+                          <input
+                            type="text"
+                            value={editingLeaderName}
+                            onChange={e => setEditingLeaderName(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') handleUpdateLeader(leader.id)
+                              if (e.key === 'Escape') setEditingLeaderId(null)
+                            }}
+                            className="form-input"
+                            style={{ flex: 1 }}
+                            autoFocus
+                          />
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button onClick={() => handleUpdateLeader(leader.id)} className="btn-save" style={{ fontSize: 14, padding: '4px 8px' }}>✓</button>
+                            <button onClick={() => setEditingLeaderId(null)} className="btn-cancel" style={{ fontSize: 14, padding: '4px 8px' }}>✕</button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div>
+                            <a
+                              href={`https://polymarket.com/profile/${leader.proxy_wallet}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ fontWeight: 600, color: 'var(--text-color)', textDecoration: 'none' }}
+                              onClick={e => e.stopPropagation()}
+                            >
+                              {leader.name}
+                            </a>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                              <span style={{ fontFamily: 'ui-monospace', fontSize: 12, color: 'var(--text-secondary)' }}>
+                                {formatAddress(leader.proxy_wallet)}
+                              </span>
+                              <button
+                                onClick={() => navigator.clipboard.writeText(leader.proxy_wallet)}
+                                className="btn btn-outline"
+                                style={{ fontSize: 11, padding: '1px 5px' }}
+                                title="复制地址"
+                              >
+                                复制
+                              </button>
+                            </div>
+                          </div>
+                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>
+                            {loadingLeaderAddrs.has(leader.proxy_wallet.toLowerCase())
+                              ? '...'
+                              : leaderBalances[leader.proxy_wallet.toLowerCase()] != null
+                                ? `$${leaderBalances[leader.proxy_wallet.toLowerCase()].position_value.toFixed(2)}`
+                                : '-'}
+                          </span>
+                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>
+                            {loadingLeaderAddrs.has(leader.proxy_wallet.toLowerCase())
+                              ? '...'
+                              : leaderBalances[leader.proxy_wallet.toLowerCase()] != null
+                                ? `$${leaderBalances[leader.proxy_wallet.toLowerCase()].total_balance.toFixed(2)}`
+                                : '-'}
+                          </span>
+                          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                            <button
+                              onClick={() => { setEditingLeaderId(leader.id); setEditingLeaderName(leader.name) }}
+                              className="btn btn-outline"
+                              style={{ fontSize: 12, padding: '4px 8px' }}
+                            >
+                              编辑
+                            </button>
+                            <button
+                              onClick={() => handleDeleteLeader(leader.id)}
+                              className="btn btn-danger"
+                              style={{ fontSize: 12, padding: '4px 8px' }}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+    </div>
+  )
+}

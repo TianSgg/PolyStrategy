@@ -1,0 +1,41 @@
+/* Modern Scrollbar Hiding */
+* {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE/Edge */
+}
+
+*::-webkit-scrollbar {
+  display: none !important; /* Chrome, Safari, Apple Safari */
+}
+
+/* Base layout settings */
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden; /* Prevent body scroll to avoid double bounce, let pages handle it */
+}
+
+/* Enable elastic scrolling on macOS for all scrollable areas */
+* {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 
+   Force modern "Spring" (Elastic) behavior.
+   The container must be slightly taller than its viewport to ensure 
+   the browser recognizes it as a scrollable area, even if content is short.
+*/
+.users-page, .account-page, .copytrading-page, .perf-page {
+  height: 100%;
+  width: 100%;
+  overflow-y: scroll !important; /* ALWAYS permit scrolling to enable bounce */
+  overscroll-behavior-y: auto !important; /* Native macOS bounce */
+}
+
+.users-container, .account-container, .copytrading-container, .perf-container {
+  min-height: calc(100% + 1px) !important;
+  display: flex;
+  flex-direction: column;
+}

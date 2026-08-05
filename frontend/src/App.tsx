@@ -1,0 +1,461 @@
+import { useState, useEffect, useMemo } from 'react'
+import Account from './pages/Account'
+import CopyTrading from './pages/CopyTrading'
+import Login from './pages/Login'
+import PnL from './pages/PnL'
+import PerformanceMonitor from './pages/PerformanceMonitor'
+import UserManagement from './pages/UserManagement'
+import StatusBar from './components/StatusBar'
+import ChangePasswordModal from './components/ChangePasswordModal'
+import CreateGroupModal from './components/CreateGroupModal'
+import EditGroupModal from './components/EditGroupModal'
+import { ToastContainer } from './components/Toast'
+import { WS_BASE, apiFetch, setUnauthorizedHandler } from './api'
+import { useBalance } from './contexts/BalanceContext'
+import './ws-client'
+
+type Page = 'account' | 'copytrading' | 'pnl' | 'users' | 'performance'
+type AuthUser = { id: number; username: string; role: 'root' | 'admin' | 'user'; enabled: boolean }
+
+const DARK_MODE_STORAGE_KEY = 'weathertaker:dark-mode'
+
+function getInitialDarkMode(): boolean {
+  try {
+    return localStorage.getItem(DARK_MODE_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function App() {
+  const [currentPage, setCurrentPage] = useState<Page>('account')
+  const [darkMode, setDarkMode] = useState(getInitialDarkMode)
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [showChangePwd, setShowChangePwd] = useState(false)
+
+  // Layout global state
+  // Connection states
+  const [connected, setConnected] = useState(false)
+  const [wsLatency, setWsLatency] = useState({
+    ws_market: "--",
+    ws_user: "--",
+    polygon_ws: "--",
+    poly_rtds: "--",
+    predexon: "--",
+  })
+  const [httpLatency, setHttpLatency] = useState({
+    data_api: "--",
+    clob_api: "--",
+    gamma_api: "--",
+    polygon_http: "--",
+  })
+
+  const { accountBalances } = useBalance()
+  const [latencyLoading, setLatencyLoading] = useState(false)
+  const [balanceRefreshKey, setBalanceRefreshKey] = useState(0)
+  const [portfolioGroups, setPortfolioGroups] = useState<{ id: number; name: string; account_ids: number[] }[]>([])
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false)
+  const [editingGroupId, setEditingGroupId] = useState<number | null>(null)
+  const [accountsList, setAccountsList] = useState<{ id: number; name: string; proxy_wallet: string }[]>([])
+  const [pinnedGroupId, setPinnedGroupId] = useState<number | null>(null)
+
+  // 从 context 派生 accountSummaryMap (by account id) 和 totalBalance
+  const accountSummaryMap = useMemo(() => {
+    const map: Record<number, { total_value: number }> = {}
+    for (const acc of accountsList) {
+      const b = accountBalances[acc.proxy_wallet.toLowerCase()]
+      if (b) map[acc.id] = { total_value: b.total_value }
+    }
+    return map
+  }, [accountsList, accountBalances])
+
+  const totalBalance = useMemo(() => {
+    const total = Object.values(accountSummaryMap).reduce((sum, s) => sum + (s.total_value || 0), 0)
+    return total > 0 ? `$${total.toFixed(2)}` : "--"
+  }, [accountSummaryMap])
+
+  useEffect(() => {
+    if (authUser) {
+      apiFetch('/api/portfolio-group/pin').then(r => r.json()).then(d => setPinnedGroupId(d.pinned_group_id ?? null))
+    } else {
+      setPinnedGroupId(null)
+    }
+  }, [authUser])
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthUser(null)
+      setCurrentPage('account')
+    })
+    apiFetch('/api/auth/me')
+      .then(async res => {
+        if (!res.ok) return null
+        const data = await res.json()
+        setAuthUser(data.user)
+      })
+      .finally(() => setAuthLoading(false))
+    return () => setUnauthorizedHandler(null)
+  }, [])
+
+  useEffect(() => {
+    if (!authUser) {
+      setConnected(false)
+      return
+    }
+    const client = new (window as any).PolymarketWSClient(`${WS_BASE}/ws/market`)
+
+    client.on('open', () => setConnected(true))
+    client.on('close', () => setConnected(false))
+    client.on('latency', (data: any) => {
+      setWsLatency({
+        ws_market: data.ws?.ws_market ?? "--",
+        ws_user: data.ws?.ws_user ?? "--",
+        polygon_ws: data.ws?.polygon_ws ?? "--",
+        poly_rtds: data.ws?.poly_rtds ?? "--",
+        predexon: data.ws?.predexon ?? "--",
+      })
+      setHttpLatency({
+        data_api: data.http?.data_api ?? "--",
+        clob_api: data.http?.clob_api ?? "--",
+        gamma_api: data.http?.gamma_api ?? "--",
+        polygon_http: data.http?.polygon_http ?? "--",
+      })
+    })
+
+    client.connect()
+
+    return () => {
+      client.disconnect()
+    }
+  }, [authUser])
+
+  const handleLogout = async () => {
+    await apiFetch('/api/auth/logout', { method: 'POST' })
+    setAuthUser(null)
+    setCurrentPage('account')
+  }
+
+  // Propagate background color via root styles as fallback for clean UI edge
+  useEffect(() => {
+    try {
+      localStorage.setItem(DARK_MODE_STORAGE_KEY, String(darkMode))
+    } catch {
+      // Ignore storage failures; theme still works for the current session.
+    }
+    document.body.style.backgroundColor = darkMode ? '#0f172a' : '#f8fafc'
+    document.body.style.color = darkMode ? '#f8fafc' : '#0f172a'
+    document.body.style.margin = '0'
+    document.documentElement.style.height = '100%'
+    document.body.style.height = '100%'
+  }, [darkMode])
+
+  const theme = darkMode ? {
+    container: styles.containerDark,
+    sidebar: styles.sidebarDark,
+    navItem: styles.navItemDark,
+    navItemActive: styles.navItemActiveDark,
+    title: styles.titleDark
+  } : {
+    container: styles.container,
+    sidebar: styles.sidebar,
+    navItem: styles.navItem,
+    navItemActive: styles.navItemActive,
+    title: styles.title
+  }
+
+  if (authLoading) {
+    return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading...</div>
+  }
+
+  if (!authUser) {
+    return <Login onLogin={setAuthUser} />
+  }
+
+  return (
+    <div style={theme.container}>
+      <ToastContainer />
+      <ChangePasswordModal
+        open={showChangePwd}
+        onClose={() => setShowChangePwd(false)}
+        darkMode={darkMode}
+      />
+      <CreateGroupModal
+        open={showCreateGroupModal}
+        onClose={() => setShowCreateGroupModal(false)}
+        onCreated={() => setBalanceRefreshKey(k => k + 1)}
+        accounts={accountsList}
+        darkMode={darkMode}
+      />
+      <EditGroupModal
+        open={editingGroupId != null}
+        groupId={editingGroupId}
+        groups={portfolioGroups}
+        onClose={() => setEditingGroupId(null)}
+        onSaved={() => setBalanceRefreshKey(k => k + 1)}
+        accounts={accountsList}
+        darkMode={darkMode}
+      />
+      {/* 左侧导航栏 */}
+      <div style={theme.sidebar}>
+        <h1 style={theme.title}>WeatherTaker</h1>
+        <nav style={styles.nav}>
+          <button
+            onClick={() => setCurrentPage('account')}
+            style={currentPage === 'account' ? theme.navItemActive : theme.navItem}
+          >
+            <span style={styles.navIcon}>💳</span>
+            账户管理
+          </button>
+          <button
+            onClick={() => setCurrentPage('copytrading')}
+            style={currentPage === 'copytrading' ? theme.navItemActive : theme.navItem}
+          >
+            <span style={styles.navIcon}>📋</span>
+            跟单策略
+          </button>
+          <button
+            onClick={() => setCurrentPage('pnl')}
+            style={currentPage === 'pnl' ? theme.navItemActive : theme.navItem}
+          >
+            <span style={styles.navIcon}>📊</span>
+            利润看板
+          </button>
+          {(authUser.role === 'admin' || authUser.role === 'root') && (
+            <>
+              <button
+                onClick={() => setCurrentPage('performance')}
+                style={currentPage === 'performance' ? theme.navItemActive : theme.navItem}
+              >
+                <span style={styles.navIcon}>📈</span>
+                性能监控
+              </button>
+              <button
+                onClick={() => setCurrentPage('users')}
+                style={currentPage === 'users' ? theme.navItemActive : theme.navItem}
+              >
+                <span style={styles.navIcon}>👥</span>
+                用户管理
+              </button>
+            </>
+          )}
+        </nav>
+      </div>
+
+      {/* 右侧内容区域 */}
+      <div style={styles.content}>
+        {/* 全局状态栏 */}
+        <StatusBar
+          connected={connected}
+          wsLatency={wsLatency}
+          httpLatency={httpLatency}
+          darkMode={darkMode}
+          setDarkMode={setDarkMode}
+          totalBalance={totalBalance}
+          onBalanceRefresh={() => setBalanceRefreshKey(k => k + 1)}
+          portfolioGroups={portfolioGroups}
+          accountSummary={accountSummaryMap}
+          pinnedGroupId={pinnedGroupId}
+          onCreateGroup={() => setShowCreateGroupModal(true)}
+          onEditGroup={(id) => setEditingGroupId(id)}
+          onDeleteGroup={async (id) => {
+            if (!confirm('确定删除此分组？')) return
+            await apiFetch(`/api/portfolio-group/${id}`, { method: 'DELETE' })
+            if (pinnedGroupId === id) setPinnedGroupId(null)
+            setBalanceRefreshKey(k => k + 1)
+          }}
+          onPinGroup={async (id) => {
+            setPinnedGroupId(id)
+            await apiFetch('/api/portfolio-group/pin', {
+              method: 'PUT',
+              body: JSON.stringify({ group_id: id }),
+            })
+          }}
+          latencyLoading={latencyLoading}
+          onLatencyRefresh={async () => {
+            setLatencyLoading(true)
+            try {
+              const res = await apiFetch('/api/performance/latency', { method: 'POST' });
+              const data = await res.json();
+              if (data.data) {
+                const ws = data.data.ws || {};
+                const http = data.data.http || {};
+                setWsLatency({
+                  ws_market: ws.ws_market ?? "--",
+                  ws_user: ws.ws_user ?? "--",
+                  polygon_ws: ws.polygon_ws ?? "--",
+                  poly_rtds: ws.poly_rtds ?? "--",
+                  predexon: ws.predexon ?? "--",
+                });
+                setHttpLatency({
+                  data_api: http.data_api ?? "--",
+                  clob_api: http.clob_api ?? "--",
+                  gamma_api: http.gamma_api ?? "--",
+                  polygon_http: http.polygon_http ?? "--",
+                });
+              }
+            } catch (e) {
+              console.error('Failed to refresh latency', e);
+            } finally {
+              setLatencyLoading(false);
+            }
+          }}
+          username={authUser.username}
+          onLogout={handleLogout}
+          onChangePassword={() => setShowChangePwd(true)}
+        />
+
+        {/* 页面路由及渲染 */}
+        <div style={{ display: currentPage === 'account' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
+          <Account
+            darkMode={darkMode}
+            setDarkMode={setDarkMode}
+            visible={currentPage === 'account'}
+            refreshKey={balanceRefreshKey}
+            onPortfolioGroupsChange={setPortfolioGroups}
+            onAccountsLoaded={setAccountsList}
+          />
+        </div>
+        <div style={{ display: currentPage === 'copytrading' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
+          <CopyTrading darkMode={darkMode} visible={currentPage === 'copytrading'} />
+        </div>
+        <div style={{ display: currentPage === 'pnl' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
+          <PnL darkMode={darkMode} visible={currentPage === 'pnl'} accounts={accountsList} />
+        </div>
+        <div style={{ display: currentPage === 'users' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
+          <UserManagement darkMode={darkMode} currentRole={authUser.role} currentUserId={authUser.id} />
+        </div>
+        <div style={{ display: currentPage === 'performance' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
+          <PerformanceMonitor darkMode={darkMode} visible={currentPage === 'performance'} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const styles: Record<string, React.CSSProperties> = {
+  container: {
+    display: 'flex',
+    height: '100vh',
+    width: '100vw',
+    background: '#f8fafc',
+    overflow: 'visible'
+  },
+  containerDark: {
+    display: 'flex',
+    height: '100vh',
+    width: '100vw',
+    background: '#0f172a',
+    overflow: 'visible'
+  },
+  sidebar: {
+    width: '240px',
+    background: '#ffffff',
+    padding: '24px 0',
+    display: 'flex',
+    flexDirection: 'column',
+    borderRight: '1px solid #e2e8f0',
+    flexShrink: 0
+  },
+  sidebarDark: {
+    width: '240px',
+    background: '#1e293b',
+    padding: '24px 0',
+    display: 'flex',
+    flexDirection: 'column',
+    borderRight: '1px solid #334155',
+    flexShrink: 0
+  },
+  title: {
+    textAlign: 'center',
+    margin: '0 0 40px 0',
+    fontSize: '22px',
+    fontWeight: '700',
+    color: '#0f172a',
+    padding: '0 15px'
+  },
+  titleDark: {
+    textAlign: 'center',
+    margin: '0 0 40px 0',
+    fontSize: '22px',
+    fontWeight: '700',
+    color: '#f8fafc',
+    padding: '0 15px'
+  },
+  nav: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    padding: '0 16px'
+  },
+  navItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '12px 16px',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    fontSize: '15px',
+    color: '#64748b',
+    textAlign: 'left',
+    transition: 'all 0.2s'
+  },
+  navItemDark: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '12px 16px',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    fontSize: '15px',
+    color: '#94a3b8',
+    textAlign: 'left',
+    transition: 'all 0.2s'
+  },
+  navItemActive: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '12px 16px',
+    background: '#eff6ff',
+    border: 'none',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    fontSize: '15px',
+    color: '#2563eb',
+    fontWeight: 600,
+    textAlign: 'left',
+    transition: 'all 0.2s'
+  },
+  navItemActiveDark: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '12px 16px',
+    background: '#1e3a8a',
+    border: 'none',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    fontSize: '15px',
+    color: '#60a5fa',
+    fontWeight: 600,
+    textAlign: 'left',
+    transition: 'all 0.2s'
+  },
+  navIcon: {
+    fontSize: '18px'
+  },
+  content: {
+    flex: 1,
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+    position: 'relative'
+  }
+}
+
+export default App
