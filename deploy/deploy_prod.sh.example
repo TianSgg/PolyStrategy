@@ -5,13 +5,13 @@ set -euo pipefail
 #
 # Optional env:
 #   APP_DIR=/home/$USER/weathertaker
-#   BACKEND_PORT=9090
+#   BACKEND_PORT=9091
 #   PYTHON_BIN=python3.11
 #   VITE_API_BASE=        # empty means same-origin /api
 #   VITE_WS_BASE=         # empty means ws(s)://current-host
 
 APP_DIR="${APP_DIR:-$PWD}"
-BACKEND_PORT="${BACKEND_PORT:-9090}"
+BACKEND_PORT="${BACKEND_PORT:-9091}"
 MIN_PYTHON_VERSION="${MIN_PYTHON_VERSION:-3.11}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 NGINX_CONF="${NGINX_CONF:-/etc/nginx/weathertaker-nginx.conf}"

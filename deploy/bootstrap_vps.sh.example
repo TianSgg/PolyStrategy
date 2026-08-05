@@ -7,15 +7,15 @@ set -euo pipefail
 #   SERVER_NAME=example.com or your VPS IP
 # Optional env:
 #   APP_DIR=/home/$USER/weathertaker
-#   BACKEND_PORT=9090
-#   NGINX_LISTEN=8080
+#   BACKEND_PORT=9091
+#   NGINX_LISTEN=8081
 #   PYTHON_BIN=python3.11
 
 APP_DIR="${APP_DIR:-$PWD}"
 APP_USER="${APP_USER:-$(id -un)}"
 SERVER_NAME="${SERVER_NAME:?set SERVER_NAME to your domain or VPS IP}"
-BACKEND_PORT="${BACKEND_PORT:-9090}"
-NGINX_LISTEN="${NGINX_LISTEN:-8080}"
+BACKEND_PORT="${BACKEND_PORT:-9091}"
+NGINX_LISTEN="${NGINX_LISTEN:-8081}"
 MIN_PYTHON_VERSION="${MIN_PYTHON_VERSION:-3.11}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 
@@ -166,8 +166,8 @@ tmp_nginx="$(mktemp)"
 sed \
   -e "s#<USER>#$APP_USER#g" \
   -e "s#<SERVER_NAME>#$SERVER_NAME#g" \
-  -e "s#listen 8080;#listen $NGINX_LISTEN;#g" \
-  -e "s#127.0.0.1:9090#127.0.0.1:$BACKEND_PORT#g" \
+  -e "s#listen 8081;#listen $NGINX_LISTEN;#g" \
+  -e "s#127.0.0.1:9091#127.0.0.1:$BACKEND_PORT#g" \
   -e "s#/home/$APP_USER/weathertaker#$APP_DIR#g" \
   deploy/nginx.conf.example > "$tmp_nginx"
 sudo install -m 0644 "$tmp_nginx" "/etc/nginx/weathertaker.conf"
