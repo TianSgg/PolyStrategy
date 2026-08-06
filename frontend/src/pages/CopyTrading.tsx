@@ -163,7 +163,7 @@ const normalizePositionAsset = (asset: unknown): PositionAssetOption | null => {
 }
 
 export default function CopyTrading({ darkMode, visible }: Props) {
-  const { accountBalances, leaderBalances, refreshAllAccounts, refreshAllLeaders } = useBalance()
+  const { accountBalances, refreshAllAccounts } = useBalance()
   const [configs, setConfigs] = useState<CopyTradingConfig[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [leaders, setLeaders] = useState<Leader[]>([])
@@ -177,19 +177,15 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState<'configs' | 'leaders'>('configs')
 
-  const [loadingLeaderAddrs, setLoadingLeaderAddrs] = useState<Set<string>>(new Set())
 
-  // 配置卡片中的余额：从 context 派生
   const configBalances = useMemo(() => {
     const map: Record<string, { total: number; position: number } | null> = {}
     for (const c of configs) {
-      const lw = c.leader_proxy_wallet.toLowerCase()
       const fw = c.follower_proxy_wallet.toLowerCase()
-      if (leaderBalances[lw]) map[lw] = { total: leaderBalances[lw].total_balance, position: leaderBalances[lw].position_value }
       if (accountBalances[fw]) map[fw] = { total: accountBalances[fw].total_value, position: accountBalances[fw].total_position_value }
     }
     return map
-  }, [configs, leaderBalances, accountBalances])
+  }, [configs, accountBalances])
 
   // Leader 管理状态
   const [showAddLeaderForm, setShowAddLeaderForm] = useState(false)
@@ -371,18 +367,10 @@ export default function CopyTrading({ darkMode, visible }: Props) {
       leaderWallets.push(c.leader_proxy_wallet.toLowerCase())
       followerWallets.push(c.follower_proxy_wallet.toLowerCase())
     }
-    await Promise.all([
-      refreshAllLeaders([...new Set(leaderWallets)]),
-      refreshAllAccounts([...new Set(followerWallets)]),
-    ])
+    await refreshAllAccounts([...new Set(followerWallets)])
   }
 
-  const fetchLeaderBalances = async () => {
-    const wallets = leaders.map(l => l.proxy_wallet.toLowerCase())
-    setLoadingLeaderAddrs(new Set(wallets))
-    await refreshAllLeaders(wallets)
-    setLoadingLeaderAddrs(new Set())
-  }
+  const fetchLeaderBalances = async () => {}
 
   const handleAddConfig = async () => {
     setError('')
@@ -2285,20 +2273,8 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                               </button>
                             </div>
                           </div>
-                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>
-                            {loadingLeaderAddrs.has(leader.proxy_wallet.toLowerCase())
-                              ? '...'
-                              : leaderBalances[leader.proxy_wallet.toLowerCase()] != null
-                                ? `$${leaderBalances[leader.proxy_wallet.toLowerCase()].position_value.toFixed(2)}`
-                                : '-'}
-                          </span>
-                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>
-                            {loadingLeaderAddrs.has(leader.proxy_wallet.toLowerCase())
-                              ? '...'
-                              : leaderBalances[leader.proxy_wallet.toLowerCase()] != null
-                                ? `$${leaderBalances[leader.proxy_wallet.toLowerCase()].total_balance.toFixed(2)}`
-                                : '-'}
-                          </span>
+                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>-</span>
+                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>-</span>
                           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                             <button
                               onClick={() => { setEditingLeaderId(leader.id); setEditingLeaderName(leader.name) }}

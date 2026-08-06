@@ -24,14 +24,6 @@ interface AccountInfo {
   proxy_wallet: string
 }
 
-interface LeaderInfo {
-  id: number
-  name: string
-  proxy_wallet: string
-}
-
-type PnLTab = 'follower' | 'leader'
-
 interface PnLProps {
   darkMode: boolean
   visible: boolean
@@ -46,15 +38,11 @@ const ACCOUNT_COLORS = [
 const TOTAL_KEY = '__total__'
 
 export default function PnL({ darkMode, visible, accounts }: PnLProps) {
-  const [tab, setTab] = useState<PnLTab>('follower')
   const [range, setRange] = useState<TimeRange>('1D')
   const [records, setRecords] = useState<BalanceRecord[]>([])
-  const [leaderRecords, setLeaderRecords] = useState<BalanceRecord[]>([])
-  const [leaders, setLeaders] = useState<LeaderInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [tooltip, setTooltip] = useState<{ x: number; y: number; time: string; totalPnl: number; walletPnls: Record<string, number> } | null>(null)
-  const [selectedFollowers, setSelectedFollowers] = useState<Set<string>>(new Set([TOTAL_KEY]))
-  const [selectedLeaders, setSelectedLeaders] = useState<Set<string>>(new Set([TOTAL_KEY]))
+  const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set([TOTAL_KEY]))
   const [resizeKey, setResizeKey] = useState(0)
   const [adjustments, setAdjustments] = useState<Adjustment[]>([])
   const [adjModal, setAdjModal] = useState<{ wallet: string; time: string } | null>(null)
@@ -67,35 +55,21 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
   const totalPnlPointsRef = useRef<Map<string, number>>(new Map())
   const walletPnlPointsRef = useRef<Map<string, Map<string, number>>>(new Map())
 
-  // Active selection based on tab
-  const selectedAccounts = tab === 'follower' ? selectedFollowers : selectedLeaders
-  const setSelectedAccounts = tab === 'follower' ? setSelectedFollowers : setSelectedLeaders
-
-  // Active records based on tab
-  const activeRecords = tab === 'follower' ? records : leaderRecords
-
   const walletToName = useMemo(() => {
     const map: Record<string, string> = {}
-    if (tab === 'follower') {
-      for (const acc of accounts) {
-        map[acc.proxy_wallet] = acc.name
-      }
-    } else {
-      for (const l of leaders) {
-        map[l.proxy_wallet] = l.name
-      }
+    for (const acc of accounts) {
+      map[acc.proxy_wallet] = acc.name
     }
     return map
-  }, [accounts, leaders, tab])
+  }, [accounts])
 
   const walletToColor = useMemo(() => {
     const map: Record<string, string> = {}
-    const items = tab === 'follower' ? accounts : leaders
-    items.forEach((item, i) => {
+    accounts.forEach((item, i) => {
       map[item.proxy_wallet] = ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]
     })
     return map
-  }, [accounts, leaders, tab])
+  }, [accounts])
 
   const fetchHistory = useCallback(async (r: TimeRange) => {
     setLoading(true)
@@ -112,32 +86,6 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
     }
   }, [])
 
-  const fetchLeaderHistory = useCallback(async (r: TimeRange) => {
-    setLoading(true)
-    try {
-      const res = await apiFetch(`/api/pnl/leader-history?range=${r}`)
-      if (res.ok) {
-        const data = await res.json()
-        setLeaderRecords(data.records || [])
-      }
-    } catch (e) {
-      console.error('[PnL] fetch leader error', e)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const fetchLeaders = useCallback(async () => {
-    try {
-      const res = await apiFetch('/api/leaders')
-      if (res.ok) {
-        const data = await res.json()
-        setLeaders((data.leaders || []).map((l: any) => ({ id: l.id, name: l.name, proxy_wallet: l.proxy_wallet })))
-      }
-    } catch (e) {
-      console.error('[PnL] fetch leaders error', e)
-    }
-  }, [])
 
   const fetchAdjustments = useCallback(async () => {
     try {
@@ -153,15 +101,10 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
 
   useEffect(() => {
     if (visible) {
-      if (tab === 'follower') {
-        fetchHistory(range)
-        fetchAdjustments()
-      } else {
-        fetchLeaderHistory(range)
-        fetchLeaders()
-      }
+      fetchHistory(range)
+      fetchAdjustments()
     }
-  }, [visible, range, tab, fetchHistory, fetchLeaderHistory, fetchLeaders, fetchAdjustments])
+  }, [visible, range, fetchHistory, fetchAdjustments])
 
   useEffect(() => {
     if (!visible) return
@@ -173,8 +116,6 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
         const msg = JSON.parse(event.data)
         if (msg.event_type === 'balance_update' && Array.isArray(msg.data)) {
           setRecords(prev => [...prev, ...msg.data])
-        } else if (msg.event_type === 'leader_balance_update' && Array.isArray(msg.data)) {
-          setLeaderRecords(prev => [...prev, ...msg.data])
         }
       } catch { /* ignore */ }
     }
@@ -188,15 +129,12 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
   const { chartLines, pnl, walletPnls } = useMemo(() => {
     const cutoff = new Date(Date.now() - RANGE_MS[range]).toISOString()
 
-    // Adjustments only apply to follower tab
     const adjByWallet = new Map<string, { applied_at: string; delta: number }[]>()
-    if (tab === 'follower') {
-      for (const adj of adjustments) {
-        if (!adjByWallet.has(adj.proxy_wallet)) adjByWallet.set(adj.proxy_wallet, [])
-        adjByWallet.get(adj.proxy_wallet)!.push({ applied_at: adj.applied_at, delta: adj.delta })
-      }
-      for (const arr of adjByWallet.values()) arr.sort((a, b) => a.applied_at.localeCompare(b.applied_at))
+    for (const adj of adjustments) {
+      if (!adjByWallet.has(adj.proxy_wallet)) adjByWallet.set(adj.proxy_wallet, [])
+      adjByWallet.get(adj.proxy_wallet)!.push({ applied_at: adj.applied_at, delta: adj.delta })
     }
+    for (const arr of adjByWallet.values()) arr.sort((a, b) => a.applied_at.localeCompare(b.applied_at))
 
     const getCumulativeDelta = (wallet: string, time: string): number => {
       const adjs = adjByWallet.get(wallet)
@@ -212,7 +150,7 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
     const walletTimeMaps = new Map<string, Map<string, number>>()
     const allTimes = new Set<string>()
 
-    for (const r of activeRecords) {
+    for (const r of records) {
       if (r.created_at < cutoff) continue
       const adjusted = r.total_value - getCumulativeDelta(r.proxy_wallet, r.created_at)
       if (!walletTimeMaps.has(r.proxy_wallet)) walletTimeMaps.set(r.proxy_wallet, new Map())
@@ -296,7 +234,7 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
     }
 
     return { chartLines: lines, pnl: totalPnl, walletPnls: wPnls }
-  }, [activeRecords, range, selectedAccounts, adjustments, tab])
+  }, [records, range, selectedAccounts, adjustments])
 
   const timePoints = useMemo(() => {
     const set = new Set<string>()
@@ -470,7 +408,6 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
   }, [])
 
   const handleChartClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (tab !== 'follower') return
     const canvas = chartRef.current
     const layout = chartLayoutRef.current
     if (!canvas || !layout || timePoints.length < 2) return
@@ -488,7 +425,7 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
     setAdjModal({ wallet: '', time: clickedTime })
     setAdjDelta('')
     setAdjNote('')
-  }, [timePoints, tab])
+  }, [timePoints])
 
   const handleAdjSubmit = async () => {
     if (!adjModal || !adjModal.wallet || !adjDelta) return
@@ -521,18 +458,14 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
 
   const availableWallets = useMemo(() => {
     const set = new Set<string>()
-    for (const r of activeRecords) set.add(r.proxy_wallet)
+    for (const r of records) set.add(r.proxy_wallet)
     return Array.from(set)
-  }, [activeRecords])
+  }, [records])
 
   return (
     <div className={`pnl-container ${darkMode ? 'dark' : ''}`}>
       <div className="pnl-header">
         <div className="pnl-summary">
-          <div className="pnl-tab-switcher">
-            <button className={`pnl-tab-btn ${tab === 'follower' ? 'active' : ''}`} onClick={() => setTab('follower')}>账户</button>
-            <button className={`pnl-tab-btn ${tab === 'leader' ? 'active' : ''}`} onClick={() => setTab('leader')}>Leader</button>
-          </div>
           <span className="pnl-label">Total PnL</span>
           {(() => {
             const displayPnl = tooltip ? tooltip.totalPnl : pnl
@@ -631,7 +564,7 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
       </div>
 
       {/* Adjustment modal (follower only) */}
-      {tab === 'follower' && adjModal && (
+      {adjModal && (
         <div className="pnl-adj-overlay" onClick={() => setAdjModal(null)}>
           <div className="pnl-adj-modal" onClick={e => e.stopPropagation()}>
             <div className="pnl-adj-title">添加余额调整</div>
@@ -664,7 +597,7 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
       )}
 
       {/* Adjustments list (follower only) */}
-      {tab === 'follower' && adjustments.length > 0 && (
+      {adjustments.length > 0 && (
         <div className="pnl-adj-list">
           <div className="pnl-adj-list-title">余额调整记录</div>
           {adjustments.map(adj => (
