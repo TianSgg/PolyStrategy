@@ -83,7 +83,6 @@ from auth.service import AUTH_COOKIE_NAME, get_auth_service
 from copy_trading.api import router as copy_trading_router
 from copy_trading.chain import get_copy_trading_chain_monitor
 from copy_trading.predexon import get_copy_trading_predexon
-from copy_trading.rtds import get_copy_trading_rtds
 from copy_trading.service import get_copy_trading_service
 from copy_trading.ws import CopyTradingWS, add_copy_trading_ws, stop_all_copy_trading_ws
 from leader.api import router as leader_router
@@ -101,9 +100,6 @@ async def lifespan(app: FastAPI):
     run_auth_migrations()
 
     if _env == "prod":
-        copy_trading_rtds = get_copy_trading_rtds()
-        copy_trading_rtds_task = asyncio.create_task(copy_trading_rtds.start())
-
         chain_monitor = get_copy_trading_chain_monitor()
         copy_trading_predexon = get_copy_trading_predexon()
         ct_service = get_copy_trading_service()
@@ -140,8 +136,6 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         if _env == "prod":
-            copy_trading_rtds_task.cancel()
-            await copy_trading_rtds.stop()
             copy_trading_predexon.stop()
             copy_trading_predexon_task.cancel()
             chain_monitor.stop()

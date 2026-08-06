@@ -27,7 +27,6 @@ class PerformanceService:
             "ws_market": "--",
             "ws_user": "--",
             "polygon_ws": "--",
-            "poly_rtds": "--",
             "predexon": "--",
         }
         self.http_latency: Dict[str, str] = {
@@ -97,17 +96,7 @@ class PerformanceService:
             logger.debug(f"[Performance] polygon_ws error: {e}")
             self.ws_latencies["polygon_ws"] = "--"
 
-        # 4. poly_rtds - CopyTradingRTDS
-        try:
-            from copy_trading.rtds import get_copy_trading_rtds
-            rtds = get_copy_trading_rtds()
-            latency = await rtds.check_latency()
-            self.ws_latencies["poly_rtds"] = str(latency)
-        except Exception as e:
-            logger.debug(f"[Performance] poly_rtds error: {e}")
-            self.ws_latencies["poly_rtds"] = "--"
-
-        # 5. predexon - CopyTradingPredexon
+        # 4. predexon - CopyTradingPredexon
         try:
             from copy_trading.predexon import get_copy_trading_predexon
             predexon = get_copy_trading_predexon()
