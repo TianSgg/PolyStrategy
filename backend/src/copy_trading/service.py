@@ -115,8 +115,6 @@ class CopyTradingService:
         # 账户级别的锁，用于 follower 持仓、pending 和下单状态的统一互斥
         self._addr_locks: Dict[str, asyncio.Lock] = {}
 
-        # auto merge 防重入锁: "{f_addr}_{condition_id}"
-        self._merging_locks: Set[str] = set()
 
         # asset question 查询去重：{asset_id: asyncio.Event} 防止同一 asset 并发多次查询
         self._asset_fetch_events: Dict[str, asyncio.Event] = {}
@@ -388,10 +386,8 @@ class CopyTradingService:
         logger.info(f"[PositionHistory] Position history poller started ({interval}s interval)")
 
     def _start_follower_position_poller(self, interval=3600):
-        """启动 follower 仓位轮询兜底同步（WS CONFIRMED 事件的补充），每 5 轮触发一次 auto merge"""
+        """启动 follower 仓位轮询兜底同步（WS CONFIRMED 事件的补充）"""
         async def _poll():
-            cycle_count = 0
-            # 启动时立即同步一次
             for f_addr in list(self._followers):
                 try:
                     await self._sync_follower_positions_from_poly(f_addr)
@@ -404,12 +400,9 @@ class CopyTradingService:
                         await self._sync_follower_positions_from_poly(f_addr)
                     except Exception as e:
                         logger.warning(f"[PositionPoller] Follower poller sync error for {self._account_service.get_acc_name(f_addr)}: {e}")
-                cycle_count += 1
-                if cycle_count % 5 == 0:
-                    asyncio.create_task(self._run_auto_merge_cycle())
 
         self._follower_poller_task = asyncio.create_task(_poll())
-        logger.info(f"[PositionPoller] Follower position poller started ({interval}s interval, auto merge every 5 cycles)")
+        logger.info(f"[PositionPoller] Follower position poller started ({interval}s interval)")
 
     def _start_leader_position_poller(self, interval=3600):
         """启动 leader 持仓轮询兜底（convert 事件遗漏时的补充）"""
@@ -1685,76 +1678,6 @@ class CopyTradingService:
 
         logger.info(f"[CopyTrade] Trade CONFIRMED: {side:>4} {matched_amount:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:10]} (new_pos={new_size:>7.2f}, new_pending={new_pending:>7.2f})")
 
-    async def _run_auto_merge_cycle(self):
-        """一轮 auto merge：遍历开启 auto_merge 的 follower，查找互补仓位并执行 merge"""
-        merge_configs: Dict[str, CopyTradingConfig] = {}
-        for config in self._config_id_to_config.values():
-            if config.enabled and config.auto_merge_enabled:
-                merge_configs.setdefault(config.follower_proxy_wallet, config)
-
-        if not merge_configs:
-            return
-
-        market_service = get_market_service()
-        did_merge = False
-
-        for f_addr, config in merge_configs.items():
-            try:
-                positions = self._follower_positions.get(f_addr, {})
-                if not positions:
-                    continue
-
-                merged_conditions: Set[str] = set()
-                for asset_id, pos in list(positions.items()):
-                    if pos < config.auto_merge_threshold:
-                        continue
-                    pair = await market_service.get_condition_and_pair(asset_id)
-                    if not pair:
-                        continue
-                    condition_id, opposite_asset_id = pair
-                    if condition_id in merged_conditions:
-                        continue
-
-                    pos_b = positions.get(opposite_asset_id, 0)
-                    merge_amount = min(pos, pos_b)
-                    if merge_amount < config.auto_merge_threshold:
-                        continue
-
-                    lock_key = f"{f_addr}_{condition_id}"
-                    if lock_key in self._merging_locks:
-                        continue
-                    self._merging_locks.add(lock_key)
-                    try:
-                        client = await self._account_service.get_secure_client(f_addr)
-                        if not client:
-                            logger.warning(f"[AutoMerge] No SecureClient for {self._account_service.get_acc_name(f_addr)}, skip")
-                            continue
-
-                        logger.info(f"[AutoMerge] Executing merge: {self._account_service.get_acc_name(f_addr)} condition={condition_id[:10]} amount={merge_amount:.2f}")
-                        handle = await client.merge_positions(
-                            condition_id=condition_id,
-                            amount='max',
-                        )
-                        outcome = await handle.wait()
-                        logger.info(f"[AutoMerge] Merge confirmed: tx={outcome.transaction_hash}")
-                        merged_conditions.add(condition_id)
-                        did_merge = True
-
-                        logger.info(f"[AutoMerge] OK {self._account_service.get_acc_name(f_addr)} condition={condition_id[:10]} amount={merge_amount:.2f}")
-                    except Exception as e:
-                        logger.error(f"[AutoMerge] Failed for {self._account_service.get_acc_name(f_addr)} condition={condition_id[:10]}: {e}")
-                    finally:
-                        self._merging_locks.discard(lock_key)
-            except Exception as e:
-                logger.error(f"[AutoMerge] Error processing {self._account_service.get_acc_name(f_addr)}: {e}")
-
-        if did_merge:
-            await asyncio.sleep(10)
-            for f_addr in merge_configs:
-                try:
-                    await self._sync_follower_positions_from_poly(f_addr)
-                except Exception as e:
-                    logger.warning(f"[AutoMerge] Post-merge sync error for {self._account_service.get_acc_name(f_addr)}: {e}")
 
     async def _sync_follower_positions_from_poly(self, follower_addr: str, delay: int = 0) -> int:
         """从 Polymarket API 拉取 follower 实际持仓，用真实数据覆盖程序记录"""
@@ -1939,10 +1862,6 @@ class CopyTradingService:
                     config.buy_follow_taker = bool(kwargs["buy_follow_taker"])
                 if "sell_follow_taker" in kwargs:
                     config.sell_follow_taker = bool(kwargs["sell_follow_taker"])
-                if "auto_merge_enabled" in kwargs:
-                    config.auto_merge_enabled = bool(kwargs["auto_merge_enabled"])
-                if "auto_merge_threshold" in kwargs:
-                    config.auto_merge_threshold = float(kwargs["auto_merge_threshold"])
                 if "buy_only" in kwargs:
                     config.buy_only = bool(kwargs["buy_only"])
                 if "buy_price_min" in kwargs:

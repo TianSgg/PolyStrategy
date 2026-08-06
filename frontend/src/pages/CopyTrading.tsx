@@ -23,8 +23,6 @@ interface CopyTradingConfig {
   sell_exceed_thr: boolean
   buy_follow_taker: boolean
   sell_follow_taker: boolean
-  auto_merge_enabled: boolean
-  auto_merge_threshold: number
   buy_only: boolean
   buy_price_min: number
   buy_price_max: number
@@ -723,25 +721,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     }
   }
 
-  const handleToggleAutoMerge = async (config: CopyTradingConfig) => {
-    const newVal = !config.auto_merge_enabled
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${config.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ auto_merge_enabled: newVal })
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || '更新失败')
-      }
-      setConfigs(prev => prev.map(c =>
-        c.id === config.id ? { ...c, auto_merge_enabled: newVal } : c
-      ))
-    } catch (e: any) {
-      toast(e.message || 'Failed to toggle auto_merge')
-    }
-  }
 
   const handleToggleBuyOnly = async (config: CopyTradingConfig) => {
     const newVal = !config.buy_only
@@ -763,39 +742,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     }
   }
 
-  const [editingMergeThresholdId, setEditingMergeThresholdId] = useState<number | null>(null)
-  const [editingMergeThresholdValue, setEditingMergeThresholdValue] = useState('')
-
-  const handleMergeThresholdClick = (config: CopyTradingConfig) => {
-    setEditingMergeThresholdId(config.id)
-    setEditingMergeThresholdValue(String(config.auto_merge_threshold ?? 100))
-  }
-
-  const handleMergeThresholdSave = async () => {
-    if (editingMergeThresholdId == null) return
-    const val = parseFloat(editingMergeThresholdValue)
-    if (isNaN(val) || val < 1) {
-      toast('阈值必须 >= 1')
-      return
-    }
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${editingMergeThresholdId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ auto_merge_threshold: val })
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || '更新失败')
-      }
-      setConfigs(prev => prev.map(c =>
-        c.id === editingMergeThresholdId ? { ...c, auto_merge_threshold: val } : c
-      ))
-      setEditingMergeThresholdId(null)
-    } catch (e: any) {
-      toast(e.message || 'Failed to update threshold')
-    }
-  }
 
   const handlePriceClick = (config: CopyTradingConfig, side: 'buy' | 'sell') => {
     setEditingPriceConfigId(config.id)
@@ -1803,51 +1749,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                                   <button onClick={handleFilterCancel} className="btn-cancel">✕</button>
                                 </div>
                               </div>
-                            )}
-                          </span>
-                          <span className="meta-item price-anchor">
-                            Merge:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleToggleAutoMerge(config)}
-                              title="点击切换：是否开启自动 merge"
-                              style={{ color: config.auto_merge_enabled ? '#4caf50' : '#e57373' }}
-                            >
-                              {config.auto_merge_enabled ? '开' : '关'}
-                            </strong>
-                            {config.auto_merge_enabled && (
-                              <>
-                                {' '}阈值:{' '}
-                                <strong
-                                  className="ratio-text"
-                                  onClick={() => handleMergeThresholdClick(config)}
-                                  title="点击修改 merge 阈值"
-                                >
-                                  {config.auto_merge_threshold}
-                                </strong>
-                                {editingMergeThresholdId === config.id && (
-                                  <div className="price-popover">
-                                    <div className="price-popover-row">
-                                      <input
-                                        type="number"
-                                        step="1"
-                                        min="1"
-                                        value={editingMergeThresholdValue}
-                                        onChange={e => setEditingMergeThresholdValue(e.target.value)}
-                                        onKeyDown={e => {
-                                          if (e.key === 'Enter') handleMergeThresholdSave()
-                                          if (e.key === 'Escape') setEditingMergeThresholdId(null)
-                                        }}
-                                        autoFocus
-                                      />
-                                    </div>
-                                    <div className="price-popover-actions">
-                                      <button onClick={handleMergeThresholdSave} className="btn-save">✓</button>
-                                      <button onClick={() => setEditingMergeThresholdId(null)} className="btn-cancel">✕</button>
-                                    </div>
-                                  </div>
-                                )}
-                              </>
                             )}
                           </span>
                           <span className="meta-item">

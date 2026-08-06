@@ -46,8 +46,6 @@ class UpdateConfigRequest(BaseModel):
     sell_exceed_thr: Optional[bool] = None
     buy_follow_taker: Optional[bool] = None
     sell_follow_taker: Optional[bool] = None
-    auto_merge_enabled: Optional[bool] = None
-    auto_merge_threshold: Optional[float] = None
     buy_only: Optional[bool] = None
     buy_price_min: Optional[float] = None
     buy_price_max: Optional[float] = None
@@ -138,8 +136,6 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
             "sell_exceed_thr": c.sell_exceed_thr,
             "buy_follow_taker": c.buy_follow_taker,
             "sell_follow_taker": c.sell_follow_taker,
-            "auto_merge_enabled": c.auto_merge_enabled,
-            "auto_merge_threshold": c.auto_merge_threshold,
             "buy_only": c.buy_only,
             "buy_price_min": c.buy_price_min,
             "buy_price_max": c.buy_price_max,
@@ -175,8 +171,6 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
         "sell_exceed_thr": config.sell_exceed_thr,
         "buy_follow_taker": config.buy_follow_taker,
         "sell_follow_taker": config.sell_follow_taker,
-        "auto_merge_enabled": config.auto_merge_enabled,
-        "auto_merge_threshold": config.auto_merge_threshold,
         "buy_only": config.buy_only,
         "buy_price_min": config.buy_price_min,
         "buy_price_max": config.buy_price_max,
@@ -223,17 +217,6 @@ async def update_config(config_id: int, data: UpdateConfigRequest, current_user:
         kwargs["buy_follow_taker"] = data.buy_follow_taker
     if data.sell_follow_taker is not None:
         kwargs["sell_follow_taker"] = data.sell_follow_taker
-    if data.auto_merge_enabled is not None:
-        if data.auto_merge_enabled:
-            config = service.get_config_by_id(config_id)
-            account = get_account_service().get_account_by_proxy_wallet(config.follower_proxy_wallet)
-            if not account or not account.get("relayer_api_key"):
-                raise HTTPException(status_code=400, detail="请先配置 Relayer API Key 才能开启自动 Merge")
-        kwargs["auto_merge_enabled"] = data.auto_merge_enabled
-    if data.auto_merge_threshold is not None:
-        if data.auto_merge_threshold < 1:
-            raise HTTPException(status_code=400, detail="auto_merge_threshold must be >= 1")
-        kwargs["auto_merge_threshold"] = data.auto_merge_threshold
     if data.buy_only is not None:
         kwargs["buy_only"] = data.buy_only
     if data.buy_price_min is not None:

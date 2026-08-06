@@ -32,8 +32,6 @@ class CopyTradingConfig:
     sell_exceed_thr: bool = DEFAULT_EXCEED_THR
     buy_follow_taker: bool = True
     sell_follow_taker: bool = True
-    auto_merge_enabled: bool = False
-    auto_merge_threshold: float = 100.0
     buy_only: bool = False
     buy_price_min: float = DEFAULT_BUY_PRICE_MIN
     buy_price_max: float = DEFAULT_BUY_PRICE_MAX

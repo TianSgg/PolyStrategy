@@ -76,8 +76,6 @@ CREATE TABLE IF NOT EXISTS copy_trading_configs (
   sell_exceed_thr TINYINT(1) NOT NULL DEFAULT 1 COMMENT '超过阈值时SELL是否挂单',
   buy_follow_taker TINYINT(1) NOT NULL DEFAULT 1 COMMENT '买入是否跟随leader的taker行为',
   sell_follow_taker TINYINT(1) NOT NULL DEFAULT 1 COMMENT '卖出是否跟随leader的taker行为',
-  auto_merge_enabled TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否开启自动 merge',
-  auto_merge_threshold DECIMAL(20, 4) NOT NULL DEFAULT 100.0000 COMMENT '双边持仓超过此阈值时触发 merge（份额数）',
   buy_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'buy only 模式：leader SELL 时转为 BUY 反向 token',
   buy_price_filter_min DECIMAL(10,4) DEFAULT 0.001 COMMENT 'BUY信号价格过滤下限',
   buy_price_filter_max DECIMAL(10,4) DEFAULT 0.998 COMMENT 'BUY信号价格过滤上限',
