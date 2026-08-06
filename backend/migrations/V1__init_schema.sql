@@ -130,8 +130,6 @@ CREATE TABLE IF NOT EXISTS copy_trading_orders (
   follow_price DECIMAL(20,4) NOT NULL COMMENT 'follower 成交价（含tick调整）',
   size_matched DECIMAL(20,4) NOT NULL DEFAULT 0 COMMENT '已成交数量',
   status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING / FILLED / CANCELLED / ERROR',
-  leader_role VARCHAR(10) DEFAULT NULL COMMENT 'leader 角色: maker/taker',
-  follower_role VARCHAR(10) DEFAULT NULL COMMENT 'follower 角色: maker/taker',
   err_msg VARCHAR(255) COMMENT '错误信息',
   created_at DATETIME(3) NOT NULL,
   updated_at DATETIME(3) NOT NULL,

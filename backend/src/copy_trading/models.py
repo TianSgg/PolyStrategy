@@ -346,8 +346,6 @@ def record_copy_trading_order(
     size_matched: float,
     status: str,
     err_msg: Optional[str] = None,
-    leader_role: Optional[str] = None,
-    follower_role: Optional[str] = None,
     created_at: Optional[Any] = None,
     updated_at: Optional[Any] = None
 ) -> str:
@@ -362,11 +360,10 @@ def record_copy_trading_order(
             INSERT INTO copy_trading_orders
             (id, config_id, leader, follower, leader_tx_hash, asset_id, side,
              leader_size, leader_price, follow_size, follow_price, size_matched, status, err_msg,
-             leader_role, follower_role, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (order_id, config_id, leader.lower(), follower.lower(), leader_tx_hash, asset_id, side,
               leader_size, leader_price, follow_size, follow_price, size_matched, status, err_msg,
-              leader_role, follower_role,
               created_dt, updated_dt))
         conn.commit()
         return order_id
@@ -410,7 +407,7 @@ def get_orders_by_config_id(config_id: int, limit: int = 100, offset: int = 0) -
         cursor.execute("""
             SELECT id, config_id, leader, follower, leader_tx_hash, asset_id, side,
                    leader_size, leader_price, follow_size, follow_price, size_matched, status,
-                   leader_role, follower_role, created_at, updated_at
+                   created_at, updated_at
             FROM copy_trading_orders
             WHERE config_id = %s
             ORDER BY created_at DESC
@@ -422,8 +419,7 @@ def get_orders_by_config_id(config_id: int, limit: int = 100, offset: int = 0) -
             leader_size=float(row[7]), leader_price=float(row[8]),
             follow_size=float(row[9]), follow_price=float(row[10]),
             size_matched=float(row[11]), status=row[12],
-            leader_role=row[13], follower_role=row[14],
-            created_at=format_utc8(row[15]), updated_at=format_utc8(row[16])
+            created_at=format_utc8(row[13]), updated_at=format_utc8(row[14])
         ) for row in cursor.fetchall()]
     finally:
         conn.close()
@@ -436,7 +432,7 @@ def get_orders_by_config_and_asset(config_id: int, asset_id: str, limit: int = 5
     try:
         sql = """
             SELECT side, follow_size, follow_price, size_matched, status, created_at, leader_size, leader_price,
-                   leader_role, follower_role, err_msg
+                   err_msg
             FROM copy_trading_orders
             WHERE config_id = %s AND asset_id = %s
         """
@@ -460,9 +456,7 @@ def get_orders_by_config_and_asset(config_id: int, asset_id: str, limit: int = 5
                 "created_at": format_utc8(row[5]),
                 "leader_size": float(row[6]),
                 "leader_price": float(row[7]),
-                "leader_role": row[8],
-                "follower_role": row[9],
-                "err_msg": row[10],
+                "err_msg": row[8],
             }
             for row in cursor.fetchall()
         ]
@@ -478,7 +472,7 @@ def get_order_by_id(order_id: str) -> Optional[CopyTradingOrder]:
         cursor.execute("""
             SELECT id, config_id, leader, follower, leader_tx_hash, asset_id, side,
                    leader_size, leader_price, follow_size, follow_price, size_matched, status,
-                   leader_role, follower_role, created_at, updated_at
+                   created_at, updated_at
             FROM copy_trading_orders
             WHERE id = %s
         """, (order_id,))
@@ -490,8 +484,7 @@ def get_order_by_id(order_id: str) -> Optional[CopyTradingOrder]:
                 leader_size=float(row[7]), leader_price=float(row[8]),
                 follow_size=float(row[9]), follow_price=float(row[10]),
                 size_matched=float(row[11]), status=row[12],
-                leader_role=row[13], follower_role=row[14],
-                created_at=format_utc8(row[15]), updated_at=format_utc8(row[16])
+                created_at=format_utc8(row[13]), updated_at=format_utc8(row[14])
             )
         return None
     finally:

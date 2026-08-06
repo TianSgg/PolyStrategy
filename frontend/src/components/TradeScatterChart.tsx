@@ -12,8 +12,6 @@ export interface Trade {
   createdAtMs: number
   leader_size: number
   leader_price: number
-  leader_role?: string
-  follower_role?: string
   err_msg?: string
 }
 
@@ -157,8 +155,7 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
       html += `<div><span style="color:${leaderColor}">L</span> ${trade.leader_size.toFixed(2)} @ ${trade.leader_price.toFixed(4)}</div>`
     }
     html += `<div><span style="color:${followerColor}">F</span> ${trade.size.toFixed(2)} @ ${trade.price.toFixed(4)}</div>`
-    const roleInfo = [trade.leader_role ? `L:${trade.leader_role}` : '', trade.follower_role ? `F:${trade.follower_role}` : ''].filter(Boolean).join(' ')
-    html += `<div style="opacity:0.7">成交 ${trade.size_matched.toFixed(2)} · ${trade.status}${roleInfo ? ' · ' + roleInfo : ''}</div>`
+    html += `<div style="opacity:0.7">成交 ${trade.size_matched.toFixed(2)} · ${trade.status}</div>`
     if (trade.err_msg) {
       html += `<div style="opacity:0.6;font-size:11px;color:#f59e0b">${trade.err_msg}</div>`
     }

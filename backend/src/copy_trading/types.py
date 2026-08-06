@@ -78,7 +78,5 @@ class CopyTradingOrder:
     follow_price: float
     size_matched: float
     status: str
-    leader_role: Optional[str]
-    follower_role: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
