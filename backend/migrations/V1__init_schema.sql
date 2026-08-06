@@ -200,18 +200,6 @@ CREATE TABLE IF NOT EXISTS copy_trading_follower_pending_buy (
 );
 
 -- ============================================================
--- 跟单份额债务缓冲（Share Debt Buffer）
--- ============================================================
-CREATE TABLE IF NOT EXISTS copy_trading_share_debt (
-  follower_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Follower 代理钱包地址',
-  asset_id VARCHAR(128) NOT NULL COMMENT '资产 ID',
-  side VARCHAR(10) NOT NULL COMMENT 'BUY 或 SELL',
-  debt DOUBLE NOT NULL DEFAULT 0 COMMENT '债务值，负值表示预支',
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  PRIMARY KEY (follower_proxy_wallet, asset_id, side)
-);
-
--- ============================================================
 -- 账户余额历史表
 -- ============================================================
 CREATE TABLE IF NOT EXISTS copy_trading_account_balance_history (

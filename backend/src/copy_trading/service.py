@@ -37,8 +37,6 @@ from .models import (
     upsert_follower_pending_buy,
     batch_upsert_follower_pending_sell,
     batch_upsert_follower_pending_buy,
-    upsert_share_debt,
-    get_all_share_debts,
     record_position_history,
     batch_upsert_config_asset,
     get_position_history_from_db,
@@ -83,11 +81,6 @@ class CopyTradingService:
         # 单个 order_id 当前未成交数量，用于处理 WS 重复/增量 PLACEMENT。
         self._order_pending_sizes: Dict[str, float] = {}
 
-        # 跟单份额债务缓冲: {follower_addr: {asset_id: share_debt}}
-        self._buy_debt: Dict[str, Dict[str, float]] = {}
-
-        # SELL 份额债务缓冲: {follower_addr: {asset_id: sell_debt}}
-        self._sell_debt: Dict[str, Dict[str, float]] = {}
 
         # 已处理的 transaction_hash 集合（按 leader 地址 + tx_hash 去重）
         self._processed_txs: Set[str] = set()
@@ -419,7 +412,6 @@ class CopyTradingService:
         """启动时加载配置，各 poller 自行初始化同步"""
         # await self.market_service.start()
         await self._load_configs()
-        await self._load_debts()
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
         self._start_position_history_poller(interval=120)
@@ -442,16 +434,6 @@ class CopyTradingService:
 
         logger.info(f"[CopyTrade] Loaded {len(self._leader_addr_to_configs)} leaders, {len(self._followers)} followers")
 
-    async def _load_debts(self):
-        """从 DB 加载债务到内存（async，供 initialize 调用）"""
-        for f_addr in self._followers:
-            buy_debts = await asyncio.to_thread(get_all_share_debts, f_addr, "BUY")
-            if buy_debts:
-                self._buy_debt.setdefault(f_addr, {}).update(buy_debts)
-            sell_debts = await asyncio.to_thread(get_all_share_debts, f_addr, "SELL")
-            if sell_debts:
-                self._sell_debt.setdefault(f_addr, {}).update(sell_debts)
-        logger.info(f"[CopyTrade] Loaded debts for {len(self._followers)} followers")
 
     async def process_signal(self, payload: dict):
         """处理 RTDS activity 信号（异步）"""
@@ -543,8 +525,6 @@ class CopyTradingService:
         async with self._get_addr_lock(f_addr):
             leader_price = signal.price
 
-            debt = self._buy_debt.setdefault(f_addr, {}).get(asset_id, 0.0)
-            debt_before = debt
             y = math.floor(signal.size * config.share_ratio * 100) / 100
             follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
             leader_name = self._leader_service.get_leader_name(config.leader_proxy_wallet)
@@ -590,40 +570,14 @@ class CopyTradingService:
             follow_price, follower_role = price_role
             follow_price = max(config.buy_price_min, min(follow_price, config.buy_price_max))
             min_size = self._min_order_size("BUY", follow_price, follower_role)
-            follow_buy_size = 0
-            debt_exist = False
-
-            if debt < 0:
-                debt += y
-                if debt < 0:
-                    debt_exist = True
-                else:
-                    follow_buy_size = max(debt, min_size)
-            else:
-                debt += y
-                follow_buy_size = max(y, min_size)
+            follow_buy_size = max(y, min_size)
 
             logger.info(f"""
 {'='*50}
 [{signal.source}] 🔔 BUY {self._asset_label(asset_id)}
   leader  : {leader_name:<20}{signal.size:>7.2f} @ {leader_price:<6}    [{signal.role or ("taker" if tick_size and self._is_taker_price(leader_price, tick_size) else "maker")}]
   follower: {follower_name:<20}{follow_buy_size:>7.2f} @ {follow_price:<6}    [{follower_role}]
-  debt_before={debt_before:>5.2f} debt_after={debt:>5.2f} y={y:.2f} min_size={min_size:.2f}
 {'='*50}""")
-
-            if debt_exist:
-                reason = "debt not cleared"
-                logger.warning(f"[CopyTrade] BUY skipped ({reason})")
-                self._buy_debt.setdefault(f_addr, {})[asset_id] = debt
-                await asyncio.to_thread(upsert_share_debt, f_addr, asset_id, "BUY", debt)
-                self._record_and_notify_order_result(
-                    config=config,
-                    signal=signal,
-                    follow_price=follow_price,
-                    result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=follow_price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                    follower_name=follower_name,
-                )
-                return
 
             # allowance 只要大于0就可以下单，允许误差
             if config.allowance <= 0:
@@ -652,12 +606,6 @@ class CopyTradingService:
                 f"status={result.raw_status}"
             )
             self._register_post_order_result(config, result)
-
-            # 更新债务
-            debt -= result.size
-            self._buy_debt.setdefault(f_addr, {})[asset_id] = debt
-            await asyncio.to_thread(upsert_share_debt, f_addr, asset_id, "BUY", debt)
-            logger.info(f"[CopyTrade] BUY debt updated: {self._asset_label(asset_id)} debt={debt:+.2f} result.size={result.size}")
 
             # 统一从 deltas 计算并更新状态
             new_pending = self._pending_buy_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
@@ -745,26 +693,10 @@ class CopyTradingService:
             follow_price, follower_role = price_role
             follow_price = max(config.sell_price_min, min(follow_price, config.sell_price_max))
 
-            # SELL 前置缓冲
-            debt = self._sell_debt.setdefault(f_addr, {}).get(asset_id, 0.0)
-            debt_before = debt
             ratio = signal.size / old_leader_pos
             y = math.floor(ratio * available_pos * 100) / 100
             min_size = self._min_order_size("SELL", follow_price, follower_role)
-            follow_sell_size = 0
-            debt_exist = False
-
-            if debt < 0:
-                # 有预支债务（之前被迫多卖了），本次先还债
-                debt += y
-                if debt < 0:
-                    debt_exist = True
-                else:
-                    follow_sell_size = max(debt, min_size)
-            else:
-                debt += y
-                follow_sell_size = max(y, min_size)
-
+            follow_sell_size = max(y, min_size)
             follow_sell_size = min(follow_sell_size, available_pos)
 
             if available_pos - follow_sell_size <= 5:
@@ -775,31 +707,14 @@ class CopyTradingService:
 [{signal.source}] 🔔 SELL {self._asset_label(asset_id)}
   leader  : {leader_name:<20} {signal.size:>7.2f} / {old_leader_pos:>7.2f} @ {leader_price:<6}, ratio={ratio:.4f}    [{signal.role or ("taker" if tick_size and self._is_taker_price(leader_price, tick_size) else "maker")}]
   follower: {follower_name:<20} {follow_sell_size:>7.2f} / {available_pos:>7.2f} @ {follow_price:<6}   [{follower_role}]
-  debt_before={debt_before:>5.2f} debt_after={debt:>5.2f} y={y:.2f}
 {'='*90}""")
 
             if follow_sell_size <= 0.01:
                 reason = "no balance"
-                self._sell_debt.setdefault(f_addr, {})[asset_id] = debt
-                await asyncio.to_thread(upsert_share_debt, f_addr, asset_id, "SELL", debt)
                 logger.warning(
                     f"[CopyTrade] SELL skipped: no balance "
-                    f"(follower={follower_name}, available={available_pos:.2f}, debt={debt:+.2f})"
+                    f"(follower={follower_name}, available={available_pos:.2f})"
                 )
-                self._record_and_notify_order_result(
-                    config=config,
-                    signal=signal,
-                    follow_price=follow_price,
-                    result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=follow_price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                    follower_name=follower_name,
-                )
-                return
-
-            if debt_exist:
-                reason = "debt not cleared"
-                logger.warning(f"[CopyTrade] SELL skipped ({reason})")
-                self._sell_debt.setdefault(f_addr, {})[asset_id] = debt
-                await asyncio.to_thread(upsert_share_debt, f_addr, asset_id, "SELL", debt)
                 self._record_and_notify_order_result(
                     config=config,
                     signal=signal,
@@ -823,12 +738,6 @@ class CopyTradingService:
                 f"status={result.raw_status}"
             )
             self._register_post_order_result(config, result)
-
-            # 更新债务
-            debt -= result.size
-            self._sell_debt.setdefault(f_addr, {})[asset_id] = debt
-            await asyncio.to_thread(upsert_share_debt, f_addr, asset_id, "SELL", debt)
-            logger.info(f"[CopyTrade] SELL debt updated: {self._asset_label(asset_id)} debt={debt:+.2f} result.size={result.size}")
 
             # SELL matched 归还 allowance
             if result.raw_status == "MATCHED" and config.threshold < INF:
