@@ -91,12 +91,6 @@ interface Schedule {
   last_triggered_at: string | null
 }
 
-interface SlugFilter {
-  id: number
-  config_id: number
-  mode: 'blacklist' | 'whitelist'
-  slugs: string[]
-}
 
 interface Props {
   darkMode: boolean
@@ -271,24 +265,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   }, [editingScheduleConfigId, handleScheduleClickOutside])
 
   // Slug filter states
-  const [slugFilters, setSlugFilters] = useState<Record<number, SlugFilter | null>>({})
-  const [editingSlugFilterConfigId, setEditingSlugFilterConfigId] = useState<number | null>(null)
-  const [editingSlugMode, setEditingSlugMode] = useState<'blacklist' | 'whitelist'>('blacklist')
-  const [editingSlugText, setEditingSlugText] = useState('')
-  const slugFilterPopoverRef = useRef<HTMLDivElement>(null)
-
-  const handleSlugFilterClickOutside = useCallback((e: MouseEvent) => {
-    if (slugFilterPopoverRef.current && !slugFilterPopoverRef.current.contains(e.target as Node)) {
-      setEditingSlugFilterConfigId(null)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (editingSlugFilterConfigId !== null) {
-      document.addEventListener('mousedown', handleSlugFilterClickOutside)
-      return () => document.removeEventListener('mousedown', handleSlugFilterClickOutside)
-    }
-  }, [editingSlugFilterConfigId, handleSlugFilterClickOutside])
 
   const fetchAllSchedules = async () => {
     try {
@@ -305,20 +281,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     }
   }
 
-  const fetchAllSlugFilters = async () => {
-    try {
-      const res = await apiFetch('/api/copy-trading/slug-filters')
-      if (!res.ok) return
-      const data = await res.json()
-      const map: Record<number, SlugFilter | null> = {}
-      for (const [k, v] of Object.entries(data.slug_filters || {})) {
-        map[Number(k)] = v as SlugFilter
-      }
-      setSlugFilters(map)
-    } catch (e) {
-      console.error('Failed to fetch slug filters:', e)
-    }
-  }
 
   const fetchConfigs = async () => {
     try {
@@ -329,7 +291,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
       setConfigs(cfgs)
       fetchConfigBalances(cfgs)
       fetchAllSchedules()
-      fetchAllSlugFilters()
     } catch (e) {
       console.error('Failed to fetch configs:', e)
     }
@@ -515,49 +476,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
       setSchedules(prev => ({ ...prev, [configId]: null }))
       setEditingScheduleConfigId(null)
       toast('定时调度已删除')
-    } catch (e: any) {
-      toast(e.message || '删除失败')
-    }
-  }
-
-  const handleSlugFilterClick = (config: CopyTradingConfig) => {
-    const f = slugFilters[config.id]
-    setEditingSlugFilterConfigId(config.id)
-    setEditingSlugMode(f?.mode || 'blacklist')
-    setEditingSlugText(f?.slugs?.join('\n') || '')
-  }
-
-  const handleSlugFilterSave = async (configId: number) => {
-    const slugs = [...new Set(editingSlugText.split('\n').map(s => s.trim().toLowerCase()).filter(Boolean))]
-    if (!slugs.length) {
-      toast('关键词列表不能为空')
-      return
-    }
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${configId}/slug-filter`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: editingSlugMode, slugs })
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        toast(err.detail || '保存失败')
-        return
-      }
-      toast('市场过滤已保存')
-      setEditingSlugFilterConfigId(null)
-      fetchAllSlugFilters()
-    } catch (e: any) {
-      toast(e.message || '保存失败')
-    }
-  }
-
-  const handleSlugFilterDelete = async (configId: number) => {
-    try {
-      await apiFetch(`/api/copy-trading/configs/${configId}/slug-filter`, { method: 'DELETE' })
-      setSlugFilters(prev => ({ ...prev, [configId]: null }))
-      setEditingSlugFilterConfigId(null)
-      toast('市场过滤已删除')
     } catch (e: any) {
       toast(e.message || '删除失败')
     }
@@ -1770,47 +1688,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                                   <button onClick={() => setEditingScheduleConfigId(null)} className="btn-cancel">✕</button>
                                   {schedules[config.id] && (
                                     <button onClick={() => handleScheduleDelete(config.id)} className="btn-cancel" style={{ color: '#e57373' }}>删除</button>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </span>
-                          <span className="meta-item price-anchor">
-                            过滤:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleSlugFilterClick(config)}
-                              title="点击配置市场关键词黑/白名单过滤"
-                              style={{ color: slugFilters[config.id] ? '#4caf50' : '#999' }}
-                            >
-                              {slugFilters[config.id] ? `${slugFilters[config.id]!.mode === 'blacklist' ? '黑' : '白'}名单(${slugFilters[config.id]!.slugs.length})` : '未设置'}
-                            </strong>
-                            {editingSlugFilterConfigId === config.id && (
-                              <div ref={slugFilterPopoverRef} className="price-popover" style={{ minWidth: 260 }}>
-                                <div className="price-popover-row" style={{ flexDirection: 'column', gap: 6 }}>
-                                  <label style={{ fontSize: 11 }}>模式</label>
-                                  <select
-                                    value={editingSlugMode}
-                                    onChange={e => setEditingSlugMode(e.target.value as 'blacklist' | 'whitelist')}
-                                    style={{ width: '100%', padding: '2px 4px' }}
-                                  >
-                                    <option value="blacklist">黑名单（排除）</option>
-                                    <option value="whitelist">白名单（仅允许）</option>
-                                  </select>
-                                  <label style={{ fontSize: 11 }}>关键词（每行一个，匹配市场链接）</label>
-                                  <textarea
-                                    rows={4}
-                                    placeholder={"如: trump\nbitcoin"}
-                                    value={editingSlugText}
-                                    onChange={e => setEditingSlugText(e.target.value)}
-                                    style={{ width: '100%', fontSize: 12, resize: 'vertical' }}
-                                  />
-                                </div>
-                                <div className="price-popover-actions">
-                                  <button onClick={() => handleSlugFilterSave(config.id)} className="btn-save">✓</button>
-                                  <button onClick={() => setEditingSlugFilterConfigId(null)} className="btn-cancel">✕</button>
-                                  {slugFilters[config.id] && (
-                                    <button onClick={() => handleSlugFilterDelete(config.id)} className="btn-cancel" style={{ color: '#e57373' }}>删除</button>
                                   )}
                                 </div>
                               </div>

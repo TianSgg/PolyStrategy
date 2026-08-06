@@ -9,7 +9,7 @@ from croniter import croniter
 from auth import AuthUser, get_current_user
 from account.service import get_account_service
 from .service import get_copy_trading_service
-from .models import get_all_schedules, get_schedule_by_config_id, upsert_schedule, delete_schedule, get_slug_filter_by_config_id, get_all_slug_filters, upsert_slug_filter, delete_slug_filter
+from .models import get_all_schedules, get_schedule_by_config_id, upsert_schedule, delete_schedule
 from .types import INF, DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
 from leader.service import get_leader_service
 
@@ -406,57 +406,3 @@ async def remove_schedule(config_id: int, current_user: AuthUser = Depends(get_c
     return {"status": "ok"}
 
 
-# ==================== Slug 过滤 ====================
-
-class UpsertSlugFilterRequest(BaseModel):
-    mode: str  # "blacklist" | "whitelist"
-    slugs: List[str]
-
-
-@router.get("/slug-filters")
-async def list_slug_filters(current_user: AuthUser = Depends(get_current_user)):
-    """批量获取当前用户所有配置的 slug 过滤规则"""
-    service = get_copy_trading_service()
-    all_filters = get_all_slug_filters()
-    result = {}
-    for f in all_filters:
-        config = service.get_config_by_id(f["config_id"])
-        if config and current_user.can_view(config.owner_user_id):
-            result[f["config_id"]] = f
-    return {"slug_filters": result}
-
-
-@router.get("/configs/{config_id}/slug-filter")
-async def get_slug_filter(config_id: int, current_user: AuthUser = Depends(get_current_user)):
-    """获取配置的 slug 过滤规则"""
-    service = get_copy_trading_service()
-    _assert_config_access(service.get_config_by_id(config_id), current_user)
-    f = get_slug_filter_by_config_id(config_id)
-    if not f:
-        return {"slug_filter": None}
-    return {"slug_filter": f}
-
-
-@router.put("/configs/{config_id}/slug-filter")
-async def set_slug_filter(config_id: int, data: UpsertSlugFilterRequest, current_user: AuthUser = Depends(get_current_user)):
-    """创建或更新 slug 过滤规则"""
-    service = get_copy_trading_service()
-    _assert_config_access(service.get_config_by_id(config_id), current_user)
-    if data.mode not in ("blacklist", "whitelist"):
-        raise HTTPException(status_code=400, detail="mode must be 'blacklist' or 'whitelist'")
-    slugs = [s.strip() for s in data.slugs if s.strip()]
-    if not slugs:
-        raise HTTPException(status_code=400, detail="slugs cannot be empty")
-    upsert_slug_filter(config_id, data.mode, slugs)
-    service.update_slug_filter(config_id, data.mode, slugs)
-    return {"status": "ok"}
-
-
-@router.delete("/configs/{config_id}/slug-filter")
-async def remove_slug_filter(config_id: int, current_user: AuthUser = Depends(get_current_user)):
-    """删除 slug 过滤规则"""
-    service = get_copy_trading_service()
-    _assert_config_access(service.get_config_by_id(config_id), current_user)
-    delete_slug_filter(config_id)
-    service.remove_slug_filter(config_id)
-    return {"status": "ok"}

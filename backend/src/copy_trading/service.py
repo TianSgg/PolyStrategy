@@ -123,10 +123,6 @@ class CopyTradingService:
         # {(f_addr, l_addr) -> CopyTradingConfig}，解决一个 f_addr 跟多个 leader 的索引问题
         self._fl_key_to_config: Dict[str, CopyTradingConfig] = {}
 
-        # Slug 过滤: {config_id: {"mode": "blacklist"|"whitelist", "slugs": set(...)}}
-        self._slug_filters: Dict[int, Dict] = {}
-        # asset_id -> market slug 缓存（成功为 str，失败为 (None, expire_time)）
-        self._slug_cache: Dict[str, any] = {}
 
         # 启动持仓轮询兜底任务（依赖 _config_id_to_config，由 initialize 填充）
         self._follower_poller_task: Optional[asyncio.Task] = None
@@ -176,66 +172,6 @@ class CopyTradingService:
         """主动填充 asset 标签缓存"""
         label = f"{asset_id[:10]} - {question}[{outcome}]"
         self._asset_labels[asset_id] = label
-
-    def _load_slug_filters(self):
-        """从 DB 加载所有 slug 过滤规则到内存"""
-        from .models import get_all_slug_filters
-        self._slug_filters.clear()
-        for f in get_all_slug_filters():
-            self._slug_filters[f["config_id"]] = {
-                "mode": f["mode"],
-                "slugs": set(f["slugs"]),
-            }
-
-    _SLUG_NEGATIVE_TTL = 300  # negative cache 5 分钟后过期重试
-
-    async def _get_market_slug(self, asset_id: str) -> Optional[str]:
-        """通过 Gamma API 获取 asset 对应的 market slug，带内存缓存"""
-        cached = self._slug_cache.get(asset_id)
-        if cached is not None:
-            if isinstance(cached, str):
-                return cached
-            # negative cache: (None, expire_time)
-            if time.time() < cached[1]:
-                return None
-            del self._slug_cache[asset_id]
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "https://gamma-api.polymarket.com/markets",
-                    params={"clob_token_ids": asset_id},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        markets = await resp.json()
-                        if isinstance(markets, list) and markets:
-                            slug = markets[0].get("slug")
-                            self._slug_cache[asset_id] = slug
-                            return slug
-        except Exception as e:
-            logger.warning(f"[SlugFilter] Failed to resolve slug for {asset_id[:10]}: {e}")
-        self._slug_cache[asset_id] = (None, time.time() + self._SLUG_NEGATIVE_TTL)
-        return None
-
-    def _is_slug_allowed_sync(self, config_id: int, slug: Optional[str]) -> bool:
-        """纯内存判断：slug 是否通过该 config 的过滤规则（关键词子串匹配）"""
-        flt = self._slug_filters.get(config_id)
-        if not flt:
-            return True
-        if slug is None:
-            return True
-        if flt["mode"] == "blacklist":
-            return not any(kw in slug for kw in flt["slugs"])
-        else:
-            return any(kw in slug for kw in flt["slugs"])
-
-    def update_slug_filter(self, config_id: int, mode: str, slugs: List[str]):
-        """更新内存中的 slug 过滤缓存"""
-        self._slug_filters[config_id] = {"mode": mode, "slugs": set(slugs)}
-
-    def remove_slug_filter(self, config_id: int):
-        """移除内存中的 slug 过滤缓存"""
-        self._slug_filters.pop(config_id, None)
 
     def _remove_follower_config_index(self, config: CopyTradingConfig):
         f_addr = config.follower_proxy_wallet
@@ -484,8 +420,6 @@ class CopyTradingService:
         # await self.market_service.start()
         await self._load_configs()
         await self._load_debts()
-        self._load_slug_filters()
-
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
         self._start_position_history_poller(interval=120)
@@ -563,29 +497,9 @@ class CopyTradingService:
                 if signal.asset not in self._asset_labels:
                     asyncio.create_task(self._get_asset_label(signal.asset))
 
-            slug_resolved = False
-            slug = None
-
             for config in configs:
                 if not config.enabled:
                     continue
-                flt = self._slug_filters.get(config.id)
-                if flt:
-                    if not slug_resolved:
-                        slug = await self._get_market_slug(signal.asset)
-                        slug_resolved = True
-                    if not self._is_slug_allowed_sync(config.id, slug):
-                        reason = f"slug filter ({flt['mode']})"
-                        logger.info(f"[SlugFilter] Skipped config#{config.id} for {self._asset_label(signal.asset)}")
-                        follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
-                        self._record_and_notify_order_result(
-                            config=config,
-                            signal=signal,
-                            follow_price=signal.price,
-                            result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=signal.price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                            follower_name=follower_name,
-                        )
-                        continue
                 self._record_position_snapshot(
                     config,
                     signal.asset,
