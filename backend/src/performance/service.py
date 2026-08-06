@@ -341,8 +341,8 @@ class PerformanceService:
                 "asset_id": asset,
                 "bid_levels": len(book.bids),
                 "ask_levels": len(book.asks),
-                "best_bid": {"price": best_bid[0], "size": best_bid[1]} if best_bid[0] else {},
-                "best_ask": {"price": best_ask[0], "size": best_ask[1]} if best_ask[0] else {},
+                "best_bid": {"price": best_bid[0], "size": best_bid[1]} if best_bid else {},
+                "best_ask": {"price": best_ask[0], "size": best_ask[1]} if best_ask else {},
             })
         return items
 

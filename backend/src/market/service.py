@@ -56,56 +56,56 @@ class MarketService:
 
     # --- 同步查询接口 ---
 
-    async def get_best_bid(self, asset_id: str) -> Optional[Tuple[str, str]]:
+    async def get_best_bid(self, asset_id: str) -> Optional[Tuple[float, float]]:
         """返回 (price, size) 或 None：内存优先，CLOB 兜底"""
         book = self.get_order_book(asset_id)
         if book:
-            bid = book.get_best_bid()
-            if bid and bid[0] is not None:
-                return bid
+            result = book.get_best_bid()
+            if result:
+                return result
         for attempt in range(3):
             try:
                 ob = await asyncio.to_thread(self._clob_client.get_order_book, asset_id)
                 bids = ob.get("bids", [])
                 if bids:
-                    best = bids[-1]  # bids是升序排列
-                    return (best["price"], best["size"])
-                return None, None
+                    best = bids[-1]
+                    return (float(best["price"]), float(best["size"]))
+                return None
             except Exception as e:
                 if attempt == 2:
                     logger.warning(f"[Market] get_best_bid({asset_id[:8]}...) CLOB fallback failed: {e}")
                 else:
                     await asyncio.sleep(0.1 * (attempt + 1))
-        return None, None
+        return None
 
-    async def get_best_ask(self, asset_id: str) -> Optional[Tuple[str, str]]:
+    async def get_best_ask(self, asset_id: str) -> Optional[Tuple[float, float]]:
         """返回 (price, size) 或 None：内存优先，CLOB 兜底"""
         book = self.get_order_book(asset_id)
         if book:
-            ask = book.get_best_ask()
-            if ask and ask[0] is not None:
-                return ask
+            result = book.get_best_ask()
+            if result:
+                return result
         for attempt in range(3):
             try:
                 ob = await asyncio.to_thread(self._clob_client.get_order_book, asset_id)
                 asks = ob.get("asks", [])
                 if asks:
-                    best = asks[-1]  # asks是降序排列
-                    return (best["price"], best["size"])
-                return None, None
+                    best = asks[-1]
+                    return (float(best["price"]), float(best["size"]))
+                return None
             except Exception as e:
                 if attempt == 2:
                     logger.warning(f"[Market] get_best_ask({asset_id[:8]}...) CLOB fallback failed: {e}")
                 else:
                     await asyncio.sleep(0.1 * (attempt + 1))
-        return None, None
+        return None
 
     async def get_mid_price(self, asset_id: str) -> Optional[float]:
         """返回 (best_bid + best_ask) / 2 或 None"""
         bid = await self.get_best_bid(asset_id)
         ask = await self.get_best_ask(asset_id)
-        if bid and ask and bid[0] is not None and ask[0] is not None:
-            return (float(bid[0]) + float(ask[0])) / 2
+        if bid and ask:
+            return (bid[0] + ask[0]) / 2
         for attempt in range(3):
             try:
                 mid = await asyncio.to_thread(self._clob_client.get_midpoint, asset_id)
