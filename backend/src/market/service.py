@@ -1,8 +1,8 @@
-"""MarketService - 市场频道 WebSocket + 订单簿管理"""
+"""MarketService - 市场频道 WebSocket + 订单簿管理 + 卖出退出监控"""
 import asyncio
 import json
 import logging
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import requests
 import websockets
@@ -42,6 +42,12 @@ class MarketService:
         self._tick_sizes: Dict[str, str] = {}      # {asset_id: tick_size_str}
         self._neg_risks: Dict[str, Optional[bool]] = {}  # {asset_id: neg_risk}
         self._token_pair_cache: Dict[str, Tuple[str, str]] = {}  # {asset_id: (condition_id, opposite_asset_id)}
+        # 退出监控: 当 tick_size 变为 0.001 时触发卖出的 asset_id 集合
+        self._exit_watches: Set[str] = set()
+        # 已触发过的 asset_id（防止重复触发）
+        self._exit_triggered: Set[str] = set()
+        # 卖出回调: callback(asset_id)
+        self._on_exit_trigger: Optional[Callable[[str], None]] = None
         # 无 L1 认证的 CLOB Client，用于市场元信息兜底
         self._clob_client = ClobClient(
             host="https://clob.polymarket.com",
@@ -326,6 +332,37 @@ class MarketService:
             logger.warning(f"[Market] get_condition_and_pair({asset_id[:10]}) failed: {e}")
         return None
 
+    # --- 退出监控 ---
+
+    def set_exit_callback(self, callback: Callable[[str], None]):
+        """注册卖出回调，callback 接收 asset_id"""
+        self._on_exit_trigger = callback
+
+    def watch_for_exit(self, asset_id: str):
+        """监控 asset 的 tick_size_change 事件，当 tick_size 变为 0.001 时触发卖出"""
+        if asset_id in self._exit_watches:
+            return
+        self._exit_watches.add(asset_id)
+        self.subscribe([asset_id])
+        logger.info(f"[Market] Watching exit: {asset_id[:10]} (trigger on tick_size -> 0.001)")
+
+    def unwatch_exit(self, asset_id: str):
+        """取消退出监控"""
+        self._exit_watches.discard(asset_id)
+        self._exit_triggered.discard(asset_id)
+
+    def _check_exit_trigger(self, asset_id: str, new_tick_size: str):
+        """tick_size 变为 0.001 时触发卖出"""
+        if asset_id not in self._exit_watches:
+            return
+        if asset_id in self._exit_triggered:
+            return
+        if new_tick_size == "0.001":
+            self._exit_triggered.add(asset_id)
+            logger.info(f"[Market] EXIT triggered: {asset_id[:10]} tick_size -> 0.001")
+            if self._on_exit_trigger:
+                self._on_exit_trigger(asset_id)
+
     # --- 订阅管理 ---
 
     def subscribe(self, asset_ids: list[str]):
@@ -522,3 +559,4 @@ class MarketService:
         if asset_id and new_tick_size:
             self._tick_sizes[asset_id] = new_tick_size
             logger.info(f"[Market] Updated tick_size for {asset_id[:8]}...: {new_tick_size}")
+            self._check_exit_trigger(asset_id, new_tick_size)

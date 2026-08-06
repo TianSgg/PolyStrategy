@@ -134,8 +134,6 @@ class CopyTradingService:
             chain_id=137,
         )
 
-        # 市场数据服务
-        # self.market_service = get_market_service()
 
     def _get_config_by_fl(self, f_addr: str, l_addr: str) -> Optional[CopyTradingConfig]:
         return self._fl_key_to_config.get(f_addr + "_" + l_addr)
@@ -372,16 +370,22 @@ class CopyTradingService:
         if self._schedule_poller_task:
             self._schedule_poller_task.cancel()
             self._schedule_poller_task = None
-        # asyncio.create_task(self.market_service.stop())
+        asyncio.create_task(get_market_service().stop())
 
     async def initialize(self):
         """启动时加载配置，各 poller 自行初始化同步"""
-        # await self.market_service.start()
+        market_svc = get_market_service()
+        market_svc.set_exit_callback(self._on_market_exit)
+        await market_svc.start()
         await self._load_configs()
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
         self._start_position_history_poller(interval=120)
         self._start_schedule_poller(interval=60)
+
+    def _on_market_exit(self, no_asset_id: str):
+        """MarketService 触发卖出回调"""
+        asyncio.create_task(self.execute_sell(no_asset_id))
 
     async def _load_configs(self):
         """从数据库加载配置（async，供 initialize 调用）"""
@@ -507,6 +511,9 @@ class CopyTradingService:
             logger.info(f"[CopyTrade] BUY position: {result.position_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos} pending={new_pending})")
             asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
 
+        if result.raw_status in ("LIVE", "MATCHED", "DELAYED"):
+            get_market_service().watch_for_exit(asset_id)
+
         self._record_and_notify_order_result(
             config=config,
             signal=signal,
@@ -515,117 +522,74 @@ class CopyTradingService:
             follower_name=follower_name,
         )
 
-    async def _handle_sell(self, config: CopyTradingConfig, signal: ActivitySignal, old_leader_pos: float):
-        """处理 SELL 信号 - 按比例跟卖"""
-        asset_id = signal.asset
-
-        f_addr = config.follower_proxy_wallet
-        # （读 - 下单 - 返回 - 写）按 follower 账户加锁
-        async with self._get_addr_lock(f_addr):
-            follower_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0)
-            pending_sell = self._pending_sell_orders.setdefault(f_addr, {}).get(asset_id, 0)
+    async def execute_sell(self, asset_id: str):
+        """市场触发卖出 — tick_size 变为 0.001 时，以 0.999 卖出全部 NO 持仓"""
+        for config in self._config_id_to_config.values():
+            f_addr = config.follower_proxy_wallet
+            follower_pos = self._follower_positions.get(f_addr, {}).get(asset_id, 0)
+            pending_sell = self._pending_sell_orders.get(f_addr, {}).get(asset_id, 0)
             available_pos = max(0, follower_pos - pending_sell)
+            if available_pos <= 0.01:
+                continue
 
-            leader_price = signal.price
+            follow_price = 0.999
+            follow_sell_size = available_pos
+            follower_name = self._account_service.get_acc_name(f_addr)
 
-            follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
-            leader_name = self._leader_service.get_leader_name(config.leader_proxy_wallet)
+            async with self._get_addr_lock(f_addr):
+                order_book = await self._get_order_book_with_retry(asset_id, "SELL")
+                tick_size = order_book["tick_size"] if order_book else None
+                neg_risk = order_book["neg_risk"] if order_book else None
 
-            order_book = await self._get_order_book_with_retry(asset_id, "SELL")
-            has_best_bid = False
-            if not order_book:
-                logger.warning(
-                    f"[CopyTrade] SELL order book unavailable "
-                    f"asset={self._asset_label(asset_id)}, leader={leader_name}, "
-                    f"follower={follower_name}, signal_price={signal.price}, "
+                logger.info(
+                    f"[CopyTrade] EXIT SELL {self._asset_label(asset_id)} | "
+                    f"follower={follower_name} {follow_sell_size:.2f}@{follow_price}"
                 )
-                tick_size = None
-                neg_risk = None
-                best_bid = None
-            else:
-                tick_size = order_book["tick_size"]
-                neg_risk = order_book["neg_risk"]
-                bids = order_book["bids"]
-                if not bids:
-                    best_bid = None
-                    logger.warning(f"[CopyTrade] no bids in order book")
-                else:
-                    logger.info(
-                        f"[CopyTrade] SELL order book values: asset={self._asset_label(asset_id)} "
-                        f"tick_size={tick_size}, neg_risk={neg_risk}, bids[-1]={bids[-1]}"
-                    )
-                    best_bid = float(bids[-1]["price"])
-                    has_best_bid = True
 
-            # TODO: 策略重写 - 目前使用 leader 价格作为临时占位
-            follow_price = leader_price
-
-            ratio = signal.size / old_leader_pos
-            y = math.floor(ratio * available_pos * 100) / 100
-            min_size = self._min_order_size("SELL", follow_price, "maker")
-            follow_sell_size = max(y, min_size)
-            follow_sell_size = min(follow_sell_size, available_pos)
-
-            if available_pos - follow_sell_size <= 5:
-                follow_sell_size = available_pos
-
-            logger.info(f"""
-{'='*90}
-[{signal.source}] 🔔 SELL {self._asset_label(asset_id)}
-  leader  : {leader_name:<20} {signal.size:>7.2f} / {old_leader_pos:>7.2f} @ {leader_price:<6}, ratio={ratio:.4f}    [{signal.role or ("taker" if tick_size and self._is_taker_price(leader_price, tick_size) else "maker")}]
-  follower: {follower_name:<20} {follow_sell_size:>7.2f} / {available_pos:>7.2f} @ {follow_price:<6}
-{'='*90}""")
-
-            if follow_sell_size <= 0.01:
-                reason = "no balance"
-                logger.warning(
-                    f"[CopyTrade] SELL skipped: no balance "
-                    f"(follower={follower_name}, available={available_pos:.2f})"
+                result = await self._place_order(
+                    config, asset_id, "SELL", follow_sell_size,
+                    price=follow_price, tick_size=tick_size, neg_risk=neg_risk
                 )
-                self._record_and_notify_order_result(
-                    config=config,
-                    signal=signal,
-                    follow_price=follow_price,
-                    result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=follow_price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                    follower_name=follower_name,
-                )
-                return
+                self._register_post_order_result(config, result)
 
-            # 下单
-            order_start = time.time()
-            result = await self._place_order(
-                config, asset_id, "SELL", follow_sell_size,
-                price=follow_price, tick_size=tick_size, neg_risk=neg_risk
-            )
-            signal_to_result_ms = (time.time() - signal.signal_time) * 1000
-            order_elapsed_ms = (time.time() - order_start) * 1000
-            logger.debug(
-                f"[CopyTrade] timer: signal_to_order_result={signal_to_result_ms:.1f}ms "
-                f"order_elapsed={order_elapsed_ms:.1f}ms side=SELL asset={self._asset_label(asset_id)} "
-                f"status={result.raw_status}"
-            )
-            self._register_post_order_result(config, result)
+                new_pending = self._pending_sell_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
+                self._pending_sell_orders.setdefault(f_addr, {})[asset_id] = new_pending
+                new_pos = max(0, self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) - result.position_delta)
+                self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
 
-            # 统一从 deltas 计算并更新状态
-            new_pending = self._pending_sell_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
-            self._pending_sell_orders.setdefault(f_addr, {})[asset_id] = new_pending
-            new_pos = max(0, self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) - result.position_delta)
-            self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
+            if result.pending_delta:
+                logger.debug(f"[CopyTrade] SELL pending: {result.pending_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos} pending={new_pending})")
+                asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
+            if result.position_delta:
+                logger.info(f"[CopyTrade] SELL position: {result.position_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos} pending={new_pending})")
+                asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
 
-        if result.pending_delta:
-            logger.debug(f"[CopyTrade] SELL pending: {result.pending_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos} pending={new_pending})")
-            asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
-        if result.position_delta:
-            logger.info(f"[CopyTrade] SELL position: {result.position_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos} pending={new_pending})")
-            asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
+            self._record_sell_order(config, asset_id, follow_price, follow_sell_size, result)
 
-        self._record_and_notify_order_result(
-            config=config,
-            signal=signal,
+    def _record_sell_order(self, config: CopyTradingConfig, asset_id: str, follow_price: float, follow_sell_size: float, result: PlaceOrderResult):
+        """记录 EXIT SELL 订单到 order 表"""
+        order_id = result.order_id
+        if result.raw_status in ("ERROR", "SKIPPED"):
+            raw = f"EXIT_{asset_id}_{config.id}_{time.time()}"
+            order_id = f"{result.raw_status}_0x" + hashlib.sha256(raw.encode()).hexdigest()
+
+        asyncio.create_task(asyncio.to_thread(
+            record_copy_trading_order,
+            order_id=order_id,
+            config_id=config.id,
+            leader=config.leader_proxy_wallet,
+            follower=config.follower_proxy_wallet,
+            leader_tx_hash="EXIT_TICK_SIZE",
+            asset_id=asset_id,
+            side="SELL",
+            leader_size=0,
+            leader_price=0,
+            follow_size=result.size,
             follow_price=follow_price,
-            result=result,
-            follower_name=follower_name,
-        )
+            size_matched=result.position_delta,
+            status=result.raw_status,
+            err_msg=result.err_msg,
+        ))
 
     async def _cancel_follower_orders_for_asset(self, config: CopyTradingConfig, asset_id: str):
         """Leader 清仓后，撤销 follower 该 asset 所有挂单"""
