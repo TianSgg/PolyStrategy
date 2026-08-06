@@ -270,8 +270,6 @@ class PerformanceService:
             "follower_proxy_wallet": config.follower_proxy_wallet,
             "share_ratio": config.share_ratio,
             "enabled": config.enabled,
-            "threshold": config.threshold,
-            "allowance": config.allowance,
             "owner_user_id": config.owner_user_id,
             "gtd_expiration_sec": config.gtd_expiration_sec,
             "buy_spread_thr": config.buy_spread_thr,

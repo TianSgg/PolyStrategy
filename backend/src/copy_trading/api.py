@@ -10,7 +10,7 @@ from auth import AuthUser, get_current_user
 from account.service import get_account_service
 from .service import get_copy_trading_service
 from .models import get_all_schedules, get_schedule_by_config_id, upsert_schedule, delete_schedule
-from .types import INF, DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
+from .types import DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
 from leader.service import get_leader_service
 
 router = APIRouter(prefix="/api/copy-trading", tags=["copy-trading"])
@@ -20,7 +20,6 @@ class CreateConfigRequest(BaseModel):
     leader_proxy_wallet: str
     follower_proxy_wallet: str
     share_ratio: float = 0.1
-    threshold: float = 0.0  # 0=无限（存大数），>0=有限额度
     buy_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD
     sell_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD
     buy_exceed_thr: bool = DEFAULT_EXCEED_THR
@@ -38,7 +37,6 @@ class CreateConfigRequest(BaseModel):
 class UpdateConfigRequest(BaseModel):
     share_ratio: Optional[float] = None
     enabled: Optional[bool] = None
-    threshold: Optional[float] = None
     gtd_expiration_sec: Optional[int] = None
     buy_spread_thr: Optional[float] = None
     sell_spread_thr: Optional[float] = None
@@ -82,7 +80,6 @@ async def create_config(data: CreateConfigRequest, current_user: AuthUser = Depe
             data.leader_proxy_wallet,
             data.follower_proxy_wallet,
             data.share_ratio,
-            data.threshold if data.threshold > 0 else INF,
             owner_user_id=current_user.id,
             buy_spread_thr=data.buy_spread_thr,
             sell_spread_thr=data.sell_spread_thr,
@@ -125,8 +122,6 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
             "follower_name": account_svc.get_acc_name(c.follower_proxy_wallet),
             "share_ratio": c.share_ratio,
             "enabled": c.enabled,
-            "threshold": c.threshold,
-            "allowance": c.allowance,
             "owner_user_id": c.owner_user_id,
             "gtd_expiration_sec": c.gtd_expiration_sec,
             "buy_spread_thr": c.buy_spread_thr,
@@ -159,8 +154,6 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
         "follower_proxy_wallet": config.follower_proxy_wallet,
         "share_ratio": config.share_ratio,
         "enabled": config.enabled,
-        "threshold": config.threshold,
-        "allowance": config.allowance,
         "owner_user_id": config.owner_user_id,
         "gtd_expiration_sec": config.gtd_expiration_sec,
         "buy_spread_thr": config.buy_spread_thr,
@@ -190,10 +183,6 @@ async def update_config(config_id: int, data: UpdateConfigRequest, current_user:
         kwargs["share_ratio"] = data.share_ratio
     if data.enabled is not None:
         kwargs["enabled"] = data.enabled
-    if data.threshold is not None:
-        if data.threshold < 0:
-            raise HTTPException(status_code=400, detail="threshold must >= 0")
-        kwargs["threshold"] = data.threshold if data.threshold > 0 else INF
     if data.gtd_expiration_sec is not None:
         if not (60 <= data.gtd_expiration_sec <= 86400):
             raise HTTPException(status_code=400, detail="gtd_expiration_sec must be between 60 and 86400")

@@ -14,8 +14,6 @@ interface CopyTradingConfig {
   follower_name: string
   share_ratio: number
   enabled: boolean
-  threshold: number
-  allowance: number
   gtd_expiration_sec: number
   buy_spread_thr: number
   sell_spread_thr: number
@@ -191,7 +189,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [showCustomFollowerInput, setShowCustomFollowerInput] = useState(false)
   const [customFollowerPrivateKey, setCustomFollowerPrivateKey] = useState('')
   const [shareRatio, setShareRatio] = useState('0.1')
-  const [threshold, setthreshold] = useState('')
   const [showCustomLeaderInput, setShowCustomLeaderInput] = useState(false)
 
   useEffect(() => {
@@ -407,8 +404,7 @@ export default function CopyTrading({ darkMode, visible }: Props) {
         body: JSON.stringify({
           leader_proxy_wallet: leaderAddr,
           follower_proxy_wallet: followerWalletForConfig,
-          share_ratio: ratio,
-          threshold: threshold ? parseFloat(threshold) : 0
+          share_ratio: ratio
         })
       })
 
@@ -420,7 +416,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
       setLeaderAddr('')
       setFollowerAccountId('')
       setShareRatio('0.1')
-      setthreshold('')
       setShowAddForm(false)
       setShowCustomLeaderInput(false)
       setShowCustomFollowerInput(false)
@@ -1212,19 +1207,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                   />
                   <span className="form-hint">0.01 ~ 1.0，表示跟单的 share 比例</span>
                 </div>
-                <div className="form-group">
-                  <label className="form-label">最大投入 USDC（可选）</label>
-                  <input
-                    type="number"
-                    step="10"
-                    min="0"
-                    value={threshold}
-                    onChange={e => setthreshold(e.target.value)}
-                    className="form-input"
-                    placeholder="未填代表不限制"
-                  />
-                  <span className="form-hint">超过此金额时不跟单买入（只对 BUY 生效）</span>
-                </div>
                 {error && <div className="error-msg">{error}</div>}
                 <div className="form-actions">
                   <button onClick={handleAddConfig} disabled={loading} className="btn btn-primary">
@@ -1366,11 +1348,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                               </div>
                             )}
                           </span>
-                          {config.threshold < 1e10 && (
-                            <span className="meta-item">
-                              threshold: <strong>${config.threshold.toFixed(2)}</strong> | allowance: <strong>${config.allowance.toFixed(2)}</strong>
-                            </span>
-                          )}
                           <span className="meta-item price-anchor">
                             GTD:{' '}
                             <strong

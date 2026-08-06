@@ -3,7 +3,6 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-INF = 1e10          # 大数表示无穷（同时作为 MySQL 存储值）
 DEFAULT_TAKER_SPREAD_THRESHOLD = 0.05
 DEFAULT_EXCEED_THR = True
 DEFAULT_BUY_PRICE_MIN = 0.001
@@ -22,8 +21,6 @@ class CopyTradingConfig:
     follower_proxy_wallet: str
     share_ratio: float
     enabled: bool = True
-    threshold: float = INF   # 总额度，INF=不限制
-    allowance: float = INF  # 当前可用额度，0=耗尽，INF=无穷
     owner_user_id: int = 0
     gtd_expiration_sec: int = 1800  # GTD 订单过期时间（秒），默认 30 分钟
     buy_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD

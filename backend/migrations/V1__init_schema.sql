@@ -67,8 +67,6 @@ CREATE TABLE IF NOT EXISTS copy_trading_configs (
   leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Leader 代理钱包地址',
   follower_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Follower 代理钱包地址',
   share_ratio DECIMAL(5, 4) NOT NULL DEFAULT 0.1000 COMMENT '跟单比例 0.0001-1.0000',
-  threshold DECIMAL(20, 4) NOT NULL DEFAULT 0 COMMENT '最大投入 USDC，>=1e10=无穷',
-  allowance DECIMAL(20, 4) NOT NULL DEFAULT 0 COMMENT '当前可用额度，0=耗尽，>=1e10=无穷',
   gtd_expiration_sec INT NOT NULL DEFAULT 1800 COMMENT 'GTD订单过期时间（秒），默认30分钟',
   buy_spread_thr DOUBLE NOT NULL DEFAULT 0.05 COMMENT 'BUY价差阈值，默认0.05',
   sell_spread_thr DOUBLE NOT NULL DEFAULT 0.05 COMMENT 'SELL价差阈值，默认0.05',

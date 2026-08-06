@@ -12,7 +12,7 @@ from typing import Dict, Set, Optional, List
 
 from py_clob_client_v2 import ClobClient
 
-from .types import CopyTradingConfig, ActivitySignal, PlaceOrderResult, INF, DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
+from .types import CopyTradingConfig, ActivitySignal, PlaceOrderResult, DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
 from market import get_market_service
 from .chain import get_copy_trading_chain_monitor
 from .predexon import get_copy_trading_predexon
@@ -26,7 +26,6 @@ from .models import (
     update_copy_trading_order,
     create_copy_trading_config,
     update_copy_trading_config,
-    update_config_allowance,
     delete_copy_trading_config,
     get_orders_by_config_id,
     get_asset_question_and_outcome,
@@ -579,19 +578,6 @@ class CopyTradingService:
   follower: {follower_name:<20}{follow_buy_size:>7.2f} @ {follow_price:<6}    [{follower_role}]
 {'='*50}""")
 
-            # allowance 只要大于0就可以下单，允许误差
-            if config.allowance <= 0:
-                reason = "allowance exhausted"
-                logger.warning(f"[CopyTrade] BUY skipped ({reason})")
-                self._record_and_notify_order_result(
-                    config=config,
-                    signal=signal,
-                    follow_price=follow_price,
-                    result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=follow_price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                    follower_name=follower_name,
-                )
-                return
-
             # 下单
             order_start = time.time()
             result = await self._place_order(
@@ -613,12 +599,6 @@ class CopyTradingService:
             new_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) + result.position_delta
             self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
 
-            # 更新allowance（内存 & db）
-            order_cost = result.size * follow_price
-            if config.threshold < INF:
-                config.allowance -= order_cost
-                asyncio.create_task(asyncio.to_thread(update_config_allowance, config.id, config.allowance))
-                logger.info(f"[CopyTrade] BUY posted allowance -{order_cost:>7.2f}, now: {config.allowance:>7.2f}")
 
         if result.pending_delta:
             logger.debug(f"[CopyTrade] BUY pending: {result.pending_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos} pending={new_pending})")
@@ -739,13 +719,6 @@ class CopyTradingService:
             )
             self._register_post_order_result(config, result)
 
-            # SELL matched 归还 allowance
-            if result.raw_status == "MATCHED" and config.threshold < INF:
-                returned = result.size * follow_price
-                config.allowance += returned
-                asyncio.create_task(asyncio.to_thread(update_config_allowance, config.id, config.allowance))
-                logger.info(f"[CopyTrade] SELL matched allowance returned: +{returned:>7.2f}, now: {config.allowance:>7.2f}")
-
             # 统一从 deltas 计算并更新状态
             new_pending = self._pending_sell_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
             self._pending_sell_orders.setdefault(f_addr, {})[asset_id] = new_pending
@@ -769,7 +742,7 @@ class CopyTradingService:
         )
 
     async def _cancel_follower_orders_for_asset(self, config: CopyTradingConfig, asset_id: str):
-        """Leader 清仓后，撤销 follower 该 asset 所有挂单（allowance 归还由 WS CANCELLATION 处理）"""
+        """Leader 清仓后，撤销 follower 该 asset 所有挂单"""
         f_addr = config.follower_proxy_wallet
         f_name = self._account_service.get_acc_name(f_addr)
         try:
@@ -1079,7 +1052,6 @@ class CopyTradingService:
         leader_proxy_wallet: str,
         follower_proxy_wallet: str,
         share_ratio: float,
-        threshold: float,
         owner_user_id: int = 0,
         buy_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD,
         sell_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD,
@@ -1123,7 +1095,7 @@ class CopyTradingService:
         # 落库
         try:
             config_id = create_copy_trading_config(leader_proxy_wallet, follower_proxy_wallet,
-                                                   share_ratio, threshold, owner_user_id,
+                                                   share_ratio, owner_user_id,
                                                    buy_spread_thr, sell_spread_thr,
                                                    buy_exceed_thr, sell_exceed_thr,
                                                    buy_follow_taker, sell_follow_taker,
@@ -1139,8 +1111,6 @@ class CopyTradingService:
             follower_proxy_wallet=follower_proxy_wallet,
             share_ratio=share_ratio,
             enabled=False,
-            threshold=threshold,
-            allowance=threshold,
             owner_user_id=owner_user_id,
             buy_spread_thr=buy_spread_thr,
             sell_spread_thr=sell_spread_thr,
@@ -1192,7 +1162,7 @@ class CopyTradingService:
         """处理 WS order 事件（PLACEMENT / CANCELLATION / UPDATE）
 
         PLACEMENT：更新 pending + 落库（为了记录网站手动下单）
-        CANCELLATION：更新 pending；BUY 未成交部分归还 allowance
+        CANCELLATION：更新 pending
         position 变化统一由 trade CONFIRMED 处理
         """
         if type == "PLACEMENT":
@@ -1261,19 +1231,6 @@ class CopyTradingService:
                         self._pending_buy_orders[f_addr][asset_id] = new_pending
                     asyncio.create_task(self._save_pending_buy_with_question(f_addr, asset_id, new_pending))
 
-                    config_id = self._order_id_to_config_id.get(order_id, 0)
-                    follow_price = self._order_id_to_follow_price.get(order_id)
-                    if not config_id or follow_price is None:
-                        if order:
-                            config_id = order.config_id
-                            follow_price = order.follow_price
-                    config = self._config_id_to_config.get(config_id)
-                    if config and config.threshold < INF:
-                        follow_price = follow_price if follow_price is not None else price
-                        returned = released * follow_price
-                        config.allowance += returned
-                        asyncio.create_task(asyncio.to_thread(update_config_allowance, config.id, config.allowance))
-                        logger.info(f"[CopyTrade] BUY canceled allowance returned to config {config.id}: +{returned:>7.2f}, now: {config.allowance:>7.2f}")
                 else:
                     cur_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0)
                     cur_pending = self._pending_sell_orders.setdefault(f_addr, {}).get(asset_id, 0)
@@ -1360,15 +1317,6 @@ class CopyTradingService:
                 else:
                     self._pending_sell_orders[f_addr][asset_id] = new_pending
                 asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
-
-                # SELL confirmed 归还 allowance（查订单表定位 config）
-                if config_id > 0:
-                    config = self._config_id_to_config.get(config_id)
-                    if config and config.threshold < INF:
-                        returned = matched_amount * price
-                        config.allowance += returned
-                        asyncio.create_task(asyncio.to_thread(update_config_allowance, config.id, config.allowance))
-                        logger.info(f"[CopyTrade] SELL matched allowance returned to config {config.id}: +{returned:>7.2f}, now: {config.allowance:>7.2f}")
 
             if config_for_snapshot:
                 self._record_position_snapshot(
@@ -1534,19 +1482,6 @@ class CopyTradingService:
                     config.buy_price_filter_min = float(kwargs["buy_price_filter_min"])
                 if "buy_price_filter_max" in kwargs:
                     config.buy_price_filter_max = float(kwargs["buy_price_filter_max"])
-                if "threshold" in kwargs:
-                    old_thr = config.threshold
-                    new_thr = kwargs["threshold"]
-                    config.threshold = new_thr
-                    # delta 加到 allowance（threshold 从有限调高时恢复额度）
-                    if new_thr >= INF:
-                        config.allowance = INF
-                    elif new_thr < INF:
-                        if old_thr >= INF:
-                            config.allowance = new_thr
-                        else:
-                            config.allowance += new_thr - old_thr
-                    update_config_allowance(config.id, config.allowance)
         return success
 
     def delete_config(self, config_id: int) -> bool:
