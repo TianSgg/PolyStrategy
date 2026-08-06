@@ -5,7 +5,7 @@ import logging
 
 from shared.db import get_db_connection
 from shared.time_utils import UTC8_DB_NOW_SQL, format_utc8, now_utc8_dt, to_utc8_dt
-from .types import CopyTradingConfig, CopyTradingOrder, DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
+from .types import CopyTradingConfig, CopyTradingOrder
 
 logger = logging.getLogger(__name__)
 
@@ -20,43 +20,22 @@ def get_copy_trading_configs(enabled_only: bool = False) -> List[CopyTradingConf
         if enabled_only:
             cursor.execute("""
                 SELECT id, leader_proxy_wallet, follower_proxy_wallet,
-                       share_ratio, enabled, owner_user_id, gtd_expiration_sec, buy_spread_thr, sell_spread_thr,
-                       buy_exceed_thr, sell_exceed_thr, buy_price_min, buy_price_max, sell_price_min, sell_price_max,
-                       buy_follow_taker, sell_follow_taker,
-                       buy_price_filter_min, buy_price_filter_max,
-                       created_at, updated_at
+                       enabled, owner_user_id, gtd_expiration_sec
                 FROM copy_trading_configs WHERE enabled = 1
             """)
         else:
             cursor.execute("""
                 SELECT id, leader_proxy_wallet, follower_proxy_wallet,
-                       share_ratio, enabled, owner_user_id, gtd_expiration_sec, buy_spread_thr, sell_spread_thr,
-                       buy_exceed_thr, sell_exceed_thr, buy_price_min, buy_price_max, sell_price_min, sell_price_max,
-                       buy_follow_taker, sell_follow_taker,
-                       buy_price_filter_min, buy_price_filter_max,
-                       created_at, updated_at
+                       enabled, owner_user_id, gtd_expiration_sec
                 FROM copy_trading_configs
             """)
         return [CopyTradingConfig(
             id=row[0],
             leader_proxy_wallet=row[1],
             follower_proxy_wallet=row[2],
-            share_ratio=float(row[3]),
-            enabled=bool(row[4]),
-            owner_user_id=int(row[5] or 0),
-            gtd_expiration_sec=int(row[6] or 1800),
-            buy_spread_thr=float(row[7]) if row[7] is not None else DEFAULT_TAKER_SPREAD_THRESHOLD,
-            sell_spread_thr=float(row[8]) if row[8] is not None else DEFAULT_TAKER_SPREAD_THRESHOLD,
-            buy_exceed_thr=bool(row[9]) if row[9] is not None else DEFAULT_EXCEED_THR,
-            sell_exceed_thr=bool(row[10]) if row[10] is not None else DEFAULT_EXCEED_THR,
-            buy_price_min=float(row[11]) if row[11] is not None else DEFAULT_BUY_PRICE_MIN,
-            buy_price_max=float(row[12]) if row[12] is not None else DEFAULT_BUY_PRICE_MAX,
-            sell_price_min=float(row[13]) if row[13] is not None else DEFAULT_SELL_PRICE_MIN,
-            sell_price_max=float(row[14]) if row[14] is not None else DEFAULT_SELL_PRICE_MAX,
-            buy_follow_taker=bool(row[15]) if row[15] is not None else True,
-            sell_follow_taker=bool(row[16]) if row[16] is not None else True,
-            buy_price_filter_min=float(row[17]) if row[17] is not None else DEFAULT_BUY_PRICE_FILTER_MIN,
-            buy_price_filter_max=float(row[18]) if row[18] is not None else DEFAULT_BUY_PRICE_FILTER_MAX,
+            enabled=bool(row[3]),
+            owner_user_id=int(row[4] or 0),
+            gtd_expiration_sec=int(row[5] or 1800),
         ) for row in cursor.fetchall()]
     finally:
         conn.close()
@@ -69,11 +48,7 @@ def get_copy_trading_config_by_id(config_id: int) -> Optional[CopyTradingConfig]
     try:
         cursor.execute("""
             SELECT id, leader_proxy_wallet, follower_proxy_wallet,
-                   share_ratio, enabled, owner_user_id, gtd_expiration_sec, buy_spread_thr, sell_spread_thr,
-                   buy_exceed_thr, sell_exceed_thr, buy_price_min, buy_price_max, sell_price_min, sell_price_max,
-                   buy_follow_taker, sell_follow_taker,
-                   buy_price_filter_min, buy_price_filter_max,
-                   created_at, updated_at
+                   enabled, owner_user_id, gtd_expiration_sec
             FROM copy_trading_configs WHERE id = %s
         """, (config_id,))
         row = cursor.fetchone()
@@ -82,22 +57,9 @@ def get_copy_trading_config_by_id(config_id: int) -> Optional[CopyTradingConfig]
                 id=row[0],
                 leader_proxy_wallet=row[1],
                 follower_proxy_wallet=row[2],
-                share_ratio=float(row[3]),
-                enabled=bool(row[4]),
-                owner_user_id=int(row[5] or 0),
-                gtd_expiration_sec=int(row[6] or 1800),
-                buy_spread_thr=float(row[7]) if row[7] is not None else DEFAULT_TAKER_SPREAD_THRESHOLD,
-                sell_spread_thr=float(row[8]) if row[8] is not None else DEFAULT_TAKER_SPREAD_THRESHOLD,
-                buy_exceed_thr=bool(row[9]) if row[9] is not None else DEFAULT_EXCEED_THR,
-                sell_exceed_thr=bool(row[10]) if row[10] is not None else DEFAULT_EXCEED_THR,
-                buy_price_min=float(row[11]) if row[11] is not None else DEFAULT_BUY_PRICE_MIN,
-                buy_price_max=float(row[12]) if row[12] is not None else DEFAULT_BUY_PRICE_MAX,
-                sell_price_min=float(row[13]) if row[13] is not None else DEFAULT_SELL_PRICE_MIN,
-                sell_price_max=float(row[14]) if row[14] is not None else DEFAULT_SELL_PRICE_MAX,
-                buy_follow_taker=bool(row[15]) if row[15] is not None else True,
-                sell_follow_taker=bool(row[16]) if row[16] is not None else True,
-                buy_price_filter_min=float(row[17]) if row[17] is not None else DEFAULT_BUY_PRICE_FILTER_MIN,
-                buy_price_filter_max=float(row[18]) if row[18] is not None else DEFAULT_BUY_PRICE_FILTER_MAX,
+                enabled=bool(row[3]),
+                owner_user_id=int(row[4] or 0),
+                gtd_expiration_sec=int(row[5] or 1800),
             )
         return None
     finally:
@@ -107,20 +69,7 @@ def get_copy_trading_config_by_id(config_id: int) -> Optional[CopyTradingConfig]
 def create_copy_trading_config(
     leader_proxy_wallet: str,
     follower_proxy_wallet: str,
-    share_ratio: float,
     owner_user_id: int = 0,
-    buy_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD,
-    sell_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD,
-    buy_exceed_thr: bool = DEFAULT_EXCEED_THR,
-    sell_exceed_thr: bool = DEFAULT_EXCEED_THR,
-    buy_follow_taker: bool = True,
-    sell_follow_taker: bool = True,
-    buy_price_min: float = DEFAULT_BUY_PRICE_MIN,
-    buy_price_max: float = DEFAULT_BUY_PRICE_MAX,
-    sell_price_min: float = DEFAULT_SELL_PRICE_MIN,
-    sell_price_max: float = DEFAULT_SELL_PRICE_MAX,
-    buy_price_filter_min: float = DEFAULT_BUY_PRICE_FILTER_MIN,
-    buy_price_filter_max: float = DEFAULT_BUY_PRICE_FILTER_MAX,
 ) -> int:
     """创建跟单配置，返回配置 ID"""
     conn = get_db_connection()
@@ -128,17 +77,9 @@ def create_copy_trading_config(
     try:
         cursor.execute("""
             INSERT INTO copy_trading_configs
-            (leader_proxy_wallet, follower_proxy_wallet, share_ratio, owner_user_id,
-             buy_spread_thr, sell_spread_thr, buy_exceed_thr, sell_exceed_thr,
-             buy_follow_taker, sell_follow_taker,
-             buy_price_min, buy_price_max, sell_price_min, sell_price_max,
-             buy_price_filter_min, buy_price_filter_max)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (leader_proxy_wallet.lower(), follower_proxy_wallet.lower(), share_ratio, owner_user_id,
-              buy_spread_thr, sell_spread_thr, int(buy_exceed_thr), int(sell_exceed_thr),
-              int(buy_follow_taker), int(sell_follow_taker),
-              buy_price_min, buy_price_max, sell_price_min, sell_price_max,
-              buy_price_filter_min, buy_price_filter_max))
+            (leader_proxy_wallet, follower_proxy_wallet, owner_user_id)
+            VALUES (%s, %s, %s)
+        """, (leader_proxy_wallet.lower(), follower_proxy_wallet.lower(), owner_user_id))
         conn.commit()
         return cursor.lastrowid
     finally:
@@ -147,7 +88,7 @@ def create_copy_trading_config(
 
 def update_copy_trading_config(config_id: int, **kwargs) -> bool:
     """更新跟单配置"""
-    allowed_fields = {"share_ratio", "enabled", "leader_proxy_wallet", "follower_proxy_wallet", "gtd_expiration_sec", "buy_spread_thr", "sell_spread_thr", "buy_exceed_thr", "sell_exceed_thr", "buy_price_min", "buy_price_max", "sell_price_min", "sell_price_max", "buy_follow_taker", "sell_follow_taker", "buy_price_filter_min", "buy_price_filter_max"}
+    allowed_fields = {"enabled", "leader_proxy_wallet", "follower_proxy_wallet", "gtd_expiration_sec"}
     update_fields = {}
     for k, v in kwargs.items():
         if k in allowed_fields:

@@ -12,7 +12,7 @@ from typing import Dict, Set, Optional, List
 
 from py_clob_client_v2 import ClobClient
 
-from .types import CopyTradingConfig, ActivitySignal, PlaceOrderResult, DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
+from .types import CopyTradingConfig, ActivitySignal, PlaceOrderResult
 from market import get_market_service
 from .chain import get_copy_trading_chain_monitor
 from .predexon import get_copy_trading_predexon
@@ -188,39 +188,6 @@ class CopyTradingService:
         """判断 leader 是否为 taker：价格精度高于 tick_size 即为 taker"""
         return Decimal(str(price)) % Decimal(tick_size) != 0
 
-    @staticmethod
-    def _buy_follow_price_role(leader_price: float, tick_size: Optional[str], best_ask: Optional[float], has_best_ask: bool, spread_thr: float, exceed_order: bool, follow_taker: bool, leader_role: Optional[str] = None) -> Optional[tuple[float, str]]:
-        if tick_size is None:
-            return leader_price, "maker"
-        ts = float(tick_size)
-        is_taker = leader_role == "taker" if leader_role else CopyTradingService._is_taker_price(leader_price, tick_size)
-        if follow_taker and is_taker and has_best_ask:
-            if best_ask - leader_price <= spread_thr:
-                return best_ask, "taker"
-            if not exceed_order:
-                return None
-            return leader_price + spread_thr, "maker"
-        maker_price = round(min(leader_price + ts, 1 - ts), len(tick_size) - 2)
-        if has_best_ask and maker_price >= best_ask:
-            return best_ask, "taker"
-        return maker_price, "maker"
-
-    @staticmethod
-    def _sell_follow_price_role(leader_price: float, tick_size: Optional[str], best_bid: Optional[float], has_best_bid: bool, spread_thr: float, exceed_order: bool, follow_taker: bool, leader_role: Optional[str] = None) -> Optional[tuple[float, str]]:
-        if tick_size is None:
-            return leader_price, "maker"
-        ts = float(tick_size)
-        is_taker = leader_role == "taker" if leader_role else CopyTradingService._is_taker_price(leader_price, tick_size)
-        if follow_taker and is_taker and has_best_bid:
-            if leader_price - best_bid <= spread_thr:
-                return best_bid, "taker"
-            if not exceed_order:
-                return None
-            return leader_price - spread_thr, "maker"
-        maker_price = round(max(leader_price - ts, ts), len(tick_size) - 2)
-        if has_best_bid and maker_price <= best_bid:
-            return best_bid, "taker"
-        return maker_price, "maker"
 
     def _record_position_snapshot(
         self,
@@ -250,7 +217,7 @@ class CopyTradingService:
             asset_id=asset_id,
             leader_proxy_wallet=l_addr,
             follower_proxy_wallet=f_addr,
-            share_ratio=config.share_ratio,
+            share_ratio=0,
             leader_position=0,
             follower_position=follower_position,
             follower_pending_buy=follower_pending_buy,
@@ -507,24 +474,10 @@ class CopyTradingService:
         """处理 BUY 信号 - 跟 leader 买单"""
         asset_id = signal.asset
 
-        if not (config.buy_price_filter_min <= signal.price <= config.buy_price_filter_max):
-            reason = f"price {signal.price} outside filter [{config.buy_price_filter_min}, {config.buy_price_filter_max}]"
-            logger.info(f"[CopyTrade] BUY skipped ({reason})")
-            self._record_and_notify_order_result(
-                config=config,
-                signal=signal,
-                follow_price=signal.price,
-                result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=signal.price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                follower_name=self._account_service.get_acc_name(config.follower_proxy_wallet),
-            )
-            return
-
-        # 计算跟单数量（含债务缓冲）
         f_addr = config.follower_proxy_wallet
         async with self._get_addr_lock(f_addr):
             leader_price = signal.price
 
-            y = math.floor(signal.size * config.share_ratio * 100) / 100
             follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
             leader_name = self._leader_service.get_leader_name(config.leader_proxy_wallet)
 
@@ -554,22 +507,11 @@ class CopyTradingService:
                     best_ask = float(asks[-1]["price"])
                     has_best_ask = True
 
-            price_role = self._buy_follow_price_role(leader_price, tick_size, best_ask, has_best_ask, config.buy_spread_thr, config.buy_exceed_thr, config.buy_follow_taker, signal.role)
-            if price_role is None:
-                reason = "spread exceeded, order disabled"
-                logger.warning(f"[CopyTrade] BUY skipped ({reason})")
-                self._record_and_notify_order_result(
-                    config=config,
-                    signal=signal,
-                    follow_price=leader_price,
-                    result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=leader_price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                    follower_name=follower_name,
-                )
-                return
-            follow_price, follower_role = price_role
-            follow_price = max(config.buy_price_min, min(follow_price, config.buy_price_max))
+            # TODO: 策略重写 - 目前使用 leader 价格作为临时占位
+            follow_price = leader_price
+            follower_role = "maker"
             min_size = self._min_order_size("BUY", follow_price, follower_role)
-            follow_buy_size = max(y, min_size)
+            follow_buy_size = min_size
 
             logger.info(f"""
 {'='*50}
@@ -658,20 +600,9 @@ class CopyTradingService:
                     best_bid = float(bids[-1]["price"])
                     has_best_bid = True
 
-            price_role = self._sell_follow_price_role(leader_price, tick_size, best_bid, has_best_bid, config.sell_spread_thr, config.sell_exceed_thr, config.sell_follow_taker, signal.role)
-            if price_role is None:
-                reason = "spread exceeded, order disabled"
-                logger.warning(f"[CopyTrade] SELL skipped ({reason})")
-                self._record_and_notify_order_result(
-                    config=config,
-                    signal=signal,
-                    follow_price=leader_price,
-                    result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=leader_price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                    follower_name=follower_name
-                )
-                return
-            follow_price, follower_role = price_role
-            follow_price = max(config.sell_price_min, min(follow_price, config.sell_price_max))
+            # TODO: 策略重写 - 目前使用 leader 价格作为临时占位
+            follow_price = leader_price
+            follower_role = "maker"
 
             ratio = signal.size / old_leader_pos
             y = math.floor(ratio * available_pos * 100) / 100
@@ -1051,20 +982,7 @@ class CopyTradingService:
         self,
         leader_proxy_wallet: str,
         follower_proxy_wallet: str,
-        share_ratio: float,
         owner_user_id: int = 0,
-        buy_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD,
-        sell_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD,
-        buy_exceed_thr: bool = DEFAULT_EXCEED_THR,
-        sell_exceed_thr: bool = DEFAULT_EXCEED_THR,
-        buy_follow_taker: bool = True,
-        sell_follow_taker: bool = True,
-        buy_price_min: float = DEFAULT_BUY_PRICE_MIN,
-        buy_price_max: float = DEFAULT_BUY_PRICE_MAX,
-        sell_price_min: float = DEFAULT_SELL_PRICE_MIN,
-        sell_price_max: float = DEFAULT_SELL_PRICE_MAX,
-        buy_price_filter_min: float = DEFAULT_BUY_PRICE_FILTER_MIN,
-        buy_price_filter_max: float = DEFAULT_BUY_PRICE_FILTER_MAX,
     ) -> int:
         """创建跟单配置"""
         leader_proxy_wallet = leader_proxy_wallet.lower()
@@ -1094,34 +1012,16 @@ class CopyTradingService:
 
         # 落库
         try:
-            config_id = create_copy_trading_config(leader_proxy_wallet, follower_proxy_wallet,
-                                                   share_ratio, owner_user_id,
-                                                   buy_spread_thr, sell_spread_thr,
-                                                   buy_exceed_thr, sell_exceed_thr,
-                                                   buy_follow_taker, sell_follow_taker,
-                                                   buy_price_min, buy_price_max, sell_price_min, sell_price_max,
-                                                   buy_price_filter_min, buy_price_filter_max)
+            config_id = create_copy_trading_config(leader_proxy_wallet, follower_proxy_wallet, owner_user_id)
         except pymysql.err.IntegrityError as e:
             raise RuntimeError(f"Follower {follower_proxy_wallet} already follows leader {leader_proxy_wallet}") from e
 
-        # 直接用参数构造对象
         new_config = CopyTradingConfig(
             id=config_id,
             leader_proxy_wallet=leader_proxy_wallet,
             follower_proxy_wallet=follower_proxy_wallet,
-            share_ratio=share_ratio,
             enabled=False,
             owner_user_id=owner_user_id,
-            buy_spread_thr=buy_spread_thr,
-            sell_spread_thr=sell_spread_thr,
-            buy_exceed_thr=buy_exceed_thr,
-            sell_exceed_thr=sell_exceed_thr,
-            buy_price_min=buy_price_min,
-            buy_price_max=buy_price_max,
-            sell_price_min=sell_price_min,
-            sell_price_max=sell_price_max,
-            buy_price_filter_min=buy_price_filter_min,
-            buy_price_filter_max=buy_price_filter_max,
         )
 
         # 增量更新缓存
@@ -1446,42 +1346,14 @@ class CopyTradingService:
 
     def update_config(self, config_id: int, **kwargs) -> bool:
         """更新配置"""
-        # 持久化
         success = update_copy_trading_config(config_id, **kwargs)
         if success:
-            # 更新缓存
             config = self._config_id_to_config.get(config_id)
             if config:
-                if "share_ratio" in kwargs:
-                    config.share_ratio = kwargs["share_ratio"]
                 if "enabled" in kwargs:
                     config.enabled = kwargs["enabled"]
                 if "gtd_expiration_sec" in kwargs:
                     config.gtd_expiration_sec = int(kwargs["gtd_expiration_sec"])
-                if "buy_spread_thr" in kwargs:
-                    config.buy_spread_thr = float(kwargs["buy_spread_thr"])
-                if "sell_spread_thr" in kwargs:
-                    config.sell_spread_thr = float(kwargs["sell_spread_thr"])
-                if "buy_exceed_thr" in kwargs:
-                    config.buy_exceed_thr = bool(kwargs["buy_exceed_thr"])
-                if "sell_exceed_thr" in kwargs:
-                    config.sell_exceed_thr = bool(kwargs["sell_exceed_thr"])
-                if "buy_follow_taker" in kwargs:
-                    config.buy_follow_taker = bool(kwargs["buy_follow_taker"])
-                if "sell_follow_taker" in kwargs:
-                    config.sell_follow_taker = bool(kwargs["sell_follow_taker"])
-                if "buy_price_min" in kwargs:
-                    config.buy_price_min = float(kwargs["buy_price_min"])
-                if "buy_price_max" in kwargs:
-                    config.buy_price_max = float(kwargs["buy_price_max"])
-                if "sell_price_min" in kwargs:
-                    config.sell_price_min = float(kwargs["sell_price_min"])
-                if "sell_price_max" in kwargs:
-                    config.sell_price_max = float(kwargs["sell_price_max"])
-                if "buy_price_filter_min" in kwargs:
-                    config.buy_price_filter_min = float(kwargs["buy_price_filter_min"])
-                if "buy_price_filter_max" in kwargs:
-                    config.buy_price_filter_max = float(kwargs["buy_price_filter_max"])
         return success
 
     def delete_config(self, config_id: int) -> bool:

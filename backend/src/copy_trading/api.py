@@ -10,7 +10,6 @@ from auth import AuthUser, get_current_user
 from account.service import get_account_service
 from .service import get_copy_trading_service
 from .models import get_all_schedules, get_schedule_by_config_id, upsert_schedule, delete_schedule
-from .types import DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
 from leader.service import get_leader_service
 
 router = APIRouter(prefix="/api/copy-trading", tags=["copy-trading"])
@@ -19,37 +18,11 @@ router = APIRouter(prefix="/api/copy-trading", tags=["copy-trading"])
 class CreateConfigRequest(BaseModel):
     leader_proxy_wallet: str
     follower_proxy_wallet: str
-    share_ratio: float = 0.1
-    buy_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD
-    sell_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD
-    buy_exceed_thr: bool = DEFAULT_EXCEED_THR
-    sell_exceed_thr: bool = DEFAULT_EXCEED_THR
-    buy_follow_taker: bool = True
-    sell_follow_taker: bool = True
-    buy_price_min: float = DEFAULT_BUY_PRICE_MIN
-    buy_price_max: float = DEFAULT_BUY_PRICE_MAX
-    sell_price_min: float = DEFAULT_SELL_PRICE_MIN
-    sell_price_max: float = DEFAULT_SELL_PRICE_MAX
-    buy_price_filter_min: float = DEFAULT_BUY_PRICE_FILTER_MIN
-    buy_price_filter_max: float = DEFAULT_BUY_PRICE_FILTER_MAX
 
 
 class UpdateConfigRequest(BaseModel):
-    share_ratio: Optional[float] = None
     enabled: Optional[bool] = None
     gtd_expiration_sec: Optional[int] = None
-    buy_spread_thr: Optional[float] = None
-    sell_spread_thr: Optional[float] = None
-    buy_exceed_thr: Optional[bool] = None
-    sell_exceed_thr: Optional[bool] = None
-    buy_follow_taker: Optional[bool] = None
-    sell_follow_taker: Optional[bool] = None
-    buy_price_min: Optional[float] = None
-    buy_price_max: Optional[float] = None
-    sell_price_min: Optional[float] = None
-    sell_price_max: Optional[float] = None
-    buy_price_filter_min: Optional[float] = None
-    buy_price_filter_max: Optional[float] = None
 
 
 def _assert_config_access(config, current_user: AuthUser):
@@ -62,12 +35,6 @@ async def create_config(data: CreateConfigRequest, current_user: AuthUser = Depe
     """创建跟单配置"""
     if not data.leader_proxy_wallet or not data.follower_proxy_wallet:
         raise HTTPException(status_code=400, detail="Missing required fields")
-    if data.share_ratio <= 0:
-        raise HTTPException(status_code=400, detail="share_ratio must > 0")
-    if not (0.01 <= data.buy_spread_thr <= 0.5):
-        raise HTTPException(status_code=400, detail="buy_spread_thr must be between 0.01 and 0.5")
-    if not (0.01 <= data.sell_spread_thr <= 0.5):
-        raise HTTPException(status_code=400, detail="sell_spread_thr must be between 0.01 and 0.5")
 
     # 验证 follower_proxy_wallet 存在
     account = get_account_service().get_account_by_proxy_wallet(data.follower_proxy_wallet)
@@ -79,20 +46,7 @@ async def create_config(data: CreateConfigRequest, current_user: AuthUser = Depe
         config_id = await service.create_config(
             data.leader_proxy_wallet,
             data.follower_proxy_wallet,
-            data.share_ratio,
             owner_user_id=current_user.id,
-            buy_spread_thr=data.buy_spread_thr,
-            sell_spread_thr=data.sell_spread_thr,
-            buy_exceed_thr=data.buy_exceed_thr,
-            sell_exceed_thr=data.sell_exceed_thr,
-            buy_follow_taker=data.buy_follow_taker,
-            sell_follow_taker=data.sell_follow_taker,
-            buy_price_min=data.buy_price_min,
-            buy_price_max=data.buy_price_max,
-            sell_price_min=data.sell_price_min,
-            sell_price_max=data.sell_price_max,
-            buy_price_filter_min=data.buy_price_filter_min,
-            buy_price_filter_max=data.buy_price_filter_max,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -120,22 +74,9 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
             "leader_name": leader_svc.get_leader_name(c.leader_proxy_wallet),
             "follower_proxy_wallet": c.follower_proxy_wallet,
             "follower_name": account_svc.get_acc_name(c.follower_proxy_wallet),
-            "share_ratio": c.share_ratio,
             "enabled": c.enabled,
             "owner_user_id": c.owner_user_id,
             "gtd_expiration_sec": c.gtd_expiration_sec,
-            "buy_spread_thr": c.buy_spread_thr,
-            "sell_spread_thr": c.sell_spread_thr,
-            "buy_exceed_thr": c.buy_exceed_thr,
-            "sell_exceed_thr": c.sell_exceed_thr,
-            "buy_follow_taker": c.buy_follow_taker,
-            "sell_follow_taker": c.sell_follow_taker,
-            "buy_price_min": c.buy_price_min,
-            "buy_price_max": c.buy_price_max,
-            "sell_price_min": c.sell_price_min,
-            "sell_price_max": c.sell_price_max,
-            "buy_price_filter_min": c.buy_price_filter_min,
-            "buy_price_filter_max": c.buy_price_filter_max,
         }
         for c in all_configs
     ]
@@ -152,22 +93,9 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
         "id": config.id,
         "leader_proxy_wallet": config.leader_proxy_wallet,
         "follower_proxy_wallet": config.follower_proxy_wallet,
-        "share_ratio": config.share_ratio,
         "enabled": config.enabled,
         "owner_user_id": config.owner_user_id,
         "gtd_expiration_sec": config.gtd_expiration_sec,
-        "buy_spread_thr": config.buy_spread_thr,
-        "sell_spread_thr": config.sell_spread_thr,
-        "buy_exceed_thr": config.buy_exceed_thr,
-        "sell_exceed_thr": config.sell_exceed_thr,
-        "buy_follow_taker": config.buy_follow_taker,
-        "sell_follow_taker": config.sell_follow_taker,
-        "buy_price_min": config.buy_price_min,
-        "buy_price_max": config.buy_price_max,
-        "sell_price_min": config.sell_price_min,
-        "sell_price_max": config.sell_price_max,
-        "buy_price_filter_min": config.buy_price_filter_min,
-        "buy_price_filter_max": config.buy_price_filter_max,
     }
 
 
@@ -177,44 +105,12 @@ async def update_config(config_id: int, data: UpdateConfigRequest, current_user:
     service = get_copy_trading_service()
     _assert_config_access(service.get_config_by_id(config_id), current_user)
     kwargs = {}
-    if data.share_ratio is not None:
-        if not (0 < data.share_ratio <= 1):
-            raise HTTPException(status_code=400, detail="share_ratio must be between 0 and 1")
-        kwargs["share_ratio"] = data.share_ratio
     if data.enabled is not None:
         kwargs["enabled"] = data.enabled
     if data.gtd_expiration_sec is not None:
         if not (60 <= data.gtd_expiration_sec <= 86400):
             raise HTTPException(status_code=400, detail="gtd_expiration_sec must be between 60 and 86400")
         kwargs["gtd_expiration_sec"] = data.gtd_expiration_sec
-    if data.buy_spread_thr is not None:
-        if not (0.01 <= data.buy_spread_thr <= 0.5):
-            raise HTTPException(status_code=400, detail="buy_spread_thr must be between 0.01 and 0.5")
-        kwargs["buy_spread_thr"] = data.buy_spread_thr
-    if data.sell_spread_thr is not None:
-        if not (0.01 <= data.sell_spread_thr <= 0.5):
-            raise HTTPException(status_code=400, detail="sell_spread_thr must be between 0.01 and 0.5")
-        kwargs["sell_spread_thr"] = data.sell_spread_thr
-    if data.buy_exceed_thr is not None:
-        kwargs["buy_exceed_thr"] = data.buy_exceed_thr
-    if data.sell_exceed_thr is not None:
-        kwargs["sell_exceed_thr"] = data.sell_exceed_thr
-    if data.buy_follow_taker is not None:
-        kwargs["buy_follow_taker"] = data.buy_follow_taker
-    if data.sell_follow_taker is not None:
-        kwargs["sell_follow_taker"] = data.sell_follow_taker
-    if data.buy_price_min is not None:
-        kwargs["buy_price_min"] = data.buy_price_min
-    if data.buy_price_max is not None:
-        kwargs["buy_price_max"] = data.buy_price_max
-    if data.sell_price_min is not None:
-        kwargs["sell_price_min"] = data.sell_price_min
-    if data.sell_price_max is not None:
-        kwargs["sell_price_max"] = data.sell_price_max
-    if data.buy_price_filter_min is not None:
-        kwargs["buy_price_filter_min"] = data.buy_price_filter_min
-    if data.buy_price_filter_max is not None:
-        kwargs["buy_price_filter_max"] = data.buy_price_filter_max
 
     if not kwargs:
         raise HTTPException(status_code=400, detail="No fields to update")

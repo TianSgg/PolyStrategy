@@ -3,15 +3,6 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-DEFAULT_TAKER_SPREAD_THRESHOLD = 0.05
-DEFAULT_EXCEED_THR = True
-DEFAULT_BUY_PRICE_MIN = 0.001
-DEFAULT_BUY_PRICE_MAX = 0.999
-DEFAULT_SELL_PRICE_MIN = 0.001
-DEFAULT_SELL_PRICE_MAX = 0.999
-DEFAULT_BUY_PRICE_FILTER_MIN = 0.001
-DEFAULT_BUY_PRICE_FILTER_MAX = 0.998
-
 
 @dataclass(eq=False)
 class CopyTradingConfig:
@@ -19,22 +10,9 @@ class CopyTradingConfig:
     id: int
     leader_proxy_wallet: str
     follower_proxy_wallet: str
-    share_ratio: float
     enabled: bool = True
     owner_user_id: int = 0
     gtd_expiration_sec: int = 1800  # GTD 订单过期时间（秒），默认 30 分钟
-    buy_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD
-    sell_spread_thr: float = DEFAULT_TAKER_SPREAD_THRESHOLD
-    buy_exceed_thr: bool = DEFAULT_EXCEED_THR
-    sell_exceed_thr: bool = DEFAULT_EXCEED_THR
-    buy_follow_taker: bool = True
-    sell_follow_taker: bool = True
-    buy_price_min: float = DEFAULT_BUY_PRICE_MIN
-    buy_price_max: float = DEFAULT_BUY_PRICE_MAX
-    sell_price_min: float = DEFAULT_SELL_PRICE_MIN
-    sell_price_max: float = DEFAULT_SELL_PRICE_MAX
-    buy_price_filter_min: float = DEFAULT_BUY_PRICE_FILTER_MIN
-    buy_price_filter_max: float = DEFAULT_BUY_PRICE_FILTER_MAX
 
     def __hash__(self):
         return hash(self.id)

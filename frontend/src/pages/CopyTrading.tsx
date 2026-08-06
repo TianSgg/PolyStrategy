@@ -12,21 +12,8 @@ interface CopyTradingConfig {
   leader_name: string
   follower_proxy_wallet: string
   follower_name: string
-  share_ratio: number
   enabled: boolean
   gtd_expiration_sec: number
-  buy_spread_thr: number
-  sell_spread_thr: number
-  buy_exceed_thr: boolean
-  sell_exceed_thr: boolean
-  buy_follow_taker: boolean
-  sell_follow_taker: boolean
-  buy_price_min: number
-  buy_price_max: number
-  sell_price_min: number
-  sell_price_max: number
-  buy_price_filter_min: number
-  buy_price_filter_max: number
 }
 
 interface Account {
@@ -48,7 +35,6 @@ interface PositionHistoryPoint {
   id: number
   created_at: string
   asset_id: string
-  share_ratio: number
   leader_position: number
   follower_position: number
   follower_pending_buy: number
@@ -188,7 +174,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [followerAccountId, setFollowerAccountId] = useState<number | ''>('')
   const [showCustomFollowerInput, setShowCustomFollowerInput] = useState(false)
   const [customFollowerPrivateKey, setCustomFollowerPrivateKey] = useState('')
-  const [shareRatio, setShareRatio] = useState('0.1')
   const [showCustomLeaderInput, setShowCustomLeaderInput] = useState(false)
 
   useEffect(() => {
@@ -205,27 +190,10 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     }
   }, [visible])
 
-  // Ratio editing
-  const [editingRatioConfigId, setEditingRatioConfigId] = useState<number | null>(null)
-  const [editingRatioValue, setEditingRatioValue] = useState('')
-
   // GTD expiration editing
   const [editingGtdConfigId, setEditingGtdConfigId] = useState<number | null>(null)
   const [editingGtdValue, setEditingGtdValue] = useState('')
 
-  // Spread threshold editing
-  const [editingSpreadConfigId, setEditingSpreadConfigId] = useState<number | null>(null)
-  const [editingSpreadSide, setEditingSpreadSide] = useState<'buy' | 'sell'>('buy')
-  const [editingSpreadValue, setEditingSpreadValue] = useState('')
-
-  // Price min/max editing
-  const [editingPriceConfigId, setEditingPriceConfigId] = useState<number | null>(null)
-  const [editingPriceField, setEditingPriceField] = useState<'buy' | 'sell'>('buy')
-  const [editingPriceMin, setEditingPriceMin] = useState('')
-  const [editingPriceMax, setEditingPriceMax] = useState('')
-  const [editingFilterConfigId, setEditingFilterConfigId] = useState<number | null>(null)
-  const [editingFilterMin, setEditingFilterMin] = useState('')
-  const [editingFilterMax, setEditingFilterMax] = useState('')
 
   // 曲线时间范围
   const [historyRangeDays, setHistoryRangeDays] = useState<Record<number, number | 'custom'>>({})
@@ -359,12 +327,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
       followerWallet = selectedAccount.proxy_wallet
     }
 
-    const ratio = parseFloat(shareRatio)
-    if (isNaN(ratio) || ratio <= 0 || ratio > 1) {
-      setError('跟单比例需在 0 到 1 之间')
-      return
-    }
-
     setLoading(true)
     try {
       // 如果是手动输入的新 Leader 地址，先创建 Leader 记录
@@ -404,7 +366,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
         body: JSON.stringify({
           leader_proxy_wallet: leaderAddr,
           follower_proxy_wallet: followerWalletForConfig,
-          share_ratio: ratio
         })
       })
 
@@ -415,7 +376,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
 
       setLeaderAddr('')
       setFollowerAccountId('')
-      setShareRatio('0.1')
       setShowAddForm(false)
       setShowCustomLeaderInput(false)
       setShowCustomFollowerInput(false)
@@ -491,36 +451,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     }
   }
 
-  const handleRatioClick = (config: CopyTradingConfig) => {
-    setEditingRatioConfigId(config.id)
-    setEditingRatioValue(config.share_ratio.toString())
-  }
-
-  const handleRatioSave = async (configId: number) => {
-    const ratio = parseFloat(editingRatioValue)
-    if (isNaN(ratio) || ratio <= 0 || ratio > 1) {
-      toast('比例需在 0 到 1 之间')
-      return
-    }
-    try {
-      await apiFetch(`/api/copy-trading/configs/${configId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ share_ratio: ratio })
-      })
-      setConfigs(prev => prev.map(c =>
-        c.id === configId ? { ...c, share_ratio: ratio } : c
-      ))
-    } catch (e) {
-      console.error('Failed to update ratio:', e)
-    } finally {
-      setEditingRatioConfigId(null)
-    }
-  }
-
-  const handleRatioCancel = () => {
-    setEditingRatioConfigId(null)
-  }
 
   const handleGtdClick = (config: CopyTradingConfig) => {
     setEditingGtdConfigId(config.id)
@@ -554,163 +484,7 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     setEditingGtdConfigId(null)
   }
 
-  const handleSpreadClick = (config: CopyTradingConfig, side: 'buy' | 'sell') => {
-    setEditingSpreadConfigId(config.id)
-    setEditingSpreadSide(side)
-    setEditingSpreadValue(String(side === 'buy' ? (config.buy_spread_thr ?? 0.05) : (config.sell_spread_thr ?? 0.05)))
-  }
 
-  const handleSpreadSave = async (configId: number) => {
-    const val = parseFloat(editingSpreadValue)
-    if (isNaN(val) || val < 0.01 || val > 0.5) {
-      toast('价差阈值需在 0.01 ~ 0.5 之间')
-      return
-    }
-    const field = editingSpreadSide === 'buy' ? 'buy_spread_thr' : 'sell_spread_thr'
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${configId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: val })
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || '更新失败')
-      }
-      setConfigs(prev => prev.map(c =>
-        c.id === configId ? { ...c, [field]: val } : c
-      ))
-    } catch (e: any) {
-      toast(e.message || `Failed to update ${field}`)
-    } finally {
-      setEditingSpreadConfigId(null)
-    }
-  }
-
-  const handleSpreadCancel = () => {
-    setEditingSpreadConfigId(null)
-  }
-
-  const handleToggleExceedOrder = async (config: CopyTradingConfig, side: 'buy' | 'sell') => {
-    const field = side === 'buy' ? 'buy_exceed_thr' : 'sell_exceed_thr'
-    const newVal = !config[field]
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${config.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: newVal })
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || '更新失败')
-      }
-      setConfigs(prev => prev.map(c =>
-        c.id === config.id ? { ...c, [field]: newVal } : c
-      ))
-    } catch (e: any) {
-      toast(e.message || `Failed to toggle ${field}`)
-    }
-  }
-
-  const handleToggleFollowTaker = async (config: CopyTradingConfig, side: 'buy' | 'sell') => {
-    const field = side === 'buy' ? 'buy_follow_taker' : 'sell_follow_taker'
-    const newVal = !config[field]
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${config.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: newVal })
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || '更新失败')
-      }
-      setConfigs(prev => prev.map(c =>
-        c.id === config.id ? { ...c, [field]: newVal } : c
-      ))
-    } catch (e: any) {
-      toast(e.message || `Failed to toggle ${field}`)
-    }
-  }
-
-
-
-
-  const handlePriceClick = (config: CopyTradingConfig, side: 'buy' | 'sell') => {
-    setEditingPriceConfigId(config.id)
-    setEditingPriceField(side)
-    setEditingPriceMin(String(side === 'buy' ? (config.buy_price_min ?? 0.001) : (config.sell_price_min ?? 0.001)))
-    setEditingPriceMax(String(side === 'buy' ? (config.buy_price_max ?? 0.999) : (config.sell_price_max ?? 0.999)))
-  }
-
-  const handlePriceSave = async (configId: number) => {
-    const min = parseFloat(editingPriceMin)
-    const max = parseFloat(editingPriceMax)
-    if (isNaN(min) || isNaN(max) || min < 0.001 || max > 0.999 || min >= max) {
-      toast('价格范围需满足 0.001 ≤ min < max ≤ 0.999')
-      return
-    }
-    const minField = editingPriceField === 'buy' ? 'buy_price_min' : 'sell_price_min'
-    const maxField = editingPriceField === 'buy' ? 'buy_price_max' : 'sell_price_max'
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${configId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [minField]: min, [maxField]: max })
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || '更新失败')
-      }
-      setConfigs(prev => prev.map(c =>
-        c.id === configId ? { ...c, [minField]: min, [maxField]: max } : c
-      ))
-    } catch (e: any) {
-      toast(e.message || '更新价格范围失败')
-    } finally {
-      setEditingPriceConfigId(null)
-    }
-  }
-
-  const handlePriceCancel = () => {
-    setEditingPriceConfigId(null)
-  }
-
-  const handleFilterClick = (config: CopyTradingConfig) => {
-    setEditingFilterConfigId(config.id)
-    setEditingFilterMin(String(config.buy_price_filter_min ?? 0.001))
-    setEditingFilterMax(String(config.buy_price_filter_max ?? 0.998))
-  }
-
-  const handleFilterSave = async (configId: number) => {
-    const min = parseFloat(editingFilterMin)
-    const max = parseFloat(editingFilterMax)
-    if (isNaN(min) || isNaN(max) || min < 0.001 || max > 0.999 || min >= max) {
-      toast('过滤范围需满足 0.001 ≤ min < max ≤ 0.999')
-      return
-    }
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${configId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ buy_price_filter_min: min, buy_price_filter_max: max })
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || '更新失败')
-      }
-      setConfigs(prev => prev.map(c =>
-        c.id === configId ? { ...c, buy_price_filter_min: min, buy_price_filter_max: max } : c
-      ))
-      setEditingFilterConfigId(null)
-    } catch (e: any) {
-      toast(e.message || 'Failed to update filter')
-    }
-  }
-
-  const handleFilterCancel = () => {
-    setEditingFilterConfigId(null)
-  }
 
   const handleDeleteConfig = async (configId: number) => {
     if (!confirm('确定删除此跟单配置？')) return
@@ -1193,20 +967,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                     </button>
                   )}
                 </div>
-                <div className="form-group">
-                  <label className="form-label">分享比例</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    max="1"
-                    value={shareRatio}
-                    onChange={e => setShareRatio(e.target.value)}
-                    className="form-input"
-                    placeholder="0.1"
-                  />
-                  <span className="form-hint">0.01 ~ 1.0，表示跟单的 share 比例</span>
-                </div>
                 {error && <div className="error-msg">{error}</div>}
                 <div className="form-actions">
                   <button onClick={handleAddConfig} disabled={loading} className="btn btn-primary">
@@ -1235,7 +995,7 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                     .map(point => ({
                       ...point,
                       createdAtMs: parseUtc8Timestamp(point.created_at),
-                      leader_value: historyState.normalized ? point.leader_position * point.share_ratio : point.leader_position,
+                      leader_value: point.leader_position,
                       follower_value: point.follower_position,
                     }))
                     .filter(point => point.createdAtMs > 0)
@@ -1315,39 +1075,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                     </div>
                     <div className="config-meta">
                       <span className="meta-item">ID: <strong>#{config.id}</strong></span>
-                      <span className="meta-item price-anchor">
-                            ratio:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleRatioClick(config)}
-                              title="点击修改"
-                            >
-                              {config.share_ratio}
-                            </strong>
-                            {editingRatioConfigId === config.id && (
-                              <div className="price-popover">
-                                <div className="price-popover-row">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    min="0.01"
-                                    max="1"
-                                    value={editingRatioValue}
-                                    onChange={e => setEditingRatioValue(e.target.value)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handleRatioSave(config.id)
-                                      if (e.key === 'Escape') handleRatioCancel()
-                                    }}
-                                    autoFocus
-                                  />
-                                </div>
-                                <div className="price-popover-actions">
-                                  <button onClick={() => handleRatioSave(config.id)} className="btn-save">✓</button>
-                                  <button onClick={handleRatioCancel} className="btn-cancel">✕</button>
-                                </div>
-                              </div>
-                            )}
-                          </span>
                           <span className="meta-item price-anchor">
                             GTD:{' '}
                             <strong
@@ -1378,250 +1105,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                                 <div className="price-popover-actions">
                                   <button onClick={() => handleGtdSave(config.id)} className="btn-save">✓</button>
                                   <button onClick={handleGtdCancel} className="btn-cancel">✕</button>
-                                </div>
-                              </div>
-                            )}
-                          </span>
-                          <span className="meta-item price-anchor">
-                            B吃:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleToggleFollowTaker(config, 'buy')}
-                              title="点击切换：BUY 是否跟随 leader 的 taker 行为"
-                              style={{ color: config.buy_follow_taker ? undefined : '#e57373' }}
-                            >
-                              {config.buy_follow_taker ? '跟' : '挂'}
-                            </strong>
-                            {' '}
-                            S吃:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleToggleFollowTaker(config, 'sell')}
-                              title="点击切换：SELL 是否跟随 leader 的 taker 行为"
-                              style={{ color: config.sell_follow_taker ? undefined : '#e57373' }}
-                            >
-                              {config.sell_follow_taker ? '跟' : '挂'}
-                            </strong>
-                          </span>
-                          {config.buy_follow_taker && (
-                          <span className="meta-item price-anchor">
-                            B阈:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleSpreadClick(config, 'buy')}
-                              title="点击修改 BUY 价差阈值"
-                            >
-                              {config.buy_spread_thr ?? 0.05}
-                            </strong>
-                            {editingSpreadConfigId === config.id && editingSpreadSide === 'buy' && (
-                              <div className="price-popover">
-                                <div className="price-popover-row">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    min="0.01"
-                                    max="0.5"
-                                    value={editingSpreadValue}
-                                    onChange={e => setEditingSpreadValue(e.target.value)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handleSpreadSave(config.id)
-                                      if (e.key === 'Escape') handleSpreadCancel()
-                                    }}
-                                    autoFocus
-                                  />
-                                </div>
-                                <div className="price-popover-actions">
-                                  <button onClick={() => handleSpreadSave(config.id)} className="btn-save">✓</button>
-                                  <button onClick={handleSpreadCancel} className="btn-cancel">✕</button>
-                                </div>
-                              </div>
-                            )}
-                            {' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleToggleExceedOrder(config, 'buy')}
-                              title="点击切换：超过阈值时 BUY 是否挂单"
-                              style={{ color: config.buy_exceed_thr ? undefined : '#e57373' }}
-                            >
-                              {config.buy_exceed_thr ? '挂' : '跳'}
-                            </strong>
-                          </span>
-                          )}
-                          {config.sell_follow_taker && (
-                          <span className="meta-item price-anchor">
-                            S阈:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleSpreadClick(config, 'sell')}
-                              title="点击修改 SELL 价差阈值"
-                            >
-                              {config.sell_spread_thr ?? 0.05}
-                            </strong>
-                            {editingSpreadConfigId === config.id && editingSpreadSide === 'sell' && (
-                              <div className="price-popover">
-                                <div className="price-popover-row">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    min="0.01"
-                                    max="0.5"
-                                    value={editingSpreadValue}
-                                    onChange={e => setEditingSpreadValue(e.target.value)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handleSpreadSave(config.id)
-                                      if (e.key === 'Escape') handleSpreadCancel()
-                                    }}
-                                    autoFocus
-                                  />
-                                </div>
-                                <div className="price-popover-actions">
-                                  <button onClick={() => handleSpreadSave(config.id)} className="btn-save">✓</button>
-                                  <button onClick={handleSpreadCancel} className="btn-cancel">✕</button>
-                                </div>
-                              </div>
-                            )}
-                            {' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleToggleExceedOrder(config, 'sell')}
-                              title="点击切换：超过阈值时 SELL 是否挂单"
-                              style={{ color: config.sell_exceed_thr ? undefined : '#e57373' }}
-                            >
-                              {config.sell_exceed_thr ? '挂' : '跳'}
-                            </strong>
-                          </span>
-                          )}
-                          <span className="meta-item price-anchor">
-                            B价:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handlePriceClick(config, 'buy')}
-                              title="点击修改 BUY 价格范围"
-                            >
-                              {config.buy_price_min ?? 0.001}~{config.buy_price_max ?? 0.999}
-                            </strong>
-                            {editingPriceConfigId === config.id && editingPriceField === 'buy' && (
-                              <div className="price-popover">
-                                <div className="price-popover-row">
-                                  <label>min</label>
-                                  <input
-                                    type="number"
-                                    step="0.001"
-                                    min="0.001"
-                                    max="0.999"
-                                    value={editingPriceMin}
-                                    onChange={e => setEditingPriceMin(e.target.value)}
-                                    autoFocus
-                                  />
-                                </div>
-                                <div className="price-popover-row">
-                                  <label>max</label>
-                                  <input
-                                    type="number"
-                                    step="0.001"
-                                    min="0.001"
-                                    max="0.999"
-                                    value={editingPriceMax}
-                                    onChange={e => setEditingPriceMax(e.target.value)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handlePriceSave(config.id)
-                                      if (e.key === 'Escape') handlePriceCancel()
-                                    }}
-                                  />
-                                </div>
-                                <div className="price-popover-actions">
-                                  <button onClick={() => handlePriceSave(config.id)} className="btn-save">✓</button>
-                                  <button onClick={handlePriceCancel} className="btn-cancel">✕</button>
-                                </div>
-                              </div>
-                            )}
-                          </span>
-                          <span className="meta-item price-anchor">
-                            S价:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handlePriceClick(config, 'sell')}
-                              title="点击修改 SELL 价格范围"
-                            >
-                              {config.sell_price_min ?? 0.001}~{config.sell_price_max ?? 0.999}
-                            </strong>
-                            {editingPriceConfigId === config.id && editingPriceField === 'sell' && (
-                              <div className="price-popover">
-                                <div className="price-popover-row">
-                                  <label>min</label>
-                                  <input
-                                    type="number"
-                                    step="0.001"
-                                    min="0.001"
-                                    max="0.999"
-                                    value={editingPriceMin}
-                                    onChange={e => setEditingPriceMin(e.target.value)}
-                                    autoFocus
-                                  />
-                                </div>
-                                <div className="price-popover-row">
-                                  <label>max</label>
-                                  <input
-                                    type="number"
-                                    step="0.001"
-                                    min="0.001"
-                                    max="0.999"
-                                    value={editingPriceMax}
-                                    onChange={e => setEditingPriceMax(e.target.value)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handlePriceSave(config.id)
-                                      if (e.key === 'Escape') handlePriceCancel()
-                                    }}
-                                  />
-                                </div>
-                                <div className="price-popover-actions">
-                                  <button onClick={() => handlePriceSave(config.id)} className="btn-save">✓</button>
-                                  <button onClick={handlePriceCancel} className="btn-cancel">✕</button>
-                                </div>
-                              </div>
-                            )}
-                          </span>
-                          <span className="meta-item price-anchor">
-                            B滤:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleFilterClick(config)}
-                              title="点击修改 BUY 信号价格过滤范围"
-                            >
-                              {config.buy_price_filter_min ?? 0.001}~{config.buy_price_filter_max ?? 0.998}
-                            </strong>
-                            {editingFilterConfigId === config.id && (
-                              <div className="price-popover">
-                                <div className="price-popover-row">
-                                  <label>min</label>
-                                  <input
-                                    type="number"
-                                    step="0.001"
-                                    min="0.001"
-                                    max="0.999"
-                                    value={editingFilterMin}
-                                    onChange={e => setEditingFilterMin(e.target.value)}
-                                    autoFocus
-                                  />
-                                </div>
-                                <div className="price-popover-row">
-                                  <label>max</label>
-                                  <input
-                                    type="number"
-                                    step="0.001"
-                                    min="0.001"
-                                    max="0.999"
-                                    value={editingFilterMax}
-                                    onChange={e => setEditingFilterMax(e.target.value)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handleFilterSave(config.id)
-                                      if (e.key === 'Escape') handleFilterCancel()
-                                    }}
-                                  />
-                                </div>
-                                <div className="price-popover-actions">
-                                  <button onClick={() => handleFilterSave(config.id)} className="btn-save">✓</button>
-                                  <button onClick={handleFilterCancel} className="btn-cancel">✕</button>
                                 </div>
                               </div>
                             )}
@@ -1895,7 +1378,7 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                     if (filteredTrades.length > 0) {
                       return (
                         <div className="chart-panel-chart" style={{ height: (scatterShowZeroMatched[selectedConfigId] ?? false) ? 520 : 360 }}>
-                          <TradeScatterChart trades={filteredTrades} darkMode={darkMode} midPrice={scatterState[selectedConfigId]?.midPrice} showLeader={scatterShowZeroMatched[selectedConfigId] ?? false} normalizePosition={scatterNormalize[selectedConfigId] ?? false} shareRatio={configs.find(c => c.id === selectedConfigId)?.share_ratio} />
+                          <TradeScatterChart trades={filteredTrades} darkMode={darkMode} midPrice={scatterState[selectedConfigId]?.midPrice} showLeader={scatterShowZeroMatched[selectedConfigId] ?? false} normalizePosition={scatterNormalize[selectedConfigId] ?? false} shareRatio={undefined} />
                         </div>
                       )
                     }

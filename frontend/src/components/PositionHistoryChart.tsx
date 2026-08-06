@@ -5,7 +5,6 @@ import type { EChartsOption } from 'echarts'
 export interface PositionHistoryChartPoint {
   created_at: string
   createdAtMs: number
-  share_ratio: number
   leader_position: number
   follower_position: number
   follower_pending_buy: number
@@ -74,7 +73,6 @@ const buildOptionKey = (points: PositionHistoryChartPoint[], normalized: boolean
       toFiniteNumber(point.follower_position),
       toFiniteNumber(point.follower_pending_buy),
       toFiniteNumber(point.follower_pending_sell),
-      toFiniteNumber(point.share_ratio),
       safeString(point.source),
       safeString(point.side),
       safeString(point.order_id),
@@ -141,7 +139,6 @@ function buildChartOption(points: PositionHistoryChartPoint[], normalized: boole
           <div style="height:1px;background:${borderColor};margin:8px 0"></div>
           <div>leader raw: ${formatNumber(point.leader_position)}</div>
           <div>follower raw: ${formatNumber(point.follower_position)}</div>
-          <div>ratio: ${point.share_ratio}</div>
           <div>pending buy/sell: ${formatNumber(point.follower_pending_buy)} / ${formatNumber(point.follower_pending_sell)}</div>
           <div>source: ${escapeHtml(point.source)}${point.side ? ` ${escapeHtml(point.side)}` : ''}</div>
           ${point.event_size != null ? `<div>event: ${formatNumber(point.event_size)} @ ${formatNumber(point.event_price)}</div>` : ''}

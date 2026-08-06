@@ -268,20 +268,9 @@ class PerformanceService:
             "id": config.id,
             "leader_proxy_wallet": config.leader_proxy_wallet,
             "follower_proxy_wallet": config.follower_proxy_wallet,
-            "share_ratio": config.share_ratio,
             "enabled": config.enabled,
             "owner_user_id": config.owner_user_id,
             "gtd_expiration_sec": config.gtd_expiration_sec,
-            "buy_spread_thr": config.buy_spread_thr,
-            "sell_spread_thr": config.sell_spread_thr,
-            "buy_exceed_thr": config.buy_exceed_thr,
-            "sell_exceed_thr": config.sell_exceed_thr,
-            "buy_follow_taker": config.buy_follow_taker,
-            "sell_follow_taker": config.sell_follow_taker,
-            "buy_price_min": config.buy_price_min,
-            "buy_price_max": config.buy_price_max,
-            "sell_price_min": config.sell_price_min,
-            "sell_price_max": config.sell_price_max,
         }
 
     def _processed_order_items(self, service) -> List[dict]:
