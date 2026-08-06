@@ -92,50 +92,6 @@ def delete_adjustment(adj_id: int) -> bool:
         conn.close()
 
 
-def batch_insert_copy_trading_leader_balance_history(records: List[dict]):
-    """批量插入 leader 余额快照 records: [{proxy_wallet, total_value, created_at}]"""
-    if not records:
-        return
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.executemany(
-            "INSERT INTO copy_trading_leader_balance_history (proxy_wallet, total_value, created_at) VALUES (%s, %s, %s)",
-            [(r["proxy_wallet"], r["total_value"], r["created_at"]) for r in records]
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def get_copy_trading_leader_balance_history(since: datetime, proxy_wallets: List[str] = None) -> List[dict]:
-    """获取指定时间之后的 leader 余额历史"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        if proxy_wallets:
-            placeholders = ",".join(["%s"] * len(proxy_wallets))
-            cursor.execute(f"""
-                SELECT proxy_wallet, total_value, created_at
-                FROM copy_trading_leader_balance_history
-                WHERE created_at >= %s AND proxy_wallet IN ({placeholders})
-                ORDER BY created_at ASC
-            """, [since] + proxy_wallets)
-        else:
-            cursor.execute("""
-                SELECT proxy_wallet, total_value, created_at
-                FROM copy_trading_leader_balance_history
-                WHERE created_at >= %s
-                ORDER BY created_at ASC
-            """, (since,))
-        return [
-            {"proxy_wallet": row[0], "total_value": float(row[1]), "created_at": row[2].isoformat()}
-            for row in cursor.fetchall()
-        ]
-    finally:
-        conn.close()
-
-
 def get_balance_history(since: datetime, proxy_wallets: List[str] = None) -> List[dict]:
     """获取指定时间之后的余额历史"""
     conn = get_db_connection()
