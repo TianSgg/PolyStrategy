@@ -7,8 +7,6 @@ import PerformanceMonitor from './pages/PerformanceMonitor'
 import UserManagement from './pages/UserManagement'
 import StatusBar from './components/StatusBar'
 import ChangePasswordModal from './components/ChangePasswordModal'
-import CreateGroupModal from './components/CreateGroupModal'
-import EditGroupModal from './components/EditGroupModal'
 import { ToastContainer } from './components/Toast'
 import { WS_BASE, apiFetch, setUnauthorizedHandler } from './api'
 import { useBalance } from './contexts/BalanceContext'
@@ -54,34 +52,16 @@ function App() {
   const { accountBalances } = useBalance()
   const [latencyLoading, setLatencyLoading] = useState(false)
   const [balanceRefreshKey, setBalanceRefreshKey] = useState(0)
-  const [portfolioGroups, setPortfolioGroups] = useState<{ id: number; name: string; account_ids: number[] }[]>([])
-  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false)
-  const [editingGroupId, setEditingGroupId] = useState<number | null>(null)
   const [accountsList, setAccountsList] = useState<{ id: number; name: string; proxy_wallet: string }[]>([])
-  const [pinnedGroupId, setPinnedGroupId] = useState<number | null>(null)
-
-  // 从 context 派生 accountSummaryMap (by account id) 和 totalBalance
-  const accountSummaryMap = useMemo(() => {
-    const map: Record<number, { total_value: number }> = {}
-    for (const acc of accountsList) {
-      const b = accountBalances[acc.proxy_wallet.toLowerCase()]
-      if (b) map[acc.id] = { total_value: b.total_value }
-    }
-    return map
-  }, [accountsList, accountBalances])
 
   const totalBalance = useMemo(() => {
-    const total = Object.values(accountSummaryMap).reduce((sum, s) => sum + (s.total_value || 0), 0)
+    const total = accountsList.reduce((sum, acc) => {
+      const b = accountBalances[acc.proxy_wallet.toLowerCase()]
+      return sum + (b?.total_value || 0)
+    }, 0)
     return total > 0 ? `$${total.toFixed(2)}` : "--"
-  }, [accountSummaryMap])
+  }, [accountsList, accountBalances])
 
-  useEffect(() => {
-    if (authUser) {
-      apiFetch('/api/portfolio-group/pin').then(r => r.json()).then(d => setPinnedGroupId(d.pinned_group_id ?? null))
-    } else {
-      setPinnedGroupId(null)
-    }
-  }, [authUser])
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
@@ -180,22 +160,6 @@ function App() {
         onClose={() => setShowChangePwd(false)}
         darkMode={darkMode}
       />
-      <CreateGroupModal
-        open={showCreateGroupModal}
-        onClose={() => setShowCreateGroupModal(false)}
-        onCreated={() => setBalanceRefreshKey(k => k + 1)}
-        accounts={accountsList}
-        darkMode={darkMode}
-      />
-      <EditGroupModal
-        open={editingGroupId != null}
-        groupId={editingGroupId}
-        groups={portfolioGroups}
-        onClose={() => setEditingGroupId(null)}
-        onSaved={() => setBalanceRefreshKey(k => k + 1)}
-        accounts={accountsList}
-        darkMode={darkMode}
-      />
       {/* 左侧导航栏 */}
       <div style={theme.sidebar}>
         <h1 style={theme.title}>WeatherTaker</h1>
@@ -253,24 +217,6 @@ function App() {
           setDarkMode={setDarkMode}
           totalBalance={totalBalance}
           onBalanceRefresh={() => setBalanceRefreshKey(k => k + 1)}
-          portfolioGroups={portfolioGroups}
-          accountSummary={accountSummaryMap}
-          pinnedGroupId={pinnedGroupId}
-          onCreateGroup={() => setShowCreateGroupModal(true)}
-          onEditGroup={(id) => setEditingGroupId(id)}
-          onDeleteGroup={async (id) => {
-            if (!confirm('确定删除此分组？')) return
-            await apiFetch(`/api/portfolio-group/${id}`, { method: 'DELETE' })
-            if (pinnedGroupId === id) setPinnedGroupId(null)
-            setBalanceRefreshKey(k => k + 1)
-          }}
-          onPinGroup={async (id) => {
-            setPinnedGroupId(id)
-            await apiFetch('/api/portfolio-group/pin', {
-              method: 'PUT',
-              body: JSON.stringify({ group_id: id }),
-            })
-          }}
           latencyLoading={latencyLoading}
           onLatencyRefresh={async () => {
             setLatencyLoading(true)
@@ -312,7 +258,6 @@ function App() {
             setDarkMode={setDarkMode}
             visible={currentPage === 'account'}
             refreshKey={balanceRefreshKey}
-            onPortfolioGroupsChange={setPortfolioGroups}
             onAccountsLoaded={setAccountsList}
           />
         </div>

@@ -20,13 +20,6 @@ interface StatusBarProps {
   totalBalance?: string;
   onBalanceRefresh?: () => void;
   balanceLoading?: boolean;
-  portfolioGroups?: { id: number; name: string; account_ids: number[] }[];
-  accountSummary?: Record<number, { total_value: number }>;
-  pinnedGroupId?: number | null;
-  onCreateGroup?: () => void;
-  onEditGroup?: (groupId: number) => void;
-  onDeleteGroup?: (groupId: number) => void;
-  onPinGroup?: (groupId: number | null) => void;
   latencyLoading?: boolean;
   onLatencyRefresh?: () => void;
   username?: string;
@@ -60,52 +53,6 @@ function LatencyItem({ label, value, darkMode, loading, width }: { label: string
   );
 }
 
-function PortfolioDropdown({ groups, accountSummary, pinnedGroupId, onCreateGroup, onEditGroup, onDeleteGroup, onPinGroup }: {
-  groups: { id: number; name: string; account_ids: number[] }[];
-  accountSummary: Record<number, { total_value: number }>;
-  pinnedGroupId?: number | null;
-  onCreateGroup?: () => void;
-  onEditGroup?: (groupId: number) => void;
-  onDeleteGroup?: (groupId: number) => void;
-  onPinGroup?: (groupId: number | null) => void;
-}) {
-  return (
-    <div className="portfolio-dropdown">
-      {groups.map(group => {
-        const groupTotal = group.account_ids.reduce(
-          (sum, id) => sum + (accountSummary[id]?.total_value || 0), 0
-        );
-        const isPinned = pinnedGroupId === group.id;
-        return (
-          <div key={group.id} className="portfolio-dropdown-row">
-            <div className="portfolio-dropdown-item">
-              <span className="portfolio-dropdown-name">
-                {isPinned && <span className="portfolio-pin-indicator">*</span>}
-                {group.name}
-              </span>
-              <span className="portfolio-dropdown-value">${groupTotal.toFixed(2)}</span>
-            </div>
-            <div className="portfolio-dropdown-actions">
-              <div className="portfolio-action-btn" onClick={(e) => { e.stopPropagation(); onPinGroup?.(isPinned ? null : group.id); }}>
-                {isPinned ? '取消置顶' : '置顶'}
-              </div>
-              <div className="portfolio-action-btn" onClick={(e) => { e.stopPropagation(); onEditGroup?.(group.id); }}>
-                编辑
-              </div>
-              <div className="portfolio-action-btn portfolio-action-danger" onClick={(e) => { e.stopPropagation(); onDeleteGroup?.(group.id); }}>
-                删除
-              </div>
-            </div>
-          </div>
-        );
-      })}
-      <div className="dropdown-divider"></div>
-      <div className="portfolio-dropdown-item portfolio-dropdown-create-btn" onClick={(e) => { e.stopPropagation(); onCreateGroup?.(); }}>
-        <span className="portfolio-dropdown-name">+ 创建分组</span>
-      </div>
-    </div>
-  );
-}
 
 export default function StatusBar({
   connected,
@@ -116,24 +63,12 @@ export default function StatusBar({
   totalBalance = "--",
   onBalanceRefresh,
   balanceLoading = false,
-  portfolioGroups = [],
-  accountSummary = {},
-  pinnedGroupId,
-  onCreateGroup,
-  onEditGroup,
-  onDeleteGroup,
-  onPinGroup,
   latencyLoading = false,
   onLatencyRefresh,
   username,
   onLogout,
   onChangePassword,
 }: StatusBarProps) {
-  const pinnedGroup = pinnedGroupId != null ? portfolioGroups.find(g => g.id === pinnedGroupId) : null;
-  const displayLabel = pinnedGroup ? pinnedGroup.name : 'Portfolio';
-  const displayValue = pinnedGroup
-    ? `$${pinnedGroup.account_ids.reduce((sum, id) => sum + (accountSummary[id]?.total_value || 0), 0).toFixed(2)}`
-    : totalBalance;
 
   return (
     <div className="global-status-bar" data-theme={darkMode ? 'dark' : 'light'}>
@@ -156,23 +91,11 @@ export default function StatusBar({
       <div className="status-actions">
         <div className="portfolio-container">
           <div className="portfolio-display" onClick={onBalanceRefresh} title="点击刷新">
-            <span className="portfolio-label">{displayLabel}</span>
+            <span className="portfolio-label">Portfolio</span>
             <span className="portfolio-amount">
-              {balanceLoading ? '...' : displayValue}
+              {balanceLoading ? '...' : totalBalance}
             </span>
-            <svg className="portfolio-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
           </div>
-          <PortfolioDropdown
-            groups={portfolioGroups}
-            accountSummary={accountSummary}
-            pinnedGroupId={pinnedGroupId}
-            onCreateGroup={onCreateGroup}
-            onEditGroup={onEditGroup}
-            onDeleteGroup={onDeleteGroup}
-            onPinGroup={onPinGroup}
-          />
         </div>
         <div className="status-divider"></div>
         <div className="user-menu-container">

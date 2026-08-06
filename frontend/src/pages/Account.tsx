@@ -33,11 +33,10 @@ interface Props {
   setDarkMode: (v: boolean) => void
   visible?: boolean
   refreshKey?: number
-  onPortfolioGroupsChange?: (groups: { id: number; name: string; account_ids: number[] }[]) => void
   onAccountsLoaded?: (accounts: { id: number; name: string; proxy_wallet: string }[]) => void
 }
 
-export default function Account({ darkMode, visible, refreshKey = 0, onPortfolioGroupsChange, onAccountsLoaded }: Props) {
+export default function Account({ darkMode, visible, refreshKey = 0, onAccountsLoaded }: Props) {
   const { accountBalances, refreshAccountBalance, refreshAllAccounts } = useBalance()
   const [accounts, setAccounts] = useState<Account[]>([])
   const [positions, setPositions] = useState<Record<number, Position[]>>({})
@@ -59,22 +58,17 @@ export default function Account({ darkMode, visible, refreshKey = 0, onPortfolio
 
   useEffect(() => {
     fetchAccounts()
-    fetchGroups()
   }, [])
 
-  // 当页面变为可见时重新拉取账户列表
   useEffect(() => {
     if (visible) {
       fetchAccounts()
-      fetchGroups()
     }
   }, [visible])
 
-  // 当 refreshKey 变化时重新拉取（用户点击 StatusBar 刷新按钮 / 创建分组后）
   useEffect(() => {
     if (refreshKey > 0) {
       fetchAccounts()
-      fetchGroups()
     }
   }, [refreshKey])
 
@@ -111,16 +105,6 @@ export default function Account({ darkMode, visible, refreshKey = 0, onPortfolio
     }
   }
 
-  const fetchGroups = async () => {
-    try {
-      const res = await apiFetch('/api/portfolio-group/list')
-      if (res.ok) {
-        onPortfolioGroupsChange?.(await res.json())
-      }
-    } catch (e) {
-      console.error('Failed to fetch groups:', e)
-    }
-  }
 
   const handleAddAccount = async () => {
     if (!newPrivateKey) {

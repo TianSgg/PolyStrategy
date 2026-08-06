@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash VARCHAR(255) NOT NULL,
   role VARCHAR(16) NOT NULL DEFAULT 'user',
   enabled TINYINT(1) NOT NULL DEFAULT 1,
-  pinned_portfolio_group_id INT DEFAULT NULL,
   created_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
   updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
   UNIQUE KEY idx_username (username)
@@ -224,29 +223,6 @@ CREATE TABLE IF NOT EXISTS copy_trading_share_debt (
   debt DOUBLE NOT NULL DEFAULT 0 COMMENT '债务值，负值表示预支',
   updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
   PRIMARY KEY (follower_proxy_wallet, asset_id, side)
-);
-
--- ============================================================
--- Portfolio 分组表
--- ============================================================
-CREATE TABLE IF NOT EXISTS copy_trading_portfolio_groups (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  name VARCHAR(128) NOT NULL COMMENT '分组名称',
-  owner_user_id INT NOT NULL COMMENT '所属用户',
-  created_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  INDEX idx_copy_trading_portfolio_groups_owner (owner_user_id)
-);
-
--- ============================================================
--- 分组-账户 多对多关联表
--- ============================================================
-CREATE TABLE IF NOT EXISTS copy_trading_portfolio_group_accounts (
-  group_id INT NOT NULL,
-  account_id INT NOT NULL,
-  created_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  PRIMARY KEY (group_id, account_id),
-  INDEX idx_pga_account (account_id)
 );
 
 -- ============================================================

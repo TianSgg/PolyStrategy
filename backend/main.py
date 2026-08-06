@@ -90,7 +90,6 @@ from market.api import router as market_router
 from performance.router import router as performance_router
 from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
-from portfolio_group.api import router as portfolio_group_router
 from shared.frontend_ws import get_frontend_ws_manager
 
 
@@ -156,7 +155,6 @@ app.include_router(account_router)
 app.include_router(market_router)
 app.include_router(performance_router)
 app.include_router(pnl_router)
-app.include_router(portfolio_group_router)
 
 # CORS 配置
 app.add_middleware(
