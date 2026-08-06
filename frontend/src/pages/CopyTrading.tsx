@@ -23,7 +23,6 @@ interface CopyTradingConfig {
   sell_exceed_thr: boolean
   buy_follow_taker: boolean
   sell_follow_taker: boolean
-  buy_only: boolean
   buy_price_min: number
   buy_price_max: number
   sell_price_min: number
@@ -722,25 +721,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   }
 
 
-  const handleToggleBuyOnly = async (config: CopyTradingConfig) => {
-    const newVal = !config.buy_only
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${config.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ buy_only: newVal })
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || '更新失败')
-      }
-      setConfigs(prev => prev.map(c =>
-        c.id === config.id ? { ...c, buy_only: newVal } : c
-      ))
-    } catch (e: any) {
-      toast(e.message || 'Failed to toggle buy_only')
-    }
-  }
 
 
   const handlePriceClick = (config: CopyTradingConfig, side: 'buy' | 'sell') => {
@@ -1750,17 +1730,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                                 </div>
                               </div>
                             )}
-                          </span>
-                          <span className="meta-item">
-                            Buy Only:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleToggleBuyOnly(config)}
-                              title="点击切换：leader SELL 时转为 BUY 反向 token"
-                              style={{ color: config.buy_only ? '#4caf50' : '#e57373' }}
-                            >
-                              {config.buy_only ? '开' : '关'}
-                            </strong>
                           </span>
                           <span className="meta-item price-anchor">
                             定时:{' '}

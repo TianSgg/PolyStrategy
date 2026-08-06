@@ -601,50 +601,12 @@ class CopyTradingService:
                 if signal.side == "BUY":
                     logger.debug(f"[CopyTrade] process_signal: dispatching BUY for config {config.id}")
                     await self._handle_buy(config, signal)
-                elif config.buy_only:
-                    # buy_only 模式：leader SELL → 转为 BUY 反向 token
-                    buy_signal = await self._convert_sell_to_buy_opposite(signal)
-                    if buy_signal:
-                        logger.info(f"[CopyTrade] buy_only: SELL {self._asset_label(signal.asset)} ⬇️")
-                        logger.info(f"[CopyTrade] buy_only: BUY  {self._asset_label(buy_signal.asset)} for config {config.id}")
-                        asyncio.create_task(asyncio.to_thread(batch_upsert_config_asset, [config.id], buy_signal.asset))
-                        await self._handle_buy(config, buy_signal)
-                    else:
-                        reason = "buy_only: cannot resolve opposite token"
-                        logger.warning(f"[CopyTrade] {reason} for config {config.id}, asset={self._asset_label(signal.asset)}")
-                        follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
-                        self._record_and_notify_order_result(
-                            config=config,
-                            signal=signal,
-                            follow_price=signal.price,
-                            result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=signal.price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                            follower_name=follower_name,
-                        )
                 else:
                     # Leader 全部清仓后，异步撤销 follower 该 asset 的 BUY 挂单
                     if new_leader_size < 5:
                         asyncio.create_task(self._cancel_follower_orders_for_asset(config, signal.asset))
                     logger.debug(f"[CopyTrade] process_signal: dispatching SELL for config {config.id}")
                     await self._handle_sell(config, signal, old_leader_pos)
-
-    async def _convert_sell_to_buy_opposite(self, signal: ActivitySignal) -> Optional[ActivitySignal]:
-        """buy_only 模式：将 SELL 信号转为 BUY 对面 token 的信号"""
-        pair = await get_market_service().get_condition_and_pair(signal.asset)
-        if not pair:
-            logger.warning(f"[CopyTrade] buy_only: cannot resolve opposite token for {signal.asset[:10]}")
-            return None
-        _, opposite_asset_id = pair
-        return ActivitySignal(
-            proxy_wallet=signal.proxy_wallet,
-            transaction_hash=signal.transaction_hash,
-            side="BUY",
-            signal_time=signal.signal_time,
-            size=signal.size,
-            price=round(1 - signal.price, 4),
-            asset=opposite_asset_id,
-            source=signal.source,
-            role=signal.role,
-        )
 
     async def _handle_buy(self, config: CopyTradingConfig, signal: ActivitySignal):
         """处理 BUY 信号 - 跟 leader 买单"""
@@ -1737,8 +1699,6 @@ class CopyTradingService:
                     config.buy_follow_taker = bool(kwargs["buy_follow_taker"])
                 if "sell_follow_taker" in kwargs:
                     config.sell_follow_taker = bool(kwargs["sell_follow_taker"])
-                if "buy_only" in kwargs:
-                    config.buy_only = bool(kwargs["buy_only"])
                 if "buy_price_min" in kwargs:
                     config.buy_price_min = float(kwargs["buy_price_min"])
                 if "buy_price_max" in kwargs:

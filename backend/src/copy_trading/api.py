@@ -46,7 +46,6 @@ class UpdateConfigRequest(BaseModel):
     sell_exceed_thr: Optional[bool] = None
     buy_follow_taker: Optional[bool] = None
     sell_follow_taker: Optional[bool] = None
-    buy_only: Optional[bool] = None
     buy_price_min: Optional[float] = None
     buy_price_max: Optional[float] = None
     sell_price_min: Optional[float] = None
@@ -136,7 +135,6 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
             "sell_exceed_thr": c.sell_exceed_thr,
             "buy_follow_taker": c.buy_follow_taker,
             "sell_follow_taker": c.sell_follow_taker,
-            "buy_only": c.buy_only,
             "buy_price_min": c.buy_price_min,
             "buy_price_max": c.buy_price_max,
             "sell_price_min": c.sell_price_min,
@@ -171,7 +169,6 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
         "sell_exceed_thr": config.sell_exceed_thr,
         "buy_follow_taker": config.buy_follow_taker,
         "sell_follow_taker": config.sell_follow_taker,
-        "buy_only": config.buy_only,
         "buy_price_min": config.buy_price_min,
         "buy_price_max": config.buy_price_max,
         "sell_price_min": config.sell_price_min,
@@ -217,8 +214,6 @@ async def update_config(config_id: int, data: UpdateConfigRequest, current_user:
         kwargs["buy_follow_taker"] = data.buy_follow_taker
     if data.sell_follow_taker is not None:
         kwargs["sell_follow_taker"] = data.sell_follow_taker
-    if data.buy_only is not None:
-        kwargs["buy_only"] = data.buy_only
     if data.buy_price_min is not None:
         kwargs["buy_price_min"] = data.buy_price_min
     if data.buy_price_max is not None:
