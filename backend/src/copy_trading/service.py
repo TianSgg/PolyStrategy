@@ -13,7 +13,6 @@ from typing import Dict, Set, Optional, List
 from py_clob_client_v2 import ClobClient
 
 from .types import CopyTradingConfig, ActivitySignal, PlaceOrderResult, INF, DEFAULT_TAKER_SPREAD_THRESHOLD, DEFAULT_EXCEED_THR, DEFAULT_BUY_PRICE_MIN, DEFAULT_BUY_PRICE_MAX, DEFAULT_SELL_PRICE_MIN, DEFAULT_SELL_PRICE_MAX, DEFAULT_BUY_PRICE_FILTER_MIN, DEFAULT_BUY_PRICE_FILTER_MAX
-from notification.service import get_notification_service
 from market import get_market_service
 from .chain import get_copy_trading_chain_monitor
 from .predexon import get_copy_trading_predexon
@@ -142,9 +141,6 @@ class CopyTradingService:
         self._pending_poller_task: Optional[asyncio.Task] = None
         self._position_history_poller_task: Optional[asyncio.Task] = None
         self._schedule_poller_task: Optional[asyncio.Task] = None
-
-        # 通知服务
-        self._notify = get_notification_service()
 
         # Leader 名字解析服务
         self._leader_service = get_leader_service()
@@ -493,10 +489,6 @@ class CopyTradingService:
                             leader_name = self._leader_service.get_leader_name(config.leader_proxy_wallet)
                             follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
                             logger.info(f"[Schedule] 定时{action} config#{config_id} ({leader_name} -> {follower_name})")
-                            self._notify.send(
-                                f"⏰ 定时{action}跟单",
-                                f"Config #{config_id}\n{leader_name} → {follower_name}",
-                            )
                     last_check = now
                 except Exception as e:
                     logger.warning(f"[Schedule] Poller error: {e}")
@@ -1090,12 +1082,7 @@ class CopyTradingService:
             )
             if not_canceled:
                 logger.warning(f"[CopyTrade] Leader exit not_canceled: {not_canceled}")
-            await self._notify.notify_leader_exit(
-                f_addr, asset_id,
-                follower_name=f_name,
-                canceled_count=len(canceled),
-                question=await self._get_asset_label(asset_id),
-            )
+            logger.info(f"[CopyTrade] Leader exit: canceled {len(canceled)} orders for {f_name} on {asset_id[:10]}")
         except Exception as e:
             logger.error(f"[CopyTrade] Failed to cancel orders on leader exit: {e}")
 
@@ -1226,20 +1213,8 @@ class CopyTradingService:
             follower_role=follower_role,
         ))
 
-        async def _do_notify():
-            market_label = await self._get_asset_label(signal.asset)
-            if result.raw_status == "ERROR":
-                await self._notify.notify_order_failed(signal.side, config.follower_proxy_wallet, result.size, follow_price, signal.asset, follower_name=follower_name, reason=result.err_msg, status=result.raw_status, question=market_label)
-            elif result.raw_status == "SKIPPED":
-                await self._notify.notify_order_skipped(signal.side, config.follower_proxy_wallet, result.size, follow_price, signal.asset, follower_name=follower_name, reason=result.err_msg, question=market_label)
-            elif result.raw_status == "MATCHED":
-                await self._notify.notify_order_matched(signal.side, config.follower_proxy_wallet, result.size, follow_price, signal.asset, follower_name=follower_name, question=market_label)
-            elif result.raw_status == "LIVE":
-                await self._notify.notify_order_pending(signal.side, config.follower_proxy_wallet, result.size, follow_price, signal.asset, follower_name=follower_name, question=market_label)
-            elif result.raw_status == "DELAYED":
-                logger.warning(f"[CopyTrade] order delayed: {signal.side} {market_label}")
-
-        asyncio.create_task(_do_notify())
+        if result.raw_status in ("ERROR", "SKIPPED", "DELAYED"):
+            logger.warning(f"[CopyTrade] order {result.raw_status}: {signal.side} {signal.asset[:10]} size={result.size} err={result.err_msg}")
 
     async def _patch_order_match_from_trade(self, order_id: str, matched_amount: float, order=None):
         """trade CONFIRMED 增量推进订单表的 size_matched；仅在未终态时补 status。"""
@@ -1765,21 +1740,9 @@ class CopyTradingService:
                         merged_conditions.add(condition_id)
                         did_merge = True
 
-                        await self._notify.send_telegram(
-                            f"🔄 AutoMerge 成功\n"
-                            f"账户: {self._account_service.get_acc_name(f_addr)}\n"
-                            f"市场: {self._asset_label(asset_id)}\n"
-                            f"数量: {merge_amount:.2f}\n"
-                            f"tx: {outcome.transaction_hash[:16]}..."
-                        )
+                        logger.info(f"[AutoMerge] OK {self._account_service.get_acc_name(f_addr)} condition={condition_id[:10]} amount={merge_amount:.2f}")
                     except Exception as e:
                         logger.error(f"[AutoMerge] Failed for {self._account_service.get_acc_name(f_addr)} condition={condition_id[:10]}: {e}")
-                        await self._notify.send_telegram(
-                            f"❌ AutoMerge 失败\n"
-                            f"账户: {self._account_service.get_acc_name(f_addr)}\n"
-                            f"市场: {self._asset_label(asset_id)}\n"
-                            f"错误: {e}"
-                        )
                     finally:
                         self._merging_locks.discard(lock_key)
             except Exception as e:
@@ -2063,14 +2026,7 @@ class CopyTradingService:
                 group_item_title = market_info.get("group_item_title", "") if market_info else ""
                 link = market_info.get("link", "") if market_info else ""
                 leader_name = self._leader_service.get_leader_name(user)
-                asyncio.create_task(
-                    self._notify.notify_convert_detected(
-                        user, amount, market_id,
-                        leader_name=leader_name,
-                        question=question,
-                        group_item_title=group_item_title, link=link
-                    )
-                )
+                logger.info(f"[Convert] Detected: {leader_name} converted {amount} on {question[:30]}")
                 # 同一 leader 只需同步一次持仓
                 asyncio.create_task(self._sync_leader_positions_from_poly(user, delay=5))
                 return
