@@ -331,23 +331,20 @@ async def sync_config_positions(config_id: int, current_user: AuthUser = Depends
     config = service.get_config_by_id(config_id)
     _assert_config_access(config, current_user)
 
-    leader_addr = config.leader_proxy_wallet.lower()
     follower_addr = config.follower_proxy_wallet.lower()
 
     results = await asyncio.gather(
-        service._sync_leader_positions_from_poly(leader_addr),
         service._sync_follower_positions_from_poly(follower_addr),
         service._sync_pending_orders_from_poly(follower_addr),
         return_exceptions=True
     )
 
-    leader_synced, follower_synced, pending_synced = results
+    follower_synced, pending_synced = results
 
     def fmt(v):
         return str(v) if isinstance(v, Exception) else v
 
     return {
-        "leader_synced": fmt(leader_synced),
         "follower_synced": fmt(follower_synced),
         "pending_synced": "ok" if not isinstance(pending_synced, Exception) else str(pending_synced),
     }

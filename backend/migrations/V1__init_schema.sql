@@ -92,17 +92,6 @@ CREATE TABLE IF NOT EXISTS copy_trading_configs (
 );
 
 -- ============================================================
--- Leader 仓位表
--- ============================================================
-CREATE TABLE IF NOT EXISTS copy_trading_leader_positions (
-  leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Leader 代理钱包地址',
-  asset_id VARCHAR(128) NOT NULL COMMENT '资产 ID',
-  size DECIMAL(20, 8) NOT NULL DEFAULT 0 COMMENT '累计持仓数量',
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  PRIMARY KEY (leader_proxy_wallet, asset_id)
-);
-
--- ============================================================
 -- 跟单配置仓位历史快照表
 -- ============================================================
 CREATE TABLE IF NOT EXISTS copy_trading_position_history (

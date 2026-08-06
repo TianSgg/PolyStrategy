@@ -20,9 +20,6 @@ from account.service import get_account_service
 from leader.service import get_leader_service
 from .models import (
     get_copy_trading_configs,
-    upsert_leader_position,
-    batch_upsert_leader_positions,
-    delete_leader_positions,
     delete_follower_positions,
     record_copy_trading_order,
     get_order_by_id,
@@ -72,8 +69,6 @@ class CopyTradingService:
         # 当前所有 follower 地址（去重）。一个 follower 可以跟多个 leader。
         self._followers: Set[str] = set()
 
-        # Leader 累计仓位: {leader_addr: {asset_id: cumulative_size}}
-        self._leader_positions: Dict[str, Dict[str, float]] = {}
 
         # Follower 持仓: {follower_addr: {asset_id: size}}
         self._follower_positions: Dict[str, Dict[str, float]] = {}
@@ -135,7 +130,6 @@ class CopyTradingService:
 
         # 启动持仓轮询兜底任务（依赖 _config_id_to_config，由 initialize 填充）
         self._follower_poller_task: Optional[asyncio.Task] = None
-        self._leader_poller_task: Optional[asyncio.Task] = None
         self._pending_poller_task: Optional[asyncio.Task] = None
         self._position_history_poller_task: Optional[asyncio.Task] = None
         self._schedule_poller_task: Optional[asyncio.Task] = None
@@ -318,7 +312,6 @@ class CopyTradingService:
 
         l_addr = config.leader_proxy_wallet
         f_addr = config.follower_proxy_wallet
-        leader_position = self._leader_positions.get(l_addr, {}).get(asset_id, 0)
         follower_position = self._follower_positions.get(f_addr, {}).get(asset_id, 0)
         follower_pending_buy = self._pending_buy_orders.get(f_addr, {}).get(asset_id, 0)
         follower_pending_sell = self._pending_sell_orders.get(f_addr, {}).get(asset_id, 0)
@@ -330,7 +323,7 @@ class CopyTradingService:
             leader_proxy_wallet=l_addr,
             follower_proxy_wallet=f_addr,
             share_ratio=config.share_ratio,
-            leader_position=leader_position,
+            leader_position=0,
             follower_position=follower_position,
             follower_pending_buy=follower_pending_buy,
             follower_pending_sell=follower_pending_sell,
@@ -347,8 +340,7 @@ class CopyTradingService:
         l_addr = config.leader_proxy_wallet.lower()
         f_addr = config.follower_proxy_wallet.lower()
         assets = (
-            set(self._leader_positions.get(l_addr, {}).keys())
-            | set(self._follower_positions.get(f_addr, {}).keys())
+            set(self._follower_positions.get(f_addr, {}).keys())
             | set(self._pending_buy_orders.get(f_addr, {}).keys())
             | set(self._pending_sell_orders.get(f_addr, {}).keys())
         )
@@ -404,25 +396,6 @@ class CopyTradingService:
         self._follower_poller_task = asyncio.create_task(_poll())
         logger.info(f"[PositionPoller] Follower position poller started ({interval}s interval)")
 
-    def _start_leader_position_poller(self, interval=3600):
-        """启动 leader 持仓轮询兜底（convert 事件遗漏时的补充）"""
-        async def _poll():
-            # 启动时立即同步一次
-            for addr in list(self._leader_addr_to_configs.keys()):
-                try:
-                    await self._sync_leader_positions_from_poly(addr)
-                except Exception as e:
-                    logger.error(f"[PositionPoller] Initial leader sync error for {self._leader_service.get_leader_name(addr)}: {e}")
-            while True:
-                await asyncio.sleep(interval)
-                for addr in list(self._leader_addr_to_configs.keys()):
-                    try:
-                        await self._sync_leader_positions_from_poly(addr)
-                    except Exception as e:
-                        logger.warning(f"[PositionPoller] Leader poller sync error for {self._leader_service.get_leader_name(addr)}: {e}")
-
-        self._leader_poller_task = asyncio.create_task(_poll())
-        logger.info(f"[PositionPoller] Leader position poller started ({interval}s interval)")
 
     def _start_pending_poller(self, interval=3600):
         """启动 pending 轮询兜底（WS order 事件遗漏时的补充）"""
@@ -495,9 +468,6 @@ class CopyTradingService:
         if self._follower_poller_task:
             self._follower_poller_task.cancel()
             self._follower_poller_task = None
-        if self._leader_poller_task:
-            self._leader_poller_task.cancel()
-            self._leader_poller_task = None
         if self._pending_poller_task:
             self._pending_poller_task.cancel()
             self._pending_poller_task = None
@@ -517,7 +487,6 @@ class CopyTradingService:
         self._load_slug_filters()
 
         self._start_follower_position_poller(interval=120)
-        self._start_leader_position_poller(interval=120)
         self._start_pending_poller(interval=120)
         self._start_position_history_poller(interval=120)
         self._start_schedule_poller(interval=60)
@@ -533,7 +502,6 @@ class CopyTradingService:
             self._followers.add(config.follower_proxy_wallet)
             self._config_id_to_config[config.id] = config
             self._add_fl_key(config)
-            self._leader_positions.setdefault(config.leader_proxy_wallet, dict())
             chain_monitor.add_leader(config.leader_proxy_wallet)
             chain_monitor.add_follower(config.follower_proxy_wallet)
             predexon.add_leader(config.leader_proxy_wallet)
@@ -588,45 +556,7 @@ class CopyTradingService:
 
         # self.market_service.subscribe([signal.asset])
 
-        # 5. 维护 leader 持仓
         async with self._get_addr_lock(leader_addr):
-            if signal.side == "BUY":
-                leader_pos = self._get_leader_num_shares(leader_addr, signal.asset)
-                new_leader_pos = leader_pos + signal.size
-                self._leader_positions.setdefault(leader_addr, {})[signal.asset] = new_leader_pos
-                asyncio.create_task(asyncio.to_thread(upsert_leader_position, leader_addr, signal.asset, new_leader_pos))
-            else:
-                old_leader_pos = self._get_leader_num_shares(leader_addr, signal.asset)
-                if old_leader_pos is None or signal.size > old_leader_pos + 0.01:
-                    if configs[0].buy_only:
-                        asyncio.create_task(self._sync_leader_positions_from_poly(leader_addr))
-                    else:
-                        reason = f"leader position not synced: signal_size={signal.size}, leader_pos={old_leader_pos}"
-                        logger.error(f"""
-{'='*50}
-⚠️ SELL SKIPPED — leader position not synced
-  asset      : {self._asset_label(signal.asset)}
-  leader     : {self._leader_service.get_leader_name(leader_addr)}
-  signal_size: {signal.size:>7.2f}
-  leader_pos : {old_leader_pos}
-  configs_affected: {len([c for c in configs if c.enabled])}
-{'='*50}""")
-                        for config in configs:
-                            if not config.enabled:
-                                continue
-                            follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
-                            self._record_and_notify_order_result(
-                                config=config,
-                                signal=signal,
-                                follow_price=signal.price,
-                                result=PlaceOrderResult(pending_delta=0, position_delta=0, size=0, price=signal.price, raw_status="SKIPPED", order_id=None, err_msg=reason),
-                                follower_name=follower_name,
-                            )
-                        return
-                new_leader_size = max((old_leader_pos or 0) - signal.size, 0)
-                self._leader_positions.setdefault(leader_addr, {})[signal.asset] = new_leader_size
-                asyncio.create_task(asyncio.to_thread(upsert_leader_position, leader_addr, signal.asset, new_leader_size))
-
             enabled_config_ids = [c.id for c in configs if c.enabled]
             if enabled_config_ids:
                 asyncio.create_task(asyncio.to_thread(batch_upsert_config_asset, enabled_config_ids, signal.asset))
@@ -1079,12 +1009,6 @@ class CopyTradingService:
         except Exception as e:
             logger.error(f"[CopyTrade] Failed to cancel orders on leader exit: {e}")
 
-    def _get_leader_num_shares(self, leader_addr: str, asset_id: str) -> Optional[float]:
-        """从内存获取 leader 累计仓位"""
-        if leader_addr in self._leader_positions and asset_id in self._leader_positions[leader_addr]:
-            return self._leader_positions[leader_addr][asset_id]
-        logger.warning("[CopyTrade] _get_leader_num_shares: no shares stroed in memory, default return zero")
-        return 0
 
     async def _get_order_book_with_retry(self, asset_id: str, side: str) -> Optional[dict]:
         """Get CLOB order book with a small retry budget for transient network failures."""
@@ -1451,11 +1375,9 @@ class CopyTradingService:
         self._followers.add(follower_proxy_wallet)
         self._config_id_to_config[config_id] = new_config
         self._add_fl_key(new_config)
-        self._leader_positions.setdefault(leader_proxy_wallet, {})
         self._follower_positions.setdefault(follower_proxy_wallet, {})
 
-        # 同步 leader/follower 仓位和 pending
-        await self._sync_leader_positions_from_poly(leader_proxy_wallet)
+        # 同步 follower 仓位和 pending
         await self._sync_pending_orders_from_poly(follower_proxy_wallet)
         await self._sync_follower_positions_from_poly(follower_proxy_wallet)
         self._record_config_baseline_snapshots(new_config)
@@ -1784,53 +1706,6 @@ class CopyTradingService:
         asyncio.create_task(asyncio.to_thread(batch_upsert_follower_pending_buy, f_addr, pending_buy))
         asyncio.create_task(asyncio.to_thread(batch_upsert_follower_pending_sell, f_addr, pending_sell))
 
-    async def _sync_leader_positions_from_poly(self, addr: str, delay: int = 0):
-        """从 Polymarket API 全量同步 leader 持仓（覆盖内存 + DB）"""
-        if delay > 0:
-            await asyncio.sleep(delay)  # 等待链上数据生效
-        async with self._get_addr_lock(addr):
-            try:
-                fetched_positions = []
-                limit = 500
-                offset = 0
-                full_sync = True
-                async with aiohttp.ClientSession() as session:
-                    while True:
-                        async with session.get(
-                            f"https://data-api.polymarket.com/positions?user={addr}&limit={limit}&offset={offset}",
-                            timeout=aiohttp.ClientTimeout(total=10)
-                        ) as resp:
-                            if resp.status != 200:
-                                logger.warning(f"[PositionSync] Failed to fetch leader positions page offset={offset}: status={resp.status}")
-                                full_sync = False
-                                break
-                            page = await resp.json()
-                        if not page:
-                            break
-                        fetched_positions.extend(page)
-                        if len(page) < limit:
-                            break
-                        offset += limit
-
-                new_pos_cache = {}
-                to_insert = []
-                for pos in fetched_positions:
-                    asset_id = pos.get("asset")
-                    size = float(pos.get("size", 0))
-                    if asset_id:
-                        new_pos_cache[asset_id] = size
-                        to_insert.append({"asset_id": asset_id, "size": size})
-                if full_sync:
-                    self._leader_positions[addr] = new_pos_cache
-                else:
-                    self._leader_positions.setdefault(addr, {}).update(new_pos_cache)
-                asyncio.create_task(asyncio.to_thread(batch_upsert_leader_positions, addr, to_insert, full_sync))
-                logger.debug(
-                    f"[PositionSync] Synced {len(new_pos_cache)} leader positions ({'full' if full_sync else 'partial'}) from API for leader "
-                    f"{self._leader_service.get_leader_name(addr)}"
-                )
-            except Exception as e:
-                logger.error(f"[PositionSync] Failed to sync leader positions: {e}")
 
     def get_config_by_id(self, config_id: int) -> Optional[CopyTradingConfig]:
         """根据 config_id O(1) 查找配置"""
@@ -1908,8 +1783,6 @@ class CopyTradingService:
                     del self._leader_addr_to_configs[l_addr]
                     get_copy_trading_chain_monitor().remove_leader(l_addr)
                     get_copy_trading_predexon().remove_leader(l_addr)
-                    delete_leader_positions(l_addr)
-                    self._leader_positions.pop(l_addr, None)
 
             # 检查 f_addr 是否还有其他 config（没有则清理 follower 资源）
             if not self._follower_addr_to_configs.get(f_addr):
@@ -1946,8 +1819,6 @@ class CopyTradingService:
                 link = market_info.get("link", "") if market_info else ""
                 leader_name = self._leader_service.get_leader_name(user)
                 logger.info(f"[Convert] Detected: {leader_name} converted {amount} on {question[:30]}")
-                # 同一 leader 只需同步一次持仓
-                asyncio.create_task(self._sync_leader_positions_from_poly(user, delay=5))
                 return
 
             # 检查是否为 FOLLOWER
@@ -2063,11 +1934,9 @@ class CopyTradingService:
         """获取跟单持仓（内存优先，follower 以 Polymarket API 为准）"""
         config = self._config_id_to_config.get(config_id)
         if not config:
-            return {"leader_positions": {}, "follower_positions": {}}
-        leader_positions = self._leader_positions.get(config.leader_proxy_wallet, {})
+            return {"follower_positions": {}}
         follower_positions = self._follower_positions.get(config.follower_proxy_wallet, {})
         return {
-            "leader_positions": leader_positions,
             "follower_positions": follower_positions,
         }
 

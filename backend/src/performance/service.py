@@ -251,8 +251,6 @@ class PerformanceService:
                 "enabled": sum(1 for item in configs if item["enabled"]),
                 "disabled": sum(1 for item in configs if not item["enabled"]),
             }),
-            self._cache_block("copy_trading", "leader_positions", "Leader Positions",
-                              self._nested_amount_items(service._leader_positions, "leader", "size")),
             self._cache_block("copy_trading", "follower_positions", "Follower Positions",
                               self._nested_amount_items(service._follower_positions, "follower", "size")),
             self._cache_block("copy_trading", "pending_buy_orders", "Pending BUY",
@@ -475,7 +473,6 @@ class PerformanceService:
             ct = get_copy_trading_service()
             mapping = {
                 "configs": lambda: [self._config_item(config) for config in ct._config_id_to_config.values()],
-                "leader_positions": lambda: self._nested_amount_items(ct._leader_positions, "leader", "size"),
                 "follower_positions": lambda: self._nested_amount_items(ct._follower_positions, "follower", "size"),
                 "pending_buy_orders": lambda: self._nested_amount_items(ct._pending_buy_orders, "follower", "pending"),
                 "pending_sell_orders": lambda: self._nested_amount_items(ct._pending_sell_orders, "follower", "pending"),
