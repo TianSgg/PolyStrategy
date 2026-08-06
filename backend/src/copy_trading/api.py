@@ -65,8 +65,7 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
     account_svc = get_account_service()
     all_configs = [
         c
-        for configs in service._leader_addr_to_configs.values()
-        for c in configs
+        for c in service._leader_addr_to_configs.values()
         if current_user.can_view(c.owner_user_id)
     ]
     configs = [

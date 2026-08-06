@@ -57,8 +57,8 @@ class CopyTradingService:
     """
 
     def __init__(self):
-        # 配置缓存: {leader_proxy_wallet: {CopyTradingConfig, ...}}
-        self._leader_addr_to_configs: Dict[str, Set[CopyTradingConfig]] = {}
+        # 配置缓存: {leader_proxy_wallet: CopyTradingConfig}（一个 leader 只对应一个 config）
+        self._leader_addr_to_configs: Dict[str, CopyTradingConfig] = {}
 
         # 配置缓存: {follower_proxy_wallet: {CopyTradingConfig, ...}}
         self._follower_addr_to_configs: Dict[str, Set[CopyTradingConfig]] = {}
@@ -389,7 +389,7 @@ class CopyTradingService:
         chain_monitor = get_copy_trading_chain_monitor()
         predexon = get_copy_trading_predexon()
         for config in configs:
-            self._leader_addr_to_configs.setdefault(config.leader_proxy_wallet, set()).add(config)
+            self._leader_addr_to_configs[config.leader_proxy_wallet] = config
             self._follower_addr_to_configs.setdefault(config.follower_proxy_wallet, set()).add(config)
             self._followers.add(config.follower_proxy_wallet)
             self._config_id_to_config[config.id] = config
@@ -402,76 +402,58 @@ class CopyTradingService:
 
 
     async def process_signal(self, payload: dict):
-        """处理 RTDS activity 信号（异步）"""
-        # 1. 提取关键字段
+        """处理 insider BUY NO 信号 — 固定价格 0.99 买入，size 由 config.buy_size 决定"""
         tx_hash = payload.get("transactionHash")
         leader_addr = payload.get("proxyWallet")
 
         if not tx_hash or not leader_addr:
             logger.debug(f"[CopyTrade] process_signal: missing tx_hash or leader_addr, skipping")
             return
-        
+
         leader_addr = leader_addr.lower()
 
-        # 2. 获取该 leader 下的所有 follower 配置
-        configs = self._leader_addr_to_configs.get(leader_addr)
-        if not configs:
+        config = self._leader_addr_to_configs.get(leader_addr)
+        if not config or not config.enabled:
             return
-        logger.debug(f"[CopyTrade] process_signal: found {len(configs)} configs for leader, signal from [{payload.get('source')}]")
 
-        # 3. 内存去重（按 leader 分锁防竞态）
         async with self._get_tx_lock(leader_addr):
             if tx_hash in self._processed_txs:
                 logger.debug(f"[CopyTrade] process_signal: tx {tx_hash[:10]} already processed, skipping")
                 return
             self._processed_txs.add(tx_hash)
 
-        # 4. 解析信号对象
         signal = ActivitySignal.from_payload(payload)
         if not signal:
             logger.warning(f"[CopyTrade] process_signal: failed to parse signal, skipping")
             return
         if signal.price >= 1.0 or signal.price <= 0:
-            logger.debug(f"[CopyTrade] process_signal: price=1.0, skipping (likely settlement)")
+            logger.debug(f"[CopyTrade] process_signal: price out of range, skipping")
             return
-        logger.debug(f"[CopyTrade] process_signal: parsed signal: {signal.side} {signal.size} @ {signal.price}, asset={self._asset_label(signal.asset)}, source={payload.get('source')}")
 
-        # self.market_service.subscribe([signal.asset])
+        if signal.side != "BUY":
+            logger.debug(f"[CopyTrade] process_signal: ignoring {signal.side} signal (only BUY NO is followed)")
+            return
 
-        async with self._get_addr_lock(leader_addr):
-            enabled_config_ids = [c.id for c in configs if c.enabled]
-            if enabled_config_ids:
-                asyncio.create_task(asyncio.to_thread(batch_upsert_config_asset, enabled_config_ids, signal.asset))
-                if signal.asset not in self._asset_labels:
-                    asyncio.create_task(self._get_asset_label(signal.asset))
+        logger.debug(f"[CopyTrade] process_signal: BUY {signal.size} @ {signal.price}, asset={self._asset_label(signal.asset)}, source={signal.source}")
 
-            for config in configs:
-                if not config.enabled:
-                    continue
-                self._record_position_snapshot(
-                    config,
-                    signal.asset,
-                    "leader_signal",
-                    side=signal.side,
-                    event_size=signal.size,
-                    event_price=signal.price,
-                    leader_tx_hash=signal.transaction_hash,
-                    raw_context={"source": signal.source},
-                )
+        asyncio.create_task(asyncio.to_thread(batch_upsert_config_asset, [config.id], signal.asset))
+        if signal.asset not in self._asset_labels:
+            asyncio.create_task(self._get_asset_label(signal.asset))
 
-                # 6. 为每个 follower 执行跟单（只处理 follower 侧，不再更新 leader）
-                if signal.side == "BUY":
-                    logger.debug(f"[CopyTrade] process_signal: dispatching BUY for config {config.id}")
-                    await self._handle_buy(config, signal)
-                else:
-                    # Leader 全部清仓后，异步撤销 follower 该 asset 的 BUY 挂单
-                    if new_leader_size < 5:
-                        asyncio.create_task(self._cancel_follower_orders_for_asset(config, signal.asset))
-                    logger.debug(f"[CopyTrade] process_signal: dispatching SELL for config {config.id}")
-                    await self._handle_sell(config, signal, old_leader_pos)
+        self._record_position_snapshot(
+            config,
+            signal.asset,
+            "leader_signal",
+            side=signal.side,
+            event_size=signal.size,
+            event_price=signal.price,
+            leader_tx_hash=signal.transaction_hash,
+            raw_context={"source": signal.source},
+        )
+        await self._execute_buy(config, signal)
 
-    async def _handle_buy(self, config: CopyTradingConfig, signal: ActivitySignal):
-        """处理 BUY NO 信号 — 固定价格 0.99 买入，size 由 config.buy_size 决定"""
+    async def _execute_buy(self, config: CopyTradingConfig, signal: ActivitySignal):
+        """对单个 config 执行 BUY NO 下单"""
         asset_id = signal.asset
         follow_price = 0.99
         follow_buy_size = config.buy_size
@@ -950,10 +932,8 @@ class CopyTradingService:
         """创建跟单配置"""
         leader_proxy_wallet = leader_proxy_wallet.lower()
         follower_proxy_wallet = follower_proxy_wallet.lower()
-        # 检查同一 follower 是否已配置相同的 leader（避免重复）
-        existing = self._get_config_by_fl(follower_proxy_wallet, leader_proxy_wallet)
-        if existing:
-            raise ValueError(f"Follower {follower_proxy_wallet} already follows leader {leader_proxy_wallet}")
+        if leader_proxy_wallet in self._leader_addr_to_configs:
+            raise ValueError(f"Leader {leader_proxy_wallet} already has a config")
 
         # 注册 leader 到链监听器 + Predexon
         get_copy_trading_chain_monitor().add_leader(leader_proxy_wallet)
@@ -988,7 +968,7 @@ class CopyTradingService:
         )
 
         # 增量更新缓存
-        self._leader_addr_to_configs.setdefault(leader_proxy_wallet, set()).add(new_config)
+        self._leader_addr_to_configs[leader_proxy_wallet] = new_config
         self._follower_addr_to_configs.setdefault(follower_proxy_wallet, set()).add(new_config)
         self._followers.add(follower_proxy_wallet)
         self._config_id_to_config[config_id] = new_config
@@ -1333,11 +1313,9 @@ class CopyTradingService:
             self._remove_follower_config_index(cfg)
             # 从缓存中移除
             if l_addr in self._leader_addr_to_configs:
-                self._leader_addr_to_configs[l_addr].discard(cfg)
-                if not self._leader_addr_to_configs[l_addr]:
-                    del self._leader_addr_to_configs[l_addr]
-                    get_copy_trading_chain_monitor().remove_leader(l_addr)
-                    get_copy_trading_predexon().remove_leader(l_addr)
+                del self._leader_addr_to_configs[l_addr]
+                get_copy_trading_chain_monitor().remove_leader(l_addr)
+                get_copy_trading_predexon().remove_leader(l_addr)
 
             # 检查 f_addr 是否还有其他 config（没有则清理 follower 资源）
             if not self._follower_addr_to_configs.get(f_addr):
