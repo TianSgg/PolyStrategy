@@ -14,6 +14,7 @@ interface CopyTradingConfig {
   follower_name: string
   enabled: boolean
   gtd_expiration_sec: number
+  buy_size: number
 }
 
 interface Account {
@@ -193,6 +194,8 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   // GTD expiration editing
   const [editingGtdConfigId, setEditingGtdConfigId] = useState<number | null>(null)
   const [editingGtdValue, setEditingGtdValue] = useState('')
+  const [editingBuySizeConfigId, setEditingBuySizeConfigId] = useState<number | null>(null)
+  const [editingBuySizeValue, setEditingBuySizeValue] = useState('')
 
 
   // 曲线时间范围
@@ -482,6 +485,37 @@ export default function CopyTrading({ darkMode, visible }: Props) {
 
   const handleGtdCancel = () => {
     setEditingGtdConfigId(null)
+  }
+
+  const handleBuySizeClick = (config: CopyTradingConfig) => {
+    setEditingBuySizeConfigId(config.id)
+    setEditingBuySizeValue(String(config.buy_size || 100))
+  }
+
+  const handleBuySizeSave = async (configId: number) => {
+    const size = parseFloat(editingBuySizeValue)
+    if (isNaN(size) || size < 1) {
+      toast('买入数量需 >= 1')
+      return
+    }
+    try {
+      await apiFetch(`/api/copy-trading/configs/${configId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ buy_size: size })
+      })
+      setConfigs(prev => prev.map(c =>
+        c.id === configId ? { ...c, buy_size: size } : c
+      ))
+    } catch (e) {
+      console.error('Failed to update buy_size:', e)
+    } finally {
+      setEditingBuySizeConfigId(null)
+    }
+  }
+
+  const handleBuySizeCancel = () => {
+    setEditingBuySizeConfigId(null)
   }
 
 
@@ -1105,6 +1139,39 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                                 <div className="price-popover-actions">
                                   <button onClick={() => handleGtdSave(config.id)} className="btn-save">✓</button>
                                   <button onClick={handleGtdCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                          <span className="meta-item price-anchor">
+                            Size:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleBuySizeClick(config)}
+                              title="点击修改固定买入数量"
+                            >
+                              {config.buy_size || 100}
+                            </strong>
+                            {editingBuySizeConfigId === config.id && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    min="1"
+                                    value={editingBuySizeValue}
+                                    onChange={e => setEditingBuySizeValue(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleBuySizeSave(config.id)
+                                      if (e.key === 'Escape') handleBuySizeCancel()
+                                    }}
+                                    autoFocus
+                                  />
+                                  <span style={{ fontSize: 11 }}>shares</span>
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleBuySizeSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handleBuySizeCancel} className="btn-cancel">✕</button>
                                 </div>
                               </div>
                             )}

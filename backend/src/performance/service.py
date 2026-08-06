@@ -271,6 +271,7 @@ class PerformanceService:
             "enabled": config.enabled,
             "owner_user_id": config.owner_user_id,
             "gtd_expiration_sec": config.gtd_expiration_sec,
+            "buy_size": config.buy_size,
         }
 
     def _processed_order_items(self, service) -> List[dict]:

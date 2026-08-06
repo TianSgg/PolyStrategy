@@ -18,11 +18,13 @@ router = APIRouter(prefix="/api/copy-trading", tags=["copy-trading"])
 class CreateConfigRequest(BaseModel):
     leader_proxy_wallet: str
     follower_proxy_wallet: str
+    buy_size: float = 100.0
 
 
 class UpdateConfigRequest(BaseModel):
     enabled: Optional[bool] = None
     gtd_expiration_sec: Optional[int] = None
+    buy_size: Optional[float] = None
 
 
 def _assert_config_access(config, current_user: AuthUser):
@@ -77,6 +79,7 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
             "enabled": c.enabled,
             "owner_user_id": c.owner_user_id,
             "gtd_expiration_sec": c.gtd_expiration_sec,
+            "buy_size": c.buy_size,
         }
         for c in all_configs
     ]
@@ -96,6 +99,7 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
         "enabled": config.enabled,
         "owner_user_id": config.owner_user_id,
         "gtd_expiration_sec": config.gtd_expiration_sec,
+        "buy_size": config.buy_size,
     }
 
 
@@ -111,6 +115,10 @@ async def update_config(config_id: int, data: UpdateConfigRequest, current_user:
         if not (60 <= data.gtd_expiration_sec <= 86400):
             raise HTTPException(status_code=400, detail="gtd_expiration_sec must be between 60 and 86400")
         kwargs["gtd_expiration_sec"] = data.gtd_expiration_sec
+    if data.buy_size is not None:
+        if data.buy_size < 1:
+            raise HTTPException(status_code=400, detail="buy_size must be >= 1")
+        kwargs["buy_size"] = data.buy_size
 
     if not kwargs:
         raise HTTPException(status_code=400, detail="No fields to update")

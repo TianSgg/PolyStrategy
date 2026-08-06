@@ -12,7 +12,8 @@ class CopyTradingConfig:
     follower_proxy_wallet: str
     enabled: bool = True
     owner_user_id: int = 0
-    gtd_expiration_sec: int = 1800  # GTD 订单过期时间（秒），默认 30 分钟
+    gtd_expiration_sec: int = 1800
+    buy_size: float = 100.0
 
     def __hash__(self):
         return hash(self.id)

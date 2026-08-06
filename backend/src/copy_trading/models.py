@@ -20,13 +20,13 @@ def get_copy_trading_configs(enabled_only: bool = False) -> List[CopyTradingConf
         if enabled_only:
             cursor.execute("""
                 SELECT id, leader_proxy_wallet, follower_proxy_wallet,
-                       enabled, owner_user_id, gtd_expiration_sec
+                       enabled, owner_user_id, gtd_expiration_sec, buy_size
                 FROM copy_trading_configs WHERE enabled = 1
             """)
         else:
             cursor.execute("""
                 SELECT id, leader_proxy_wallet, follower_proxy_wallet,
-                       enabled, owner_user_id, gtd_expiration_sec
+                       enabled, owner_user_id, gtd_expiration_sec, buy_size
                 FROM copy_trading_configs
             """)
         return [CopyTradingConfig(
@@ -36,6 +36,7 @@ def get_copy_trading_configs(enabled_only: bool = False) -> List[CopyTradingConf
             enabled=bool(row[3]),
             owner_user_id=int(row[4] or 0),
             gtd_expiration_sec=int(row[5] or 1800),
+            buy_size=float(row[6] or 100),
         ) for row in cursor.fetchall()]
     finally:
         conn.close()
@@ -48,7 +49,7 @@ def get_copy_trading_config_by_id(config_id: int) -> Optional[CopyTradingConfig]
     try:
         cursor.execute("""
             SELECT id, leader_proxy_wallet, follower_proxy_wallet,
-                   enabled, owner_user_id, gtd_expiration_sec
+                   enabled, owner_user_id, gtd_expiration_sec, buy_size
             FROM copy_trading_configs WHERE id = %s
         """, (config_id,))
         row = cursor.fetchone()
@@ -60,6 +61,7 @@ def get_copy_trading_config_by_id(config_id: int) -> Optional[CopyTradingConfig]
                 enabled=bool(row[3]),
                 owner_user_id=int(row[4] or 0),
                 gtd_expiration_sec=int(row[5] or 1800),
+                buy_size=float(row[6] or 100),
             )
         return None
     finally:
@@ -88,7 +90,7 @@ def create_copy_trading_config(
 
 def update_copy_trading_config(config_id: int, **kwargs) -> bool:
     """更新跟单配置"""
-    allowed_fields = {"enabled", "leader_proxy_wallet", "follower_proxy_wallet", "gtd_expiration_sec"}
+    allowed_fields = {"enabled", "leader_proxy_wallet", "follower_proxy_wallet", "gtd_expiration_sec", "buy_size"}
     update_fields = {}
     for k, v in kwargs.items():
         if k in allowed_fields:

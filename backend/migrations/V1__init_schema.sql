@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS copy_trading_configs (
   leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Leader 代理钱包地址',
   follower_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Follower 代理钱包地址',
   gtd_expiration_sec INT NOT NULL DEFAULT 1800 COMMENT 'GTD订单过期时间（秒），默认30分钟',
+  buy_size DECIMAL(20, 4) NOT NULL DEFAULT 100.0000 COMMENT '固定买入数量（shares）',
   enabled TINYINT(1) DEFAULT 0 COMMENT '是否启用',
   owner_user_id INT NULL,
   created_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),

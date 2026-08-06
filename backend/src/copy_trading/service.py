@@ -1354,6 +1354,8 @@ class CopyTradingService:
                     config.enabled = kwargs["enabled"]
                 if "gtd_expiration_sec" in kwargs:
                     config.gtd_expiration_sec = int(kwargs["gtd_expiration_sec"])
+                if "buy_size" in kwargs:
+                    config.buy_size = float(kwargs["buy_size"])
         return success
 
     def delete_config(self, config_id: int) -> bool:
