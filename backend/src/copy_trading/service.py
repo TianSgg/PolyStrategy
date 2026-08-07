@@ -13,7 +13,6 @@ from typing import Dict, Set, Optional, List
 
 from .types import CopyTradingConfig, ActivitySignal, PlaceOrderResult
 from market import get_market_service
-from .chain import get_copy_trading_chain_monitor
 from .predexon import get_copy_trading_predexon
 from account.service import get_account_service
 from leader.service import get_leader_service
@@ -382,7 +381,6 @@ class CopyTradingService:
     async def _load_configs(self):
         """从数据库加载配置（async，供 initialize 调用）"""
         configs = get_copy_trading_configs(enabled_only=False)
-        chain_monitor = get_copy_trading_chain_monitor()
         predexon = get_copy_trading_predexon()
         for config in configs:
             self._leader_addr_to_configs[config.leader_proxy_wallet] = config
@@ -390,8 +388,6 @@ class CopyTradingService:
             self._followers.add(config.follower_proxy_wallet)
             self._config_id_to_config[config.id] = config
             self._add_fl_key(config)
-            chain_monitor.add_leader(config.leader_proxy_wallet)
-            chain_monitor.add_follower(config.follower_proxy_wallet)
             predexon.add_leader(config.leader_proxy_wallet)
 
         logger.info(f"[CopyTrade] Loaded {len(self._leader_addr_to_configs)} leaders, {len(self._followers)} followers")
@@ -860,11 +856,8 @@ class CopyTradingService:
         if leader_proxy_wallet in self._leader_addr_to_configs:
             raise ValueError(f"Leader {leader_proxy_wallet} already has a config")
 
-        # 注册 leader 到链监听器 + Predexon
-        get_copy_trading_chain_monitor().add_leader(leader_proxy_wallet)
+        # 注册 leader 到 Predexon
         get_copy_trading_predexon().add_leader(leader_proxy_wallet)
-        # 注册 follower 的 PositionsConverted 监听
-        get_copy_trading_chain_monitor().add_follower(follower_proxy_wallet)
 
         # 启动 follower 的 User Channel WS
 
@@ -1239,13 +1232,11 @@ class CopyTradingService:
             # 从缓存中移除
             if l_addr in self._leader_addr_to_configs:
                 del self._leader_addr_to_configs[l_addr]
-                get_copy_trading_chain_monitor().remove_leader(l_addr)
                 get_copy_trading_predexon().remove_leader(l_addr)
 
             # 检查 f_addr 是否还有其他 config（没有则清理 follower 资源）
             if not self._follower_addr_to_configs.get(f_addr):
                 self._followers.discard(f_addr)
-                get_copy_trading_chain_monitor().remove_follower(f_addr)
                 delete_follower_positions(f_addr)
                 self._follower_positions.pop(f_addr, None)
 
@@ -1257,132 +1248,7 @@ class CopyTradingService:
 
         return success
 
-    async def process_convert(self, event: dict):
-        """处理链上 Convert 事件"""
-        logger.debug(f"[Convert] Full event: {event}")
-        event_type = event.get("event_type")
-        user = event.get("user", "").lower()
-        amount = event.get("amount_decimal", "N/A")
-        transaction_hash = event.get("transaction_hash", "")
-        index_set = event.get("index_set", 0)
 
-        if event_type == "PositionsConverted" and user:
-            if user in self._leader_addr_to_configs:
-                # 通过 activity API 查询具体被 convert 的市场
-                market_info = await self._get_converted_market_info(user, transaction_hash, index_set)
-                logger.info(f"[Convert] market_info result: {market_info}")
-                market_id = market_info.get("market_id", "") if market_info else ""
-                question = market_info.get("question", "") if market_info else ""
-                group_item_title = market_info.get("group_item_title", "") if market_info else ""
-                link = market_info.get("link", "") if market_info else ""
-                leader_name = self._leader_service.get_leader_name(user)
-                logger.info(f"[Convert] Detected: {leader_name} converted {amount} on {question[:30]}")
-                return
-
-            # 检查是否为 FOLLOWER
-            if user in self._followers:
-                logger.info(f"[Convert] Follower convert detected for {user[:10]}")
-                try:
-                    synced = await self._sync_follower_positions_from_poly(user, delay=35)
-                    logger.info(f"[Convert] Follower position synced, {synced} positions updated")
-                except Exception as e:
-                    logger.error(f"[Convert] Follower position sync failed: {e}")
-
-    async def _get_converted_market_info(self, user: str, transaction_hash: str, index_set: int) -> Optional[dict]:
-        """通过 user activity API 查询 CONVERSION 记录，再从 event markets 中匹配 conditionId 得到 groupItemTitle
-
-        Args:
-            user: 用户地址
-            transaction_hash: 链上 PositionsConverted 事件的交易 hash
-
-        Returns:
-            {"market_id": conditionId, "question": title, "group_item_title": ..., "link": ...} 或 None
-        """
-        for attempt in range(20):  # 最多等 1 分钟
-            try:
-                resp = await asyncio.to_thread(
-                    requests.get,
-                    "https://data-api.polymarket.com/activity",
-                    params={"user": user, "type": "CONVERSION"},
-                    timeout=10,
-                )
-                if resp.status_code != 200:
-                    logger.warning(
-                        f"[Convert] Activity API error: {resp.status_code} {resp.text[:100]}, attempt {attempt + 1}/20"
-                    )
-                    await asyncio.sleep(3)
-                    continue
-
-                activities = resp.json()
-                # 匹配 transaction hash
-                activity = None
-                for a in activities:
-                    if a.get("transactionHash", "").lower() == transaction_hash.lower():
-                        activity = a
-                        break
-
-                if not activity:
-                    logger.warning(
-                        f"[Convert] No CONVERSION record found for tx {transaction_hash[:10]}, "
-                        f"attempt {attempt + 1}/20"
-                    )
-                    await asyncio.sleep(3)
-                    continue
-
-                logger.info(f"[Convert] Activity matched: {activity}")
-
-                event_slug = activity.get("eventSlug", "")
-                condition_id = activity.get("conditionId", "")  # 实际是 negRiskMarketID（event 级别）
-                title = activity.get("title", "")
-                link = f"https://polymarket.com/event/{event_slug}" if event_slug else ""
-
-                # 用 eventSlug 查到 event，按 market_id 升序排列后用 index_set 定位具体市场
-                if event_slug:
-                    ev_resp = await asyncio.to_thread(
-                        requests.get,
-                        "https://gamma-api.polymarket.com/events",
-                        params={"slug": event_slug},
-                        timeout=10,
-                    )
-                    if ev_resp.status_code == 200:
-                        events = ev_resp.json()
-                        if events:
-                            ev = events[0]
-                            logger.info(
-                                f"[Convert] Event: title={ev.get('title')}, "
-                                f"markets={len(ev.get('markets', []))}, negRiskMarketID={(ev.get('negRiskMarketID') or '')[:10]}"
-                            )
-                            # 按 market_id 升序排列
-                            markets = sorted(ev.get("markets", []), key=lambda m: m["id"])
-                            idx = int(math.log2(index_set))
-                            if idx < len(markets):
-                                market = markets[idx]
-                                group_item_title = market.get("groupItemTitle", "")
-                                logger.debug(
-                                    f"[Convert] Market resolved: idx={idx}, groupItemTitle={group_item_title!r}, "
-                                    f"market_id={(market.get('id') or '')[:10]}, index_set={index_set}"
-                                )
-                                return {
-                                    "market_id": condition_id,
-                                    "question": title,
-                                    "group_item_title": group_item_title,
-                                    "link": link,
-                                }
-                            else:
-                                logger.warning(
-                                    f"[Convert] index_set={index_set} (idx={idx}) out of range "
-                                    f"for event {event_slug} with {len(markets)} markets"
-                                )
-
-                return {"market_id": condition_id, "question": title, "group_item_title": "", "link": link}
-
-            except Exception as e:
-                logger.warning(f"[Convert] Failed to fetch activity (attempt {attempt + 1}/20): {e}")
-                await asyncio.sleep(3)
-
-        logger.error(f"[Convert] Activity API: tx {transaction_hash[:10]} not found after 20 attempts (1 min)")
-        return None
-    
     def _get_tx_lock(self, leader_addr: str) -> asyncio.Lock:
             if leader_addr not in self._tx_locks:
                 self._tx_locks[leader_addr] = asyncio.Lock()

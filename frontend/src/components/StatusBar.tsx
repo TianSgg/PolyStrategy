@@ -5,7 +5,6 @@ interface StatusBarProps {
   wsLatency: {
     ws_market: string;
     ws_user: string;
-    polygon_ws: string;
     poly_rtds: string;
     predexon: string;
   };
@@ -13,7 +12,6 @@ interface StatusBarProps {
     data_api: string;
     clob_api: string;
     gamma_api: string;
-    polygon_http: string;
   };
   darkMode: boolean;
   setDarkMode: (value: boolean) => void;
@@ -81,11 +79,9 @@ export default function StatusBar({
           <LatencyItem label="WS-user" value={wsLatency.ws_user} darkMode={darkMode} loading={latencyLoading} width="60px" />
           <LatencyItem label="RTDS" value={wsLatency.poly_rtds} darkMode={darkMode} loading={latencyLoading} width="50px" />
           <LatencyItem label="Predexon" value={wsLatency.predexon} darkMode={darkMode} loading={latencyLoading} width="60px" />
-          <LatencyItem label="PolygonWS" value={wsLatency.polygon_ws} darkMode={darkMode} loading={latencyLoading} width="70px" />
           <LatencyItem label="Data" value={httpLatency.data_api} darkMode={darkMode} loading={latencyLoading} width="50px" />
           <LatencyItem label="CLOB" value={httpLatency.clob_api} darkMode={darkMode} loading={latencyLoading} width="50px" />
           <LatencyItem label="Gamma" value={httpLatency.gamma_api} darkMode={darkMode} loading={latencyLoading} width="50px" />
-          <LatencyItem label="PolygonHTTP" value={httpLatency.polygon_http} darkMode={darkMode} loading={latencyLoading} width="80px" />
         </div>
       </div>
       <div className="status-actions">

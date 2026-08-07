@@ -86,17 +86,7 @@ class PerformanceService:
             logger.debug(f"[Performance] ws_user error: {e}")
             self.ws_latencies["ws_user"] = "--"
 
-        # 3. polygon_ws - CopyTradingChainMonitor
-        try:
-            from copy_trading.chain import get_copy_trading_chain_monitor
-            monitor = get_copy_trading_chain_monitor()
-            latency = await monitor.check_ws_latency()
-            self.ws_latencies["polygon_ws"] = str(latency)
-        except Exception as e:
-            logger.debug(f"[Performance] polygon_ws error: {e}")
-            self.ws_latencies["polygon_ws"] = "--"
-
-        # 4. predexon - CopyTradingPredexon
+        # 3. predexon - CopyTradingPredexon
         try:
             from copy_trading.predexon import get_copy_trading_predexon
             predexon = get_copy_trading_predexon()
@@ -109,15 +99,6 @@ class PerformanceService:
     async def check_http_latencies(self):
         # 1. Polymarket HTTP APIs（主动探测）
         tasks = [self._check_http_latency(name, url) for name, url in POLYMARKET_APIS.items()]
-
-        # 2. Polygon HTTP（调用 consumer）
-        try:
-            from copy_trading.chain import get_copy_trading_chain_monitor
-            monitor = get_copy_trading_chain_monitor()
-            latency = await monitor.check_http_latency()
-            self.http_latency["polygon_http"] = str(latency)
-        except Exception as e:
-            self.http_latency["polygon_http"] = "--"
 
         await asyncio.gather(*tasks)
 
@@ -153,7 +134,6 @@ class PerformanceService:
             self._market_summary(),
             self._account_summary(),
             self._leader_summary(),
-            self._chain_monitor_summary(),
             self._copy_trading_ws_summary(),
             self._frontend_ws_summary(),
             self._performance_summary(),
@@ -379,29 +359,6 @@ class PerformanceService:
         ]
         return self._service_block("leader", "Leader", caches)
 
-    def _chain_monitor_summary(self) -> dict:
-        from copy_trading.chain import get_copy_trading_chain_monitor
-
-        monitor = get_copy_trading_chain_monitor()
-        caches = [
-            self._cache_block("chain_monitor", "leader_subscriptions", "Leader Subscriptions",
-                              self._subscription_items(monitor._leader_subs, "leader")),
-            self._cache_block("chain_monitor", "follower_subscriptions", "Follower Subscriptions",
-                              self._subscription_items(monitor._follower_subs, "follower")),
-            self._cache_block("chain_monitor", "pending_subscriptions", "Pending Subscriptions",
-                              self._subscription_items(monitor._pending_subs, "address", "request_ids")),
-            self._cache_block("chain_monitor", "processed_txs", "Processed TXs",
-                              self._set_items(monitor._processed_txs)),
-            self._cache_block("chain_monitor", "runtime", "Runtime", [
-                {"name": "running", "value": monitor._running},
-                {"name": "rpc_connected", "value": monitor.rpc.connected()},
-                {"name": "rpc_request_id", "value": monitor.rpc.request_id},
-            ]),
-        ]
-        return self._service_block("chain_monitor", "Chain Monitor", caches)
-
-    def _subscription_items(self, mapping: dict, owner_name: str, ids_name: str = "subscription_ids") -> List[dict]:
-        return [{owner_name: key, ids_name: list(value), "count": len(value)} for key, value in sorted(mapping.items())]
 
     def _copy_trading_ws_summary(self) -> dict:
         from copy_trading.ws import get_all_copy_trading_ws
@@ -495,22 +452,6 @@ class PerformanceService:
             from leader.service import get_leader_service
             leader = get_leader_service()
             return {"names": lambda: self._dict_items(leader._cache, "proxy_wallet", "name")}[cache]()
-
-        if service == "chain_monitor":
-            from copy_trading.chain import get_copy_trading_chain_monitor
-            monitor = get_copy_trading_chain_monitor()
-            mapping = {
-                "leader_subscriptions": lambda: self._subscription_items(monitor._leader_subs, "leader"),
-                "follower_subscriptions": lambda: self._subscription_items(monitor._follower_subs, "follower"),
-                "pending_subscriptions": lambda: self._subscription_items(monitor._pending_subs, "address", "request_ids"),
-                "processed_txs": lambda: self._set_items(monitor._processed_txs),
-                "runtime": lambda: [
-                    {"name": "running", "value": monitor._running},
-                    {"name": "rpc_connected", "value": monitor.rpc.connected()},
-                    {"name": "rpc_request_id", "value": monitor.rpc.request_id},
-                ],
-            }
-            return mapping[cache]()
 
         if service == "copy_trading_ws":
             from copy_trading.ws import get_all_copy_trading_ws

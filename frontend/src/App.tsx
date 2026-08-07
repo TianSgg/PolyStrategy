@@ -38,7 +38,6 @@ function App() {
   const [wsLatency, setWsLatency] = useState({
     ws_market: "--",
     ws_user: "--",
-    polygon_ws: "--",
     poly_rtds: "--",
     predexon: "--",
   })
@@ -46,7 +45,6 @@ function App() {
     data_api: "--",
     clob_api: "--",
     gamma_api: "--",
-    polygon_http: "--",
   })
 
   const { accountBalances } = useBalance()
@@ -91,7 +89,6 @@ function App() {
       setWsLatency({
         ws_market: data.ws?.ws_market ?? "--",
         ws_user: data.ws?.ws_user ?? "--",
-        polygon_ws: data.ws?.polygon_ws ?? "--",
         poly_rtds: data.ws?.poly_rtds ?? "--",
         predexon: data.ws?.predexon ?? "--",
       })
@@ -99,7 +96,6 @@ function App() {
         data_api: data.http?.data_api ?? "--",
         clob_api: data.http?.clob_api ?? "--",
         gamma_api: data.http?.gamma_api ?? "--",
-        polygon_http: data.http?.polygon_http ?? "--",
       })
     })
 
@@ -229,7 +225,6 @@ function App() {
                 setWsLatency({
                   ws_market: ws.ws_market ?? "--",
                   ws_user: ws.ws_user ?? "--",
-                  polygon_ws: ws.polygon_ws ?? "--",
                   poly_rtds: ws.poly_rtds ?? "--",
                   predexon: ws.predexon ?? "--",
                 });
@@ -237,7 +232,6 @@ function App() {
                   data_api: http.data_api ?? "--",
                   clob_api: http.clob_api ?? "--",
                   gamma_api: http.gamma_api ?? "--",
-                  polygon_http: http.polygon_http ?? "--",
                 });
               }
             } catch (e) {
