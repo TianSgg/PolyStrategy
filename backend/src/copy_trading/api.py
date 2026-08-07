@@ -4,12 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
 
-from croniter import croniter
-
 from auth import AuthUser, get_current_user
 from account.service import get_account_service
 from .service import get_copy_trading_service
-from .models import get_all_schedules, get_schedule_by_config_id, upsert_schedule, delete_schedule
 from leader.service import get_leader_service
 
 router = APIRouter(prefix="/api/copy-trading", tags=["copy-trading"])
@@ -237,64 +234,5 @@ async def sync_config_positions(config_id: int, current_user: AuthUser = Depends
     }
 
 
-# ==================== 定时调度 ====================
-
-class UpsertScheduleRequest(BaseModel):
-    start_cron: Optional[str] = None
-    stop_cron: Optional[str] = None
-    enabled: bool = True
-
-
-def _validate_cron(expr: Optional[str], field_name: str):
-    if expr is None:
-        return
-    if not croniter.is_valid(expr):
-        raise HTTPException(status_code=400, detail=f"{field_name} is not a valid cron expression")
-
-
-@router.get("/schedules")
-async def list_schedules(current_user: AuthUser = Depends(get_current_user)):
-    """批量获取当前用户所有配置的定时调度"""
-    service = get_copy_trading_service()
-    all_schedules = get_all_schedules(enabled_only=False)
-    result = {}
-    for sched in all_schedules:
-        config = service.get_config_by_id(sched["config_id"])
-        if config and current_user.can_view(config.owner_user_id):
-            result[sched["config_id"]] = sched
-    return {"schedules": result}
-
-
-@router.get("/configs/{config_id}/schedule")
-async def get_schedule(config_id: int, current_user: AuthUser = Depends(get_current_user)):
-    """获取配置的定时调度"""
-    service = get_copy_trading_service()
-    _assert_config_access(service.get_config_by_id(config_id), current_user)
-    sched = get_schedule_by_config_id(config_id)
-    if not sched:
-        return {"schedule": None}
-    return {"schedule": sched}
-
-
-@router.put("/configs/{config_id}/schedule")
-async def set_schedule(config_id: int, data: UpsertScheduleRequest, current_user: AuthUser = Depends(get_current_user)):
-    """创建或更新定时调度"""
-    service = get_copy_trading_service()
-    _assert_config_access(service.get_config_by_id(config_id), current_user)
-    if not data.start_cron and not data.stop_cron:
-        raise HTTPException(status_code=400, detail="start_cron and stop_cron cannot both be empty")
-    _validate_cron(data.start_cron, "start_cron")
-    _validate_cron(data.stop_cron, "stop_cron")
-    upsert_schedule(config_id, data.start_cron, data.stop_cron, data.enabled)
-    return {"status": "ok"}
-
-
-@router.delete("/configs/{config_id}/schedule")
-async def remove_schedule(config_id: int, current_user: AuthUser = Depends(get_current_user)):
-    """删除定时调度"""
-    service = get_copy_trading_service()
-    _assert_config_access(service.get_config_by_id(config_id), current_user)
-    delete_schedule(config_id)
-    return {"status": "ok"}
 
 

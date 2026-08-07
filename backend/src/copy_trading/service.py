@@ -118,7 +118,6 @@ class CopyTradingService:
         self._follower_poller_task: Optional[asyncio.Task] = None
         self._pending_poller_task: Optional[asyncio.Task] = None
         self._position_history_poller_task: Optional[asyncio.Task] = None
-        self._schedule_poller_task: Optional[asyncio.Task] = None
 
         # Leader 名字解析服务
         self._leader_service = get_leader_service()
@@ -301,52 +300,6 @@ class CopyTradingService:
         self._pending_poller_task = asyncio.create_task(_poll())
         logger.info(f"[PositionPoller] Pending poller started ({interval}s interval)")
 
-    def _start_schedule_poller(self, interval=60):
-        """启动定时调度检查器，每分钟检查 cron 表达式决定启停"""
-        from croniter import croniter
-        from .models import get_all_schedules, update_schedule_last_triggered
-        from shared.time_utils import now_utc8_dt
-
-        def _cron_fired_in_window(cron_expr: str, last_check, now) -> bool:
-            """判断 (last_check, now] 窗口内是否存在 cron 触发点"""
-            it = croniter(cron_expr, last_check)
-            next_fire = it.get_next(type(now))
-            return next_fire <= now
-
-        async def _poll():
-            last_check = now_utc8_dt()
-            while True:
-                try:
-                    now = now_utc8_dt()
-                    schedules = get_all_schedules(enabled_only=True)
-                    for sched in schedules:
-                        config_id = sched["config_id"]
-                        config = self._config_id_to_config.get(config_id)
-                        if not config:
-                            continue
-
-                        should_enable = None
-
-                        if sched["start_cron"] and _cron_fired_in_window(sched["start_cron"], last_check, now):
-                            should_enable = True
-                        if sched["stop_cron"] and _cron_fired_in_window(sched["stop_cron"], last_check, now):
-                            should_enable = False
-
-                        if should_enable is not None and config.enabled != should_enable:
-                            self.update_config(config_id, enabled=should_enable)
-                            update_schedule_last_triggered(sched["id"])
-                            action = "启动" if should_enable else "停止"
-                            leader_name = self._leader_service.get_leader_name(config.leader_proxy_wallet)
-                            follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
-                            logger.info(f"[Schedule] 定时{action} config#{config_id} ({leader_name} -> {follower_name})")
-                    last_check = now
-                except Exception as e:
-                    logger.warning(f"[Schedule] Poller error: {e}")
-                await asyncio.sleep(interval)
-
-        self._schedule_poller_task = asyncio.create_task(_poll())
-        logger.info(f"[Schedule] Schedule poller started ({interval}s interval)")
-
     def stop(self):
         """停止后台任务"""
         if self._follower_poller_task:
@@ -358,9 +311,6 @@ class CopyTradingService:
         if self._position_history_poller_task:
             self._position_history_poller_task.cancel()
             self._position_history_poller_task = None
-        if self._schedule_poller_task:
-            self._schedule_poller_task.cancel()
-            self._schedule_poller_task = None
         asyncio.create_task(get_market_service().stop())
 
     async def initialize(self):
@@ -372,7 +322,6 @@ class CopyTradingService:
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
         self._start_position_history_poller(interval=120)
-        self._start_schedule_poller(interval=60)
 
     def _on_market_exit(self, no_asset_id: str):
         """MarketService 触发卖出回调"""

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../api'
 import { useBalance } from '../contexts/BalanceContext'
 import { toast } from '../components/Toast'
@@ -67,14 +67,6 @@ interface PositionHistoryState {
   points: PositionHistoryPoint[]
 }
 
-interface Schedule {
-  id: number
-  config_id: number
-  start_cron: string | null
-  stop_cron: string | null
-  enabled: boolean
-  last_triggered_at: string | null
-}
 
 
 interface Props {
@@ -212,42 +204,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [scatterShowZeroMatched, setScatterShowZeroMatched] = useState<Record<number, boolean>>({})
   const [scatterNormalize, setScatterNormalize] = useState<Record<number, boolean>>({})
 
-  // Schedule states
-  const [schedules, setSchedules] = useState<Record<number, Schedule | null>>({})
-  const [editingScheduleConfigId, setEditingScheduleConfigId] = useState<number | null>(null)
-  const [editingStartCron, setEditingStartCron] = useState('')
-  const [editingStopCron, setEditingStopCron] = useState('')
-  const schedulePopoverRef = useRef<HTMLDivElement>(null)
-
-  const handleScheduleClickOutside = useCallback((e: MouseEvent) => {
-    if (schedulePopoverRef.current && !schedulePopoverRef.current.contains(e.target as Node)) {
-      setEditingScheduleConfigId(null)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (editingScheduleConfigId !== null) {
-      document.addEventListener('mousedown', handleScheduleClickOutside)
-      return () => document.removeEventListener('mousedown', handleScheduleClickOutside)
-    }
-  }, [editingScheduleConfigId, handleScheduleClickOutside])
-
-  // Slug filter states
-
-  const fetchAllSchedules = async () => {
-    try {
-      const res = await apiFetch('/api/copy-trading/schedules')
-      if (!res.ok) return
-      const data = await res.json()
-      const map: Record<number, Schedule | null> = {}
-      for (const [k, v] of Object.entries(data.schedules || {})) {
-        map[Number(k)] = v as Schedule
-      }
-      setSchedules(map)
-    } catch (e) {
-      console.error('Failed to fetch schedules:', e)
-    }
-  }
 
 
   const fetchConfigs = async () => {
@@ -258,7 +214,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
       const cfgs = data.configs || []
       setConfigs(cfgs)
       fetchConfigBalances(cfgs)
-      fetchAllSchedules()
     } catch (e) {
       console.error('Failed to fetch configs:', e)
     }
@@ -393,51 +348,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     }
   }
 
-  const handleScheduleClick = (config: CopyTradingConfig) => {
-    const sched = schedules[config.id]
-    setEditingScheduleConfigId(config.id)
-    setEditingStartCron(sched?.start_cron || '')
-    setEditingStopCron(sched?.stop_cron || '')
-  }
-
-  const handleScheduleSave = async (configId: number) => {
-    if (!editingStartCron && !editingStopCron) {
-      toast('start_cron 和 stop_cron 不能同时为空')
-      return
-    }
-    try {
-      const res = await apiFetch(`/api/copy-trading/configs/${configId}/schedule`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          start_cron: editingStartCron || null,
-          stop_cron: editingStopCron || null,
-          enabled: true,
-        })
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        toast(err.detail || '保存失败')
-        return
-      }
-      toast('定时调度已保存')
-      setEditingScheduleConfigId(null)
-      fetchAllSchedules()
-    } catch (e: any) {
-      toast(e.message || '保存失败')
-    }
-  }
-
-  const handleScheduleDelete = async (configId: number) => {
-    try {
-      await apiFetch(`/api/copy-trading/configs/${configId}/schedule`, { method: 'DELETE' })
-      setSchedules(prev => ({ ...prev, [configId]: null }))
-      setEditingScheduleConfigId(null)
-      toast('定时调度已删除')
-    } catch (e: any) {
-      toast(e.message || '删除失败')
-    }
-  }
 
   const handleToggleEnabled = async (config: CopyTradingConfig) => {
     try {
@@ -1172,50 +1082,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                                 <div className="price-popover-actions">
                                   <button onClick={() => handleBuySizeSave(config.id)} className="btn-save">✓</button>
                                   <button onClick={handleBuySizeCancel} className="btn-cancel">✕</button>
-                                </div>
-                              </div>
-                            )}
-                          </span>
-                          <span className="meta-item price-anchor">
-                            定时:{' '}
-                            <strong
-                              className="ratio-text"
-                              onClick={() => handleScheduleClick(config)}
-                              title="点击配置定时启停（cron 表达式，UTC+8）"
-                              style={{ color: schedules[config.id] ? '#4caf50' : '#999' }}
-                            >
-                              {schedules[config.id] ? '已配置' : '未设置'}
-                            </strong>
-                            {editingScheduleConfigId === config.id && (
-                              <div ref={schedulePopoverRef} className="price-popover" style={{ minWidth: 240 }}>
-                                <div className="price-popover-row" style={{ flexDirection: 'column', gap: 6 }}>
-                                  <label style={{ fontSize: 11 }}>启动 cron (UTC+8)</label>
-                                  <input
-                                    type="text"
-                                    placeholder="如: 0 9 * * 1-5"
-                                    value={editingStartCron}
-                                    onChange={e => setEditingStartCron(e.target.value)}
-                                    style={{ width: '100%' }}
-                                  />
-                                  <label style={{ fontSize: 11 }}>停止 cron (UTC+8)</label>
-                                  <input
-                                    type="text"
-                                    placeholder="如: 0 23 * * *"
-                                    value={editingStopCron}
-                                    onChange={e => setEditingStopCron(e.target.value)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handleScheduleSave(config.id)
-                                      if (e.key === 'Escape') setEditingScheduleConfigId(null)
-                                    }}
-                                    style={{ width: '100%' }}
-                                  />
-                                </div>
-                                <div className="price-popover-actions">
-                                  <button onClick={() => handleScheduleSave(config.id)} className="btn-save">✓</button>
-                                  <button onClick={() => setEditingScheduleConfigId(null)} className="btn-cancel">✕</button>
-                                  {schedules[config.id] && (
-                                    <button onClick={() => handleScheduleDelete(config.id)} className="btn-cancel" style={{ color: '#e57373' }}>删除</button>
-                                  )}
                                 </div>
                               </div>
                             )}
