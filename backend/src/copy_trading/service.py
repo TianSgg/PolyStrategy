@@ -430,6 +430,11 @@ class CopyTradingService:
             logger.debug(f"[CopyTrade] process_signal: ignoring {signal.side} signal (only BUY NO is followed)")
             return
 
+        outcome = payload.get("outcome", "")
+        if outcome.upper() != "NO":
+            logger.debug(f"[CopyTrade] process_signal: ignoring outcome={outcome} (only NO is followed)")
+            return
+
         logger.debug(f"[CopyTrade] process_signal: BUY {signal.size} @ {signal.price}, asset={self._asset_label(signal.asset)}, source={signal.source}")
 
         asyncio.create_task(asyncio.to_thread(batch_upsert_config_asset, [config.id], signal.asset))

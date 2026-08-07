@@ -162,6 +162,8 @@ class CopyTradingPredexon:
 
                 role = event.get("role")    # "taker" / "maker"
 
+                outcome = event.get("outcome", "")
+
                 payload = {
                     "proxyWallet": user,
                     "transactionHash": tx_hash,
@@ -171,6 +173,7 @@ class CopyTradingPredexon:
                     "asset": token_id,
                     "source": "predexon",
                     "role": role,
+                    "outcome": outcome,
                 }
 
                 if not self.service:
