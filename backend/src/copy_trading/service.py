@@ -10,7 +10,6 @@ import time
 from decimal import Decimal, ROUND_DOWN
 from typing import Dict, Set, Optional, List
 
-from py_clob_client_v2 import ClobClient
 
 from .types import CopyTradingConfig, ActivitySignal, PlaceOrderResult
 from market import get_market_service
@@ -127,13 +126,6 @@ class CopyTradingService:
 
         # 账户名解析服务
         self._account_service = get_account_service()
-
-        # 无 L1 认证的只读 CLOB Client，用于盘口/市场元信息查询
-        self._read_only_clob_client = ClobClient(
-            host="https://clob.polymarket.com",
-            chain_id=137,
-        )
-
 
     def _get_config_by_fl(self, f_addr: str, l_addr: str) -> Optional[CopyTradingConfig]:
         return self._fl_key_to_config.get(f_addr + "_" + l_addr)
@@ -467,18 +459,6 @@ class CopyTradingService:
             follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
             leader_name = self._leader_service.get_leader_name(config.leader_proxy_wallet)
 
-            order_book = await self._get_order_book_with_retry(asset_id, "BUY")
-            if not order_book:
-                logger.warning(
-                    f"[CopyTrade] BUY order book unavailable "
-                    f"asset={self._asset_label(asset_id)}, follower={follower_name}"
-                )
-                tick_size = None
-                neg_risk = None
-            else:
-                tick_size = order_book["tick_size"]
-                neg_risk = order_book["neg_risk"]
-
             logger.info(
                 f"[CopyTrade] BUY {self._asset_label(asset_id)} | "
                 f"leader={leader_name} {signal.size:.2f}@{signal.price} | "
@@ -488,7 +468,7 @@ class CopyTradingService:
             order_start = time.time()
             result = await self._place_order(
                 config, asset_id, "BUY", follow_buy_size,
-                price=follow_price, tick_size=tick_size, neg_risk=neg_risk
+                price=follow_price, tick_size="0.01", neg_risk=True
             )
             order_elapsed_ms = (time.time() - order_start) * 1000
             signal_to_result_ms = (time.time() - signal.signal_time) * 1000
@@ -537,10 +517,6 @@ class CopyTradingService:
             follower_name = self._account_service.get_acc_name(f_addr)
 
             async with self._get_addr_lock(f_addr):
-                order_book = await self._get_order_book_with_retry(asset_id, "SELL")
-                tick_size = order_book["tick_size"] if order_book else None
-                neg_risk = order_book["neg_risk"] if order_book else None
-
                 logger.info(
                     f"[CopyTrade] EXIT SELL {self._asset_label(asset_id)} | "
                     f"follower={follower_name} {follow_sell_size:.2f}@{follow_price}"
@@ -548,7 +524,7 @@ class CopyTradingService:
 
                 result = await self._place_order(
                     config, asset_id, "SELL", follow_sell_size,
-                    price=follow_price, tick_size=tick_size, neg_risk=neg_risk
+                    price=follow_price, tick_size="0.001", neg_risk=True
                 )
                 self._register_post_order_result(config, result)
 
@@ -617,26 +593,6 @@ class CopyTradingService:
         except Exception as e:
             logger.error(f"[CopyTrade] Failed to cancel orders on leader exit: {e}")
 
-
-    async def _get_order_book_with_retry(self, asset_id: str, side: str) -> Optional[dict]:
-        """Get CLOB order book with a small retry budget for transient network failures."""
-        for attempt in range(3):
-            try:
-                order_book = await asyncio.to_thread(self._read_only_clob_client.get_order_book, asset_id)
-                if order_book:
-                    return order_book
-                logger.warning(
-                    f"[CopyTrade] {side} get_order_book returned empty: "
-                    f"asset={self._asset_label(asset_id)}, attempt={attempt + 1}/3"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[CopyTrade] {side} get_order_book failed: "
-                    f"asset={self._asset_label(asset_id)}, attempt={attempt + 1}/3, error={e}"
-                )
-            if attempt < 2:
-                await asyncio.sleep(0.1 * (attempt + 1))
-        return None
 
     async def _get_asset_label(self, asset_id: str) -> str:
         """根据 asset_id 返回可读标签 'id[:10] - question[outcome]'
