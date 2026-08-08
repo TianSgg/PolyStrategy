@@ -183,30 +183,6 @@ async def get_trade_scatter(
     return {"trades": trades}
 
 
-@router.get("/configs/{config_id}/position-history")
-async def get_config_position_history(
-    config_id: int,
-    asset_id: str = Query(..., min_length=1),
-    start: Optional[str] = None,
-    end: Optional[str] = None,
-    normalized: bool = False,
-    limit: int = Query(2000, ge=1, le=5000),
-    current_user: AuthUser = Depends(get_current_user),
-):
-    """获取指定 config+asset 的 leader/follower 仓位历史曲线。"""
-    service = get_copy_trading_service()
-    config = service.get_config_by_id(config_id)
-    _assert_config_access(config, current_user)
-    points = service.get_position_history(
-        config_id,
-        asset_id,
-        start=start,
-        end=end,
-        normalized=normalized,
-        limit=limit,
-    )
-    return {"points": points}
-
 
 @router.post("/configs/{config_id}/sync")
 async def sync_config_positions(config_id: int, current_user: AuthUser = Depends(get_current_user)):

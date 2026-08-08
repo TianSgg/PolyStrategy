@@ -77,32 +77,6 @@ CREATE TABLE IF NOT EXISTS copy_trading_configs (
 );
 
 -- ============================================================
--- 跟单配置仓位历史快照表
--- ============================================================
-CREATE TABLE IF NOT EXISTS copy_trading_position_history (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  config_id INT NOT NULL,
-  asset_id VARCHAR(128) NOT NULL,
-  leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Leader 代理钱包地址',
-  follower_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Follower 代理钱包地址',
-  share_ratio DECIMAL(10, 6) NOT NULL COMMENT '记录时的跟单比例',
-  leader_position DECIMAL(20, 8) NOT NULL DEFAULT 0 COMMENT 'Leader 钱包真实仓位',
-  follower_position DECIMAL(20, 8) NOT NULL DEFAULT 0 COMMENT 'Follower 钱包真实仓位',
-  follower_pending_buy DECIMAL(20, 8) NOT NULL DEFAULT 0 COMMENT 'Follower BUY 待成交',
-  follower_pending_sell DECIMAL(20, 8) NOT NULL DEFAULT 0 COMMENT 'Follower SELL 待成交',
-  source VARCHAR(64) NOT NULL COMMENT '快照来源',
-  side VARCHAR(16) DEFAULT NULL COMMENT '事件方向 BUY/SELL',
-  event_size DECIMAL(20, 8) DEFAULT NULL COMMENT '事件数量',
-  event_price DECIMAL(20, 8) DEFAULT NULL COMMENT '事件价格',
-  order_id VARCHAR(128) DEFAULT NULL COMMENT '相关订单 ID',
-  leader_tx_hash VARCHAR(128) DEFAULT NULL COMMENT 'Leader 交易 hash',
-  raw_context TEXT COMMENT '扩展上下文 JSON 字符串',
-  created_at DATETIME(3) NOT NULL,
-  INDEX idx_config_asset_created (config_id, asset_id, created_at),
-  INDEX idx_created_at (created_at)
-);
-
--- ============================================================
 -- 跟单配置关联 asset 列表
 -- ============================================================
 CREATE TABLE IF NOT EXISTS copy_trading_config_assets (

@@ -34,9 +34,7 @@ from .models import (
     upsert_follower_pending_buy,
     batch_upsert_follower_pending_sell,
     batch_upsert_follower_pending_buy,
-    record_position_history,
     batch_upsert_config_asset,
-    get_position_history_from_db,
     get_assets_of_cfg_from_db,
     get_live_buy_order_ids_by_asset,
 )
@@ -120,7 +118,6 @@ class CopyTradingService:
         # 启动持仓轮询兜底任务（依赖 _config_id_to_config，由 initialize 填充）
         self._follower_poller_task: Optional[asyncio.Task] = None
         self._pending_poller_task: Optional[asyncio.Task] = None
-        self._position_history_poller_task: Optional[asyncio.Task] = None
 
         # Leader 名字解析服务
         self._leader_service = get_leader_service()
@@ -180,88 +177,6 @@ class CopyTradingService:
         return Decimal(str(price)) % Decimal(tick_size) != 0
 
 
-    def _record_position_snapshot(
-        self,
-        config: CopyTradingConfig,
-        asset_id: str,
-        source: str,
-        side: Optional[str] = None,
-        event_size: Optional[float] = None,
-        event_price: Optional[float] = None,
-        order_id: Optional[str] = None,
-        leader_tx_hash: Optional[str] = None,
-        raw_context: Optional[dict] = None,
-    ):
-        """记录 config+asset 的 leader/follower 当前仓位快照，供历史曲线查询。"""
-        if not config or not asset_id:
-            return
-
-        l_addr = config.leader_proxy_wallet
-        f_addr = config.follower_proxy_wallet
-        follower_position = self._follower_positions.get(f_addr, {}).get(asset_id, 0)
-        follower_pending_buy = self._pending_buy_orders.get(f_addr, {}).get(asset_id, 0)
-        follower_pending_sell = self._pending_sell_orders.get(f_addr, {}).get(asset_id, 0)
-
-        asyncio.create_task(asyncio.to_thread(
-            record_position_history,
-            config_id=config.id,
-            asset_id=asset_id,
-            leader_proxy_wallet=l_addr,
-            follower_proxy_wallet=f_addr,
-            share_ratio=0,
-            leader_position=0,
-            follower_position=follower_position,
-            follower_pending_buy=follower_pending_buy,
-            follower_pending_sell=follower_pending_sell,
-            source=source,
-            side=side,
-            event_size=event_size,
-            event_price=event_price,
-            order_id=order_id,
-            leader_tx_hash=leader_tx_hash,
-            raw_context=raw_context,
-        ))
-
-    def _record_config_baseline_snapshots(self, config: CopyTradingConfig):
-        l_addr = config.leader_proxy_wallet.lower()
-        f_addr = config.follower_proxy_wallet.lower()
-        assets = (
-            set(self._follower_positions.get(f_addr, {}).keys())
-            | set(self._pending_buy_orders.get(f_addr, {}).keys())
-            | set(self._pending_sell_orders.get(f_addr, {}).keys())
-        )
-        for asset_id in assets:
-            self._record_position_snapshot(config, asset_id, "baseline")
-
-    def _record_all_position_history_snapshots(self):
-        """只用于poller记录快照"""
-        snapshot_count = 0
-        for config in list(self._config_id_to_config.values()):
-            if not config.enabled:
-                continue
-            f_addr = config.follower_proxy_wallet
-            assets = (
-                set(self._follower_positions.get(f_addr, {}).keys())
-                | set(self._pending_buy_orders.get(f_addr, {}).keys())
-                | set(self._pending_sell_orders.get(f_addr, {}).keys())
-            )
-            for asset_id in assets:
-                self._record_position_snapshot(config, asset_id, "position_history_poller")
-                snapshot_count += 1
-        logger.debug(f"[PositionHistory] Recorded {snapshot_count} snapshots from poller")
-
-    def _start_position_history_poller(self, interval=120):
-        """启动仓位历史快照定时记录，独立于 position sync。"""
-        async def _poll():
-            while True:
-                await asyncio.sleep(interval)
-                try:
-                    self._record_all_position_history_snapshots()
-                except Exception as e:
-                    logger.warning(f"[PositionHistory] Poller error: {e}")
-
-        self._position_history_poller_task = asyncio.create_task(_poll())
-        logger.info(f"[PositionHistory] Position history poller started ({interval}s interval)")
 
     def _start_follower_position_poller(self, interval=3600):
         """启动 follower 仓位轮询兜底同步（WS CONFIRMED 事件的补充）"""
@@ -312,9 +227,6 @@ class CopyTradingService:
         if self._pending_poller_task:
             self._pending_poller_task.cancel()
             self._pending_poller_task = None
-        if self._position_history_poller_task:
-            self._position_history_poller_task.cancel()
-            self._position_history_poller_task = None
         asyncio.create_task(get_market_service().stop())
 
     async def initialize(self):
@@ -325,7 +237,6 @@ class CopyTradingService:
         await self._load_configs()
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
-        self._start_position_history_poller(interval=120)
 
     def _on_market_exit(self, no_asset_id: str):
         """MarketService 触发卖出回调"""
@@ -406,16 +317,6 @@ class CopyTradingService:
         if signal.asset not in self._asset_labels:
             asyncio.create_task(self._get_asset_label(signal.asset))
 
-        self._record_position_snapshot(
-            config,
-            signal.asset,
-            "leader_signal",
-            side=signal.side,
-            event_size=signal.size,
-            event_price=signal.price,
-            leader_tx_hash=signal.transaction_hash,
-            raw_context={"source": signal.source},
-        )
         await self._execute_buy(config, signal)
 
     async def _execute_buy(self, config: CopyTradingConfig, signal: ActivitySignal):
@@ -873,7 +774,6 @@ class CopyTradingService:
         # 同步 follower 仓位和 pending
         await self._sync_pending_orders_from_poly(follower_proxy_wallet)
         await self._sync_follower_positions_from_poly(follower_proxy_wallet)
-        self._record_config_baseline_snapshots(new_config)
 
         logger.info(f"[CopyTrade] Created config: follower={follower_proxy_wallet[:10]} follows leader={leader_proxy_wallet[:10]}")
         return config_id
@@ -1013,8 +913,6 @@ class CopyTradingService:
             order = await self._patch_order_match_from_trade(order_id, matched_amount, order=order)
             if order and not config_id:
                 config_id = order.config_id
-            config_for_snapshot = self._config_id_to_config.get(config_id)
-            
             already_filled = self._order_post_filled.get(order_id, 0)
             if already_filled > 0:
                 skip_amount = min(already_filled, matched_amount)
@@ -1055,19 +953,6 @@ class CopyTradingService:
                 else:
                     self._pending_sell_orders[f_addr][asset_id] = new_pending
                 asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
-
-            if config_for_snapshot:
-                self._record_position_snapshot(
-                    config_for_snapshot,
-                    asset_id,
-                    "follower_trade_confirmed",
-                    side=side,
-                    event_size=matched_amount,
-                    event_price=price,
-                    order_id=order_id,
-                    leader_tx_hash=order.leader_tx_hash if order else None,
-                    raw_context={"config_id": config_id},
-                )
 
         logger.info(f"[CopyTrade] Trade CONFIRMED: {side:>4} {matched_amount:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:10]} (new_pos={new_size:>7.2f}, new_pending={new_pending:>7.2f})")
 
@@ -1249,17 +1134,6 @@ class CopyTradingService:
         """获取跟单订单历史"""
         return get_orders_by_config_id(config_id, limit)
 
-    def get_position_history(
-        self,
-        config_id: int,
-        asset_id: str,
-        start: Optional[str] = None,
-        end: Optional[str] = None,
-        normalized: bool = False,
-        limit: int = 2000,
-    ) -> List[dict]:
-        """获取指定 config+asset 的 leader/follower 仓位历史曲线点。"""
-        return get_position_history_from_db(config_id, asset_id, start=start, end=end, normalized=normalized, limit=limit)
 
 
 def get_copy_trading_service() -> CopyTradingService:

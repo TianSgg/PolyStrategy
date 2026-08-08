@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../api'
 import { useBalance } from '../contexts/BalanceContext'
 import { toast } from '../components/Toast'
-import PositionHistoryChart, { type PositionHistoryChartPoint } from '../components/PositionHistoryChart'
 import TradeScatterChart, { type Trade, parseUtc8Timestamp as parseTs } from '../components/TradeScatterChart'
 import './CopyTrading.css'
 
@@ -32,24 +31,6 @@ interface Leader {
   updated_at: string | null
 }
 
-interface PositionHistoryPoint {
-  id: number
-  created_at: string
-  asset_id: string
-  leader_position: number
-  follower_position: number
-  follower_pending_buy: number
-  follower_pending_sell: number
-  leader_value: number
-  follower_value: number
-  source: string
-  side: string | null
-  event_size: number | null
-  event_price: number | null
-  order_id: string | null
-  leader_tx_hash: string | null
-}
-
 interface PositionAssetOption {
   asset_id: string
   question: string
@@ -57,46 +38,11 @@ interface PositionAssetOption {
   last_seen_at?: string
 }
 
-interface PositionHistoryState {
-  assetId: string
-  start: string
-  end: string
-  normalized: boolean
-  loading: boolean
-  error: string
-  points: PositionHistoryPoint[]
-}
-
-
-
 interface Props {
   darkMode: boolean
   visible?: boolean
 }
 
-const defaultHistoryState = (): PositionHistoryState => ({
-  assetId: '',
-  start: '',
-  end: '',
-  normalized: false,
-  loading: false,
-  error: '',
-  points: [],
-})
-
-const parseUtc8Timestamp = (value: unknown) => {
-  if (!value) return 0
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : 0
-  }
-  const text = String(value)
-  const normalized = text.includes('T') ? text : text.replace(' ', 'T')
-  const withTimezone = /(?:Z|[+-]\d{2}:\d{2})$/.test(normalized)
-    ? normalized
-    : `${normalized}+08:00`
-  const time = Date.parse(withTimezone)
-  return Number.isNaN(time) ? 0 : time
-}
 
 const formatAssetOptionLabel = (asset: PositionAssetOption) => {
   const title = asset.question.trim()
@@ -137,10 +83,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [leaders, setLeaders] = useState<Leader[]>([])
   const [showAddForm, setShowAddForm] = useState(false)
   const [refreshingConfigIds, setRefreshingConfigIds] = useState<Set<number>>(new Set())
-  const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<number>>(new Set())
-  const [positionAssets, setPositionAssets] = useState<Record<number, PositionAssetOption[]>>({})
-  const [positionHistory, setPositionHistory] = useState<Record<number, PositionHistoryState>>({})
-  const [assetFilterDays, setAssetFilterDays] = useState<Record<number, number>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState<'configs' | 'leaders'>('configs')
@@ -191,8 +133,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
 
 
   // 曲线时间范围
-  const [historyRangeDays, setHistoryRangeDays] = useState<Record<number, number | 'custom'>>({})
-  const [showCustomRange, setShowCustomRange] = useState<Set<number>>(new Set())
 
   // 右侧图表面板
   const [selectedConfigId, setSelectedConfigId] = useState<number | null>(null)
@@ -442,127 +382,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     }
   }
 
-  const updateHistoryState = (configId: number, patch: Partial<PositionHistoryState>) => {
-    setPositionHistory(prev => ({
-      ...prev,
-      [configId]: {
-        ...(prev[configId] || defaultHistoryState()),
-        ...patch,
-      },
-    }))
-  }
-
-  const loadPositionAssets = async (configId: number, days?: number) => {
-    try {
-      let url = `/api/copy-trading/configs/${configId}/position-assets`
-      if (days && days > 0) {
-        const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ')
-        url += `?since=${encodeURIComponent(since)}`
-      }
-      const res = await apiFetch(url)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || '获取 asset 失败')
-      const seen = new Set<string>()
-      const rawAssets: unknown[] = Array.isArray(data.assets) ? data.assets : []
-      const assets: PositionAssetOption[] = rawAssets
-        .map(normalizePositionAsset)
-        .filter((asset): asset is PositionAssetOption => {
-          if (!asset || seen.has(asset.asset_id)) {
-            return false
-          }
-          seen.add(asset.asset_id)
-          return true
-        })
-      setPositionAssets(prev => ({ ...prev, [configId]: assets }))
-      return assets
-    } catch (e) {
-      console.error('Failed to fetch positions:', e)
-      return []
-    }
-  }
-
-  const handleAssetFilterChange = async (configId: number, days: number) => {
-    setAssetFilterDays(prev => ({ ...prev, [configId]: days }))
-    const assets = await loadPositionAssets(configId, days)
-    const currentState = positionHistory[configId] || defaultHistoryState()
-    const assetId = assets[0]?.asset_id || ''
-    const nextState = { ...currentState, assetId }
-    updateHistoryState(configId, nextState)
-    if (assetId) {
-      void fetchPositionHistory(configId, nextState)
-    }
-  }
-
-  const handleHistoryRangeChange = (configId: number, days: number | 'custom') => {
-    setHistoryRangeDays(prev => ({ ...prev, [configId]: days }))
-    if (days === 'custom') {
-      setShowCustomRange(prev => new Set(prev).add(configId))
-      return
-    }
-    setShowCustomRange(prev => { const n = new Set(prev); n.delete(configId); return n })
-    const start = new Date(Date.now() - days * 86400000).toISOString().slice(0, 16)
-    const end = ''
-    const currentState = positionHistory[configId] || defaultHistoryState()
-    const nextState = { ...currentState, start, end }
-    updateHistoryState(configId, nextState)
-    void fetchPositionHistory(configId, nextState)
-  }
-
-  const fetchPositionHistory = async (configId: number, stateOverride?: PositionHistoryState) => {
-    const state = stateOverride || positionHistory[configId] || defaultHistoryState()
-    const assetId = state.assetId.trim()
-    if (!assetId) {
-      updateHistoryState(configId, { error: '请输入 asset id', points: [] })
-      return
-    }
-
-    updateHistoryState(configId, { loading: true, error: '' })
-    try {
-      const params = new URLSearchParams({
-        asset_id: assetId,
-        normalized: String(state.normalized),
-        limit: '2000',
-      })
-      if (state.start) params.set('start', state.start)
-      if (state.end) params.set('end', state.end)
-      const res = await apiFetch(`/api/copy-trading/configs/${configId}/position-history?${params.toString()}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || '查询失败')
-      updateHistoryState(configId, { loading: false, points: data.points || [] })
-    } catch (e: any) {
-      updateHistoryState(configId, { loading: false, error: e.message || '查询失败', points: [] })
-    }
-  }
-
-  const handlePositionAssetChange = (configId: number, assetId: string) => {
-    const currentState = positionHistory[configId] || defaultHistoryState()
-    const nextState = { ...currentState, assetId }
-    updateHistoryState(configId, nextState)
-    if (assetId) {
-      void fetchPositionHistory(configId, nextState)
-    }
-  }
-
-  const handleTogglePositionHistory = async (configId: number) => {
-    const willOpen = !expandedHistoryIds.has(configId)
-    setExpandedHistoryIds(prev => {
-      const next = new Set(prev)
-      if (willOpen) next.add(configId)
-      else next.delete(configId)
-      return next
-    })
-    if (!willOpen) return
-
-    const existingState = positionHistory[configId] || defaultHistoryState()
-    updateHistoryState(configId, {})
-    const assets = await loadPositionAssets(configId)
-    const assetId = existingState.assetId || assets[0]?.asset_id || ''
-    const nextState = { ...existingState, assetId }
-    updateHistoryState(configId, nextState)
-    if (assetId) {
-      await fetchPositionHistory(configId, nextState)
-    }
-  }
 
   const handleViewOrders = async (configId: number) => {
     try {
@@ -932,18 +751,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
               <div className={`copy-trading-split ${selectedConfigId ? 'split-active' : ''}`}>
               <div className={`configs-list ${selectedConfigId ? 'configs-list--narrow' : ''}`}>
                 {configs.map(config => {
-                  const historyState = positionHistory[config.id] || defaultHistoryState()
-                  const historyExpanded = expandedHistoryIds.has(config.id)
-                  const assets = positionAssets[config.id] || []
-                  const chartPoints: PositionHistoryChartPoint[] = historyState.points
-                    .map(point => ({
-                      ...point,
-                      createdAtMs: parseUtc8Timestamp(point.created_at),
-                      leader_value: point.leader_position,
-                      follower_value: point.follower_position,
-                    }))
-                    .filter(point => point.createdAtMs > 0)
-                    .sort((a, b) => a.createdAtMs - b.createdAtMs)
                   return (
                   <div key={config.id} className={`card config-card ${!config.enabled ? 'config-card--disabled' : ''} ${selectedConfigId === config.id ? 'config-card--selected' : ''}`}>
                     <div className="config-header">
@@ -1002,9 +809,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                         </label>
                         <button onClick={() => handleSelectConfig(config.id)} className={`btn ${selectedConfigId === config.id ? 'btn-primary' : 'btn-outline'}`}>
                           图表
-                        </button>
-                        <button onClick={() => handleTogglePositionHistory(config.id)} className={`btn ${historyExpanded ? 'btn-primary' : 'btn-outline'}`}>
-                          持仓
                         </button>
                         <button onClick={() => handleViewOrders(config.id)} className="btn btn-outline">订单</button>
                         <button
@@ -1087,114 +891,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                             )}
                           </span>
                     </div>
-                    {historyExpanded && (
-                      <div className="position-history-panel">
-                        <div className="position-history-controls">
-                          <div className="ph-row">
-                            <span className="ph-label">Asset</span>
-                            <div className="ph-filter-buttons">
-                              {[1, 2, 3, 0].map(d => (
-                                <button
-                                  key={d}
-                                  className={`btn btn-sm ${(assetFilterDays[config.id] ?? 0) === d ? 'btn-primary' : 'btn-secondary'}`}
-                                  onClick={() => handleAssetFilterChange(config.id, d)}
-                                >
-                                  {d === 0 ? '全部' : `${d}天`}
-                                </button>
-                              ))}
-                            </div>
-                            <select
-                              className="form-select ph-asset-select"
-                              value={historyState.assetId}
-                              onChange={e => handlePositionAssetChange(config.id, e.target.value)}
-                              disabled={assets.length === 0}
-                            >
-                              {assets.length === 0 && (
-                                <option value="">暂无 asset</option>
-                              )}
-                              {assets.map(asset => (
-                                <option key={asset.asset_id} value={asset.asset_id}>
-                                  {formatAssetOptionLabel(asset)}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="ph-row">
-                            <span className="ph-label">范围</span>
-                            <div className="ph-filter-buttons">
-                              {[1, 3, 7].map(d => (
-                                <button
-                                  key={d}
-                                  className={`btn btn-sm ${historyRangeDays[config.id] === d ? 'btn-primary' : 'btn-secondary'}`}
-                                  onClick={() => handleHistoryRangeChange(config.id, d)}
-                                >
-                                  {d}天
-                                </button>
-                              ))}
-                              <button
-                                className={`btn btn-sm ${historyRangeDays[config.id] === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
-                                onClick={() => handleHistoryRangeChange(config.id, 'custom')}
-                              >
-                                {showCustomRange.has(config.id) && historyState.start
-                                  ? `${historyState.start.slice(5, 10)} ~ ${historyState.end ? historyState.end.slice(5, 10) : '现在'}`
-                                  : '自定义'}
-                              </button>
-                              {showCustomRange.has(config.id) && (
-                                <>
-                                  <input
-                                    className="form-input form-input--sm"
-                                    type="date"
-                                    value={historyState.start ? historyState.start.slice(0, 10) : ''}
-                                    onChange={e => {
-                                      const start = e.target.value ? `${e.target.value}T00:00` : ''
-                                      updateHistoryState(config.id, { start })
-                                    }}
-                                  />
-                                  <span className="range-sep">~</span>
-                                  <input
-                                    className="form-input form-input--sm"
-                                    type="date"
-                                    value={historyState.end ? historyState.end.slice(0, 10) : ''}
-                                    onChange={e => {
-                                      const end = e.target.value ? `${e.target.value}T23:59` : ''
-                                      updateHistoryState(config.id, { end })
-                                    }}
-                                  />
-                                </>
-                              )}
-                            </div>
-                            <label className="position-history-check">
-                              <input
-                                type="checkbox"
-                                checked={historyState.normalized}
-                                onChange={e => updateHistoryState(config.id, { normalized: e.target.checked })}
-                              />
-                              归一化
-                            </label>
-                            <button
-                              className="btn btn-primary btn-sm"
-                              disabled={historyState.loading}
-                              onClick={() => fetchPositionHistory(config.id)}
-                            >
-                              {historyState.loading ? '查询中...' : '刷新'}
-                            </button>
-                          </div>
-                        </div>
-                        {historyState.error && <div className="error-msg">{historyState.error}</div>}
-                        {!historyState.error && historyState.points.length === 0 && (
-                          <div className="position-history-empty">暂无历史点</div>
-                        )}
-                        {chartPoints.length > 0 && (
-                          <div className="position-history-chart">
-                            <PositionHistoryChart
-                              points={chartPoints}
-                              normalized={historyState.normalized}
-                              darkMode={darkMode}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                   )
                 })}
