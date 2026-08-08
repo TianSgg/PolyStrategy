@@ -419,6 +419,11 @@ class CopyTradingService:
 
             self._record_sell_order(config, asset_id, follow_price, follow_sell_size, result)
 
+        market_svc = get_market_service()
+        market_svc.unwatch_exit(asset_id)
+        market_svc.unsubscribe(asset_id)
+        logger.info(f"[CopyTrade] EXIT done, unsubscribed {self._asset_label(asset_id)}")
+
     def _record_sell_order(self, config: CopyTradingConfig, asset_id: str, follow_price: float, follow_sell_size: float, result: PlaceOrderResult):
         """记录 EXIT SELL 订单到 order 表"""
         order_id = result.order_id
