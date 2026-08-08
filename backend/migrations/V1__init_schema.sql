@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS copy_trading_orders (
   size_matched DECIMAL(20,4) NOT NULL DEFAULT 0 COMMENT '已成交数量',
   status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING / FILLED / CANCELLED / ERROR',
   err_msg VARCHAR(255) COMMENT '错误信息',
+  signal_latency_ms INT DEFAULT NULL COMMENT '信号到达→下单结果耗时(ms)',
   created_at DATETIME(3) NOT NULL,
   updated_at DATETIME(3) NOT NULL,
   INDEX idx_config_id_asset_status (config_id, asset_id, status),

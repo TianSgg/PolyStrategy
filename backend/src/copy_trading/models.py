@@ -220,6 +220,7 @@ def record_copy_trading_order(
     size_matched: float,
     status: str,
     err_msg: Optional[str] = None,
+    signal_latency_ms: Optional[int] = None,
     created_at: Optional[Any] = None,
     updated_at: Optional[Any] = None
 ) -> str:
@@ -234,11 +235,11 @@ def record_copy_trading_order(
             INSERT INTO copy_trading_orders
             (id, config_id, leader, follower, leader_tx_hash, asset_id, side,
              leader_size, leader_price, follow_size, follow_price, size_matched, status, err_msg,
-             created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             signal_latency_ms, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (order_id, config_id, leader.lower(), follower.lower(), leader_tx_hash, asset_id, side,
               leader_size, leader_price, follow_size, follow_price, size_matched, status, err_msg,
-              created_dt, updated_dt))
+              signal_latency_ms, created_dt, updated_dt))
         conn.commit()
         return order_id
     finally:
@@ -306,7 +307,7 @@ def get_orders_by_config_and_asset(config_id: int, asset_id: str, limit: int = 5
     try:
         sql = """
             SELECT side, follow_size, follow_price, size_matched, status, created_at, leader_size, leader_price,
-                   err_msg
+                   err_msg, signal_latency_ms
             FROM copy_trading_orders
             WHERE config_id = %s AND asset_id = %s
         """
@@ -331,6 +332,7 @@ def get_orders_by_config_and_asset(config_id: int, asset_id: str, limit: int = 5
                 "leader_size": float(row[6]),
                 "leader_price": float(row[7]),
                 "err_msg": row[8],
+                "signal_latency_ms": int(row[9]) if row[9] is not None else None,
             }
             for row in cursor.fetchall()
         ]

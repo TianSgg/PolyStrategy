@@ -372,6 +372,7 @@ class CopyTradingService:
             follow_price=follow_price,
             result=result,
             follower_name=follower_name,
+            signal_latency_ms=round(signal_to_result_ms),
         )
 
     async def execute_sell(self, asset_id: str):
@@ -538,6 +539,7 @@ class CopyTradingService:
         follow_price: float,
         result: PlaceOrderResult,
         follower_name: str,
+        signal_latency_ms: Optional[int] = None,
     ):
         order_id = result.order_id
 
@@ -561,6 +563,7 @@ class CopyTradingService:
             size_matched=result.position_delta,
             status=result.raw_status,
             err_msg=result.err_msg,
+            signal_latency_ms=signal_latency_ms,
         ))
 
         if result.raw_status in ("ERROR", "SKIPPED", "DELAYED"):
