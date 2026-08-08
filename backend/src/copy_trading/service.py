@@ -456,17 +456,18 @@ class CopyTradingService:
         """市场触发卖出 — tick_size 变为 0.001 时，以 0.999 卖出全部 NO 持仓"""
         for config in self._config_id_to_config.values():
             f_addr = config.follower_proxy_wallet
-            follower_pos = self._follower_positions.get(f_addr, {}).get(asset_id, 0)
-            pending_sell = self._pending_sell_orders.get(f_addr, {}).get(asset_id, 0)
-            available_pos = max(0, follower_pos - pending_sell)
-            if available_pos <= 0.01:
-                continue
-
-            follow_price = 0.999
-            follow_sell_size = available_pos
-            follower_name = self._account_service.get_acc_name(f_addr)
 
             async with self._get_addr_lock(f_addr):
+                follower_pos = self._follower_positions.get(f_addr, {}).get(asset_id, 0)
+                pending_sell = self._pending_sell_orders.get(f_addr, {}).get(asset_id, 0)
+                available_pos = max(0, follower_pos - pending_sell)
+                if available_pos <= 0.01:
+                    continue
+
+                follow_price = 0.999
+                follow_sell_size = available_pos
+                follower_name = self._account_service.get_acc_name(f_addr)
+
                 logger.info(
                     f"[CopyTrade] EXIT SELL {self._asset_label(asset_id)} | "
                     f"follower={follower_name} {follow_sell_size:.2f}@{follow_price}"
