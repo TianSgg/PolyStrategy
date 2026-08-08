@@ -88,14 +88,18 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [activeTab, setActiveTab] = useState<'configs' | 'leaders'>('configs')
 
 
+  const [leaderBalances, setLeaderBalances] = useState<Record<string, { total: number; position: number }>>({})
+
   const configBalances = useMemo(() => {
     const map: Record<string, { total: number; position: number } | null> = {}
     for (const c of configs) {
       const fw = c.follower_proxy_wallet.toLowerCase()
       if (accountBalances[fw]) map[fw] = { total: accountBalances[fw].total_value, position: accountBalances[fw].total_position_value }
+      const lw = c.leader_proxy_wallet.toLowerCase()
+      if (leaderBalances[lw]) map[lw] = leaderBalances[lw]
     }
     return map
-  }, [configs, accountBalances])
+  }, [configs, accountBalances, leaderBalances])
 
   // Leader 管理状态
   const [showAddLeaderForm, setShowAddLeaderForm] = useState(false)
@@ -181,6 +185,22 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     }
   }
 
+  const refreshLeaderBalances = async (wallets: string[]) => {
+    const unique = [...new Set(wallets)]
+    await Promise.all(unique.map(async (w) => {
+      try {
+        const res = await apiFetch(`/api/leaders/balances?leader_address=${w}`)
+        if (res.ok) {
+          const data = await res.json()
+          const b = data.balances?.[w]
+          if (b) {
+            setLeaderBalances(prev => ({ ...prev, [w]: { total: b.total_balance, position: b.position_value } }))
+          }
+        }
+      } catch {}
+    }))
+  }
+
   const fetchConfigBalances = async (cfgs: CopyTradingConfig[]) => {
     const leaderWallets: string[] = []
     const followerWallets: string[] = []
@@ -188,10 +208,16 @@ export default function CopyTrading({ darkMode, visible }: Props) {
       leaderWallets.push(c.leader_proxy_wallet.toLowerCase())
       followerWallets.push(c.follower_proxy_wallet.toLowerCase())
     }
-    await refreshAllAccounts([...new Set(followerWallets)])
+    await Promise.all([
+      refreshAllAccounts([...new Set(followerWallets)]),
+      refreshLeaderBalances(leaderWallets),
+    ])
   }
 
-  const fetchLeaderBalances = async () => {}
+  const fetchLeaderBalances = async () => {
+    const wallets = leaders.map(l => l.proxy_wallet.toLowerCase())
+    await refreshLeaderBalances(wallets)
+  }
 
   const handleAddConfig = async () => {
     setError('')
