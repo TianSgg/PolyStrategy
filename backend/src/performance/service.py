@@ -26,14 +26,12 @@ class PerformanceService:
         self.ws_latencies: Dict[str, str] = {
             "ws_market": "--",
             "ws_user": "--",
-            "polygon_ws": "--",
             "predexon": "--",
         }
         self.http_latency: Dict[str, str] = {
             "data_api": "--",
             "clob_api": "--",
             "gamma_api": "--",
-            "polygon_http": "--",
         }
         self._task: asyncio.Task = None
 

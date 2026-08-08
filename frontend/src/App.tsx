@@ -38,7 +38,6 @@ function App() {
   const [wsLatency, setWsLatency] = useState({
     ws_market: "--",
     ws_user: "--",
-    poly_rtds: "--",
     predexon: "--",
   })
   const [httpLatency, setHttpLatency] = useState({
@@ -89,7 +88,6 @@ function App() {
       setWsLatency({
         ws_market: data.ws?.ws_market ?? "--",
         ws_user: data.ws?.ws_user ?? "--",
-        poly_rtds: data.ws?.poly_rtds ?? "--",
         predexon: data.ws?.predexon ?? "--",
       })
       setHttpLatency({
@@ -225,7 +223,6 @@ function App() {
                 setWsLatency({
                   ws_market: ws.ws_market ?? "--",
                   ws_user: ws.ws_user ?? "--",
-                  poly_rtds: ws.poly_rtds ?? "--",
                   predexon: ws.predexon ?? "--",
                 });
                 setHttpLatency({

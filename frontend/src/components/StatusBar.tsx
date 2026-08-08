@@ -5,7 +5,6 @@ interface StatusBarProps {
   wsLatency: {
     ws_market: string;
     ws_user: string;
-    poly_rtds: string;
     predexon: string;
   };
   httpLatency: {
@@ -77,7 +76,6 @@ export default function StatusBar({
         <div className="latency-info" onClick={onLatencyRefresh} title="Click to test latency">
           <LatencyItem label="WS-mkt" value={wsLatency.ws_market} darkMode={darkMode} loading={latencyLoading} width="50px" />
           <LatencyItem label="WS-user" value={wsLatency.ws_user} darkMode={darkMode} loading={latencyLoading} width="60px" />
-          <LatencyItem label="RTDS" value={wsLatency.poly_rtds} darkMode={darkMode} loading={latencyLoading} width="50px" />
           <LatencyItem label="Predexon" value={wsLatency.predexon} darkMode={darkMode} loading={latencyLoading} width="60px" />
           <LatencyItem label="Data" value={httpLatency.data_api} darkMode={darkMode} loading={latencyLoading} width="50px" />
           <LatencyItem label="CLOB" value={httpLatency.clob_api} darkMode={darkMode} loading={latencyLoading} width="50px" />
