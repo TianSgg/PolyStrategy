@@ -275,7 +275,6 @@ class PerformanceService:
             {"name": "addr_locks", "value": len(service._addr_locks)},
             {"name": "asset_fetch_events", "value": len(service._asset_fetch_events)},
             {"name": "follower_poller_running", "value": self._task_alive(service._follower_poller_task)},
-            {"name": "leader_poller_running", "value": self._task_alive(service._leader_poller_task)},
             {"name": "pending_poller_running", "value": self._task_alive(service._pending_poller_task)},
         ]
 
