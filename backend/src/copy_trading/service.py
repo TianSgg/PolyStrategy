@@ -113,6 +113,9 @@ class CopyTradingService:
         # {(f_addr, l_addr) -> CopyTradingConfig}，解决一个 f_addr 跟多个 leader 的索引问题
         self._fl_key_to_config: Dict[str, CopyTradingConfig] = {}
 
+        # asset_id -> 持有该 asset 的 config 集合，用于 sell 信号反查
+        self._asset_to_configs: Dict[str, Set[int]] = {}
+
 
         # 启动持仓轮询兜底任务（依赖 _config_id_to_config，由 initialize 填充）
         self._follower_poller_task: Optional[asyncio.Task] = None
@@ -329,14 +332,18 @@ class CopyTradingService:
         asyncio.create_task(self.execute_sell(no_asset_id))
 
     def _restore_exit_watches(self):
-        """重启后从已有持仓恢复 exit watch 注册"""
+        """重启后从已有持仓恢复 exit watch 注册和 asset→config 映射"""
         market_svc = get_market_service()
         watched = set()
-        for positions in self._follower_positions.values():
+        for f_addr, positions in self._follower_positions.items():
+            configs = self._follower_addr_to_configs.get(f_addr, set())
             for asset_id, size in positions.items():
-                if size > 0 and asset_id not in watched:
-                    market_svc.watch_for_exit(asset_id)
-                    watched.add(asset_id)
+                if size > 0:
+                    if asset_id not in watched:
+                        market_svc.watch_for_exit(asset_id)
+                        watched.add(asset_id)
+                    for config in configs:
+                        self._asset_to_configs.setdefault(asset_id, set()).add(config.id)
         if watched:
             logger.info(f"[CopyTrade] Restored exit watches for {len(watched)} assets")
 
@@ -456,6 +463,7 @@ class CopyTradingService:
 
         if result.raw_status in ("LIVE", "MATCHED", "DELAYED"):
             get_market_service().watch_for_exit(asset_id)
+            self._asset_to_configs.setdefault(asset_id, set()).add(config.id)
 
         self._record_and_notify_order_result(
             config=config,
@@ -467,7 +475,13 @@ class CopyTradingService:
 
     async def execute_sell(self, asset_id: str):
         """市场触发卖出 — tick_size 变为 0.001 时，以 0.999 卖出全部 NO 持仓"""
-        for config in self._config_id_to_config.values():
+        config_ids = self._asset_to_configs.get(asset_id)
+        if not config_ids:
+            return
+        for config_id in list(config_ids):
+            config = self._config_id_to_config.get(config_id)
+            if not config:
+                continue
             f_addr = config.follower_proxy_wallet
 
             async with self._get_addr_lock(f_addr):
