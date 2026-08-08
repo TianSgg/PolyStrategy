@@ -1135,8 +1135,16 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                               </button>
                             </div>
                           </div>
-                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>-</span>
-                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>-</span>
+                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>
+                            {leaderBalances[leader.proxy_wallet.toLowerCase()]?.position != null
+                              ? `$${leaderBalances[leader.proxy_wallet.toLowerCase()].position.toFixed(2)}`
+                              : '–'}
+                          </span>
+                          <span style={{ fontFamily: 'ui-monospace', fontSize: 13 }}>
+                            {leaderBalances[leader.proxy_wallet.toLowerCase()]?.total != null
+                              ? `$${leaderBalances[leader.proxy_wallet.toLowerCase()].total.toFixed(2)}`
+                              : '–'}
+                          </span>
                           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                             <button
                               onClick={() => { setEditingLeaderId(leader.id); setEditingLeaderName(leader.name) }}
