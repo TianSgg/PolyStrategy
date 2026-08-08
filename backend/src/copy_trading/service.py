@@ -36,7 +36,6 @@ from .models import (
     batch_upsert_follower_pending_buy,
     batch_upsert_config_asset,
     get_assets_of_cfg_from_db,
-    get_live_buy_order_ids_by_asset,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,8 +87,6 @@ class CopyTradingService:
         self._order_post_filled: Dict[str, float] = {}
         # 已处理的取消 order_id 集合（防止重复 CANCELLATION 反复释放额度）
         self._processed_canceled_order_ids: Set[str] = set()
-        # leader 退出主动撤单的 order_id 集合（用于 CANCELLATION 标注原因）
-        self._leader_exit_canceled_ids: Set[str] = set()
         # 程序下单 order_id 的运行时索引，避免 WS 事件早于订单落库时无法定位 config/price
         self._order_id_to_config_id: Dict[str, int] = {}
         self._order_id_to_follow_price: Dict[str, float] = {}
@@ -447,31 +444,6 @@ class CopyTradingService:
             err_msg=result.err_msg,
         ))
 
-    async def _cancel_follower_orders_for_asset(self, config: CopyTradingConfig, asset_id: str):
-        """Leader 清仓后，撤销 follower 该 asset 所有挂单"""
-        f_addr = config.follower_proxy_wallet
-        f_name = self._account_service.get_acc_name(f_addr)
-        try:
-            order_ids = await asyncio.to_thread(get_live_buy_order_ids_by_asset, config.id, asset_id)
-            if not order_ids:
-                return
-            client = self._account_service.get_or_create_clob_client(f_addr)
-            if not client:
-                logger.error(f"[CopyTrade] No client for {f_name}, cannot cancel orders on leader exit")
-                return
-            result = await asyncio.to_thread(client.cancel_orders, order_ids)
-            canceled = result.get("canceled", []) if result else []
-            not_canceled = result.get("not_canceled", {}) if result else {}
-            self._leader_exit_canceled_ids.update(canceled)
-            logger.info(
-                f"[CopyTrade] Leader exited, canceled {len(canceled)}/{len(order_ids)} orders for "
-                f"{f_name} asset={self._asset_label(asset_id)}"
-            )
-            if not_canceled:
-                logger.warning(f"[CopyTrade] Leader exit not_canceled: {not_canceled}")
-            logger.info(f"[CopyTrade] Leader exit: canceled {len(canceled)} orders for {f_name} on {asset_id[:10]}")
-        except Exception as e:
-            logger.error(f"[CopyTrade] Failed to cancel orders on leader exit: {e}")
 
 
     async def _get_asset_label(self, asset_id: str) -> str:
@@ -881,17 +853,13 @@ class CopyTradingService:
                     else:
                         self._pending_sell_orders[f_addr][asset_id] = new_pending
                     asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
-            cancel_reason = "leader_exit" if order_id in self._leader_exit_canceled_ids else "expired_or_manual"
-            if order_id in self._leader_exit_canceled_ids:
-                self._leader_exit_canceled_ids.discard(order_id)
-            logger.info(f"[CopyTrade] order CANCELED : {side:>4} {released:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:10]} reason={cancel_reason} (position={cur_pos:>7.2f}, pending={new_pending:>7.2f})")
+            logger.info(f"[CopyTrade] order CANCELED : {side:>4} {released:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:10]} (position={cur_pos:>7.2f}, pending={new_pending:>7.2f})")
 
-            # 更新订单状态为 cancelled
             asyncio.create_task(asyncio.to_thread(update_copy_trading_order,
                 order_id=order_id,
                 size_matched=size_matched,
                 status=status,
-                err_msg=cancel_reason,
+                err_msg="canceled",
             ))
             return
 

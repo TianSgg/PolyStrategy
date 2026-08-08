@@ -367,19 +367,6 @@ def get_order_by_id(order_id: str) -> Optional[CopyTradingOrder]:
         conn.close()
 
 
-def get_live_buy_order_ids_by_asset(config_id: int, asset_id: str) -> List[str]:
-    """查询指定 config 在指定 asset 上状态为 LIVE 的 BUY order_id 列表"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT id FROM copy_trading_orders WHERE config_id = %s AND asset_id = %s AND status = 'LIVE' AND side = 'BUY'",
-            (config_id, asset_id)
-        )
-        return [row[0] for row in cursor.fetchall()]
-    finally:
-        conn.close()
-
 
 # ==================== Asset Question 缓存 ====================
 
