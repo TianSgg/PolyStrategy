@@ -268,6 +268,7 @@ class CopyTradingService:
                     await self._sync_follower_positions_from_poly(f_addr)
                 except Exception as e:
                     logger.error(f"[PositionPoller] Initial follower sync error for {self._account_service.get_acc_name(f_addr)}: {e}")
+            self._restore_exit_watches()
             while True:
                 await asyncio.sleep(interval)
                 for f_addr in list(self._followers):
@@ -326,6 +327,18 @@ class CopyTradingService:
     def _on_market_exit(self, no_asset_id: str):
         """MarketService 触发卖出回调"""
         asyncio.create_task(self.execute_sell(no_asset_id))
+
+    def _restore_exit_watches(self):
+        """重启后从已有持仓恢复 exit watch 注册"""
+        market_svc = get_market_service()
+        watched = set()
+        for positions in self._follower_positions.values():
+            for asset_id, size in positions.items():
+                if size > 0 and asset_id not in watched:
+                    market_svc.watch_for_exit(asset_id)
+                    watched.add(asset_id)
+        if watched:
+            logger.info(f"[CopyTrade] Restored exit watches for {len(watched)} assets")
 
     async def _load_configs(self):
         """从数据库加载配置（async，供 initialize 调用）"""
