@@ -237,6 +237,7 @@ class PerformanceService:
                               self._nested_amount_items(service._pending_sell_orders, "follower", "pending")),
             self._cache_block("copy_trading", "processed_txs", "Processed TXs", self._set_items(service._processed_txs)),
             self._cache_block("copy_trading", "processed_orders", "Processed Orders", self._processed_order_items(service)),
+            self._cache_block("copy_trading", "asset_to_configs", "Asset→Configs", self._asset_to_configs_items(service)),
             self._cache_block("copy_trading", "runtime", "Runtime", self._copy_trading_runtime_items(service)),
         ]
         return self._service_block("copy_trading", "Copy Trading", caches)
@@ -265,6 +266,12 @@ class PerformanceService:
                 items.append({"group": group, "order_id": order_id})
         return items
 
+    def _asset_to_configs_items(self, service) -> List[dict]:
+        items = []
+        for asset_id, config_ids in sorted(service._asset_to_configs.items()):
+            items.append({"asset_id": asset_id, "config_ids": sorted(config_ids)})
+        return items
+
     def _copy_trading_runtime_items(self, service) -> List[dict]:
         return [
             {"name": "leaders", "value": len(service._leader_addr_to_configs)},
@@ -272,6 +279,7 @@ class PerformanceService:
             {"name": "tx_locks", "value": len(service._tx_locks)},
             {"name": "addr_locks", "value": len(service._addr_locks)},
             {"name": "asset_fetch_events", "value": len(service._asset_fetch_events)},
+            {"name": "asset_to_configs", "value": len(service._asset_to_configs)},
             {"name": "follower_poller_running", "value": self._task_alive(service._follower_poller_task)},
             {"name": "pending_poller_running", "value": self._task_alive(service._pending_poller_task)},
         ]
@@ -290,6 +298,8 @@ class PerformanceService:
             self._cache_block("market", "order_books", "Order Books", order_book_items),
             self._cache_block("market", "tick_sizes", "Tick Sizes", self._dict_items(service._tick_sizes, "asset_id", "tick_size")),
             self._cache_block("market", "neg_risks", "Negative Risk", self._dict_items(service._neg_risks, "asset_id", "neg_risk")),
+            self._cache_block("market", "exit_watches", "Exit Watches", self._set_items(service._exit_watches)),
+            self._cache_block("market", "exit_triggered", "Exit Triggered", self._set_items(service._exit_triggered)),
             self._cache_block("market", "runtime", "Runtime", [
                 {"name": "ws_running", "value": service._ws_running},
                 {"name": "ws_connected", "value": service._ws is not None},
@@ -416,6 +426,7 @@ class PerformanceService:
                 "pending_sell_orders": lambda: self._nested_amount_items(ct._pending_sell_orders, "follower", "pending"),
                 "processed_txs": lambda: self._set_items(ct._processed_txs),
                 "processed_orders": lambda: self._processed_order_items(ct),
+                "asset_to_configs": lambda: self._asset_to_configs_items(ct),
                 "runtime": lambda: self._copy_trading_runtime_items(ct),
             }
             return mapping[cache]()
@@ -428,6 +439,8 @@ class PerformanceService:
                 "order_books": lambda: self._order_book_level_items(market, asset_id) if asset_id else self._order_book_items(market),
                 "tick_sizes": lambda: self._dict_items(market._tick_sizes, "asset_id", "tick_size"),
                 "neg_risks": lambda: self._dict_items(market._neg_risks, "asset_id", "neg_risk"),
+                "exit_watches": lambda: self._set_items(market._exit_watches),
+                "exit_triggered": lambda: self._set_items(market._exit_triggered),
                 "runtime": lambda: [
                     {"name": "ws_running", "value": market._ws_running},
                     {"name": "ws_connected", "value": market._ws is not None},
