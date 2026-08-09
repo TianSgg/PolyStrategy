@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from auth import AuthUser, get_current_user
 from account.service import get_account_service
 from shared.time_utils import now_utc8_dt
-from .models import get_balance_history, get_all_adjustments, create_adjustment, update_adjustment, delete_adjustment
+from .models import get_balance_history, get_all_adjustments, create_adjustment, update_adjustment, delete_adjustment, delete_balance_record
 from .service import get_pnl_service
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,26 @@ async def get_history(
     wallets = [a["proxy_wallet"] for a in accounts]
     records = await asyncio.to_thread(get_balance_history, since, wallets) if wallets else []
     return {"records": records}
+
+
+# --- 删除数据点 ---
+
+class BalanceDeleteRequest(BaseModel):
+    proxy_wallet: str
+    created_at: str
+
+
+@router.post("/history/delete")
+async def delete_history_point(data: BalanceDeleteRequest, current_user: AuthUser = Depends(get_current_user)):
+    """删除指定余额数据点"""
+    try:
+        created_at = datetime.fromisoformat(data.created_at)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid created_at format")
+    deleted = await asyncio.to_thread(delete_balance_record, data.proxy_wallet, created_at)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {"status": "ok", "deleted": deleted}
 
 
 # --- 余额调整 CRUD ---

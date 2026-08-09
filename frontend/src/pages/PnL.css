@@ -362,7 +362,7 @@
 .pnl-adj-actions {
   display: flex;
   gap: 8px;
-  justify-content: flex-end;
+  align-items: center;
   margin-top: 16px;
 }
 
@@ -383,6 +383,21 @@
 .dark .pnl-adj-btn.cancel {
   background: #334155;
   color: #94a3b8;
+}
+
+.pnl-adj-btn.delete {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.pnl-adj-btn.delete:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dark .pnl-adj-btn.delete {
+  background: #451a1a;
+  color: #f87171;
 }
 
 .pnl-adj-btn.confirm {

@@ -439,6 +439,18 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
     fetchAdjustments()
   }
 
+  const handleDeletePoint = async () => {
+    if (!adjModal || !adjModal.wallet) return
+    const ok = window.confirm(`确定删除该数据点？`)
+    if (!ok) return
+    await apiFetch('/api/pnl/history/delete', {
+      method: 'POST',
+      body: JSON.stringify({ proxy_wallet: adjModal.wallet, created_at: adjModal.time }),
+    })
+    setAdjModal(null)
+    fetchHistory(range)
+  }
+
   const handleAdjDelete = async (id: number) => {
     await apiFetch(`/api/pnl/adjustments/${id}`, { method: 'DELETE' })
     fetchAdjustments()
@@ -589,6 +601,8 @@ export default function PnL({ darkMode, visible, accounts }: PnLProps) {
               <input type="text" value={adjNote} onChange={e => setAdjNote(e.target.value)} placeholder="可选" />
             </label>
             <div className="pnl-adj-actions">
+              <button className="pnl-adj-btn delete" onClick={handleDeletePoint} disabled={!adjModal.wallet}>删除数据点</button>
+              <div style={{ flex: 1 }} />
               <button className="pnl-adj-btn cancel" onClick={() => setAdjModal(null)}>取消</button>
               <button className="pnl-adj-btn confirm" onClick={handleAdjSubmit}>确认</button>
             </div>

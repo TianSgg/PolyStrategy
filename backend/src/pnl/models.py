@@ -92,6 +92,21 @@ def delete_adjustment(adj_id: int) -> bool:
         conn.close()
 
 
+def delete_balance_record(proxy_wallet: str, created_at: datetime) -> int:
+    """删除指定 wallet + 时间点的余额记录，返回删除行数"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM copy_trading_account_balance_history WHERE proxy_wallet = %s AND created_at = %s",
+            (proxy_wallet, created_at)
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def get_balance_history(since: datetime, proxy_wallets: List[str] = None) -> List[dict]:
     """获取指定时间之后的余额历史"""
     conn = get_db_connection()
