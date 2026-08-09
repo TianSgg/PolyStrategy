@@ -291,14 +291,12 @@ class PerformanceService:
         from market import get_market_service
 
         service = get_market_service()
-        order_book_items = self._order_book_items(service)
         caches = [
             self._cache_block("market", "subscriptions", "Subscriptions", self._market_subscription_items(service), {
                 "subscribed": len(service._subscribed),
                 "pending": len(service._pending_subscriptions),
                 "confirmed": len(service._confirmed_subscriptions),
             }),
-            self._cache_block("market", "order_books", "Order Books", order_book_items),
             self._cache_block("market", "tick_sizes", "Tick Sizes", self._dict_items(service._tick_sizes, "asset_id", "tick_size")),
             self._cache_block("market", "neg_risks", "Negative Risk", self._dict_items(service._neg_risks, "asset_id", "neg_risk")),
             self._cache_block("market", "exit_watches", "Exit Watches", self._set_items(service._exit_watches)),
@@ -320,32 +318,6 @@ class PerformanceService:
             "confirmed": asset in service._confirmed_subscriptions,
         } for asset in assets]
 
-    def _order_book_items(self, service, asset_id: Optional[str] = None) -> List[dict]:
-        items = []
-        for asset, book in sorted(service._order_books.items()):
-            if asset_id and asset != asset_id:
-                continue
-            best_bid = book.get_best_bid()
-            best_ask = book.get_best_ask()
-            items.append({
-                "asset_id": asset,
-                "bid_levels": len(book.bids),
-                "ask_levels": len(book.asks),
-                "best_bid": {"price": best_bid[0], "size": best_bid[1]} if best_bid else {},
-                "best_ask": {"price": best_ask[0], "size": best_ask[1]} if best_ask else {},
-            })
-        return items
-
-    def _order_book_level_items(self, service, asset_id: str) -> List[dict]:
-        book = service._order_books.get(asset_id)
-        if not book:
-            return []
-        items = []
-        for price, size in reversed(list(book.bids.items())):
-            items.append({"asset_id": asset_id, "side": "BUY", "price": price, "size": size})
-        for price, size in book.asks.items():
-            items.append({"asset_id": asset_id, "side": "SELL", "price": price, "size": size})
-        return items
 
     def _account_summary(self) -> dict:
         from account.service import get_account_service
@@ -439,7 +411,6 @@ class PerformanceService:
             market = get_market_service()
             mapping = {
                 "subscriptions": lambda: self._market_subscription_items(market),
-                "order_books": lambda: self._order_book_level_items(market, asset_id) if asset_id else self._order_book_items(market),
                 "tick_sizes": lambda: self._dict_items(market._tick_sizes, "asset_id", "tick_size"),
                 "neg_risks": lambda: self._dict_items(market._neg_risks, "asset_id", "neg_risk"),
                 "exit_watches": lambda: self._set_items(market._exit_watches),

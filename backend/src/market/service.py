@@ -10,7 +10,6 @@ import websockets
 
 from py_clob_client_v2 import ClobClient
 
-from shared.orderbook import OrderBook
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,6 @@ class MarketService:
         self._subscribed: Set[str] = set()  # 期望订阅的资产
         self._pending_subscriptions: Set[str] = set()  # 已发送订阅，等待 snapshot 确认
         self._confirmed_subscriptions: Set[str] = set()  # 已收到 snapshot，可安全使用内存订单簿
-        self._order_books: Dict[str, OrderBook] = {}
         self._tick_sizes: Dict[str, str] = {}      # {asset_id: tick_size_str}
         self._neg_risks: Dict[str, Optional[bool]] = {}  # {asset_id: neg_risk}
         self._token_pair_cache: Dict[str, Tuple[str, str]] = {}  # {asset_id: (condition_id, opposite_asset_id)}
@@ -67,56 +65,8 @@ class MarketService:
 
     # --- 同步查询接口 ---
 
-    async def get_best_bid(self, asset_id: str) -> Optional[Tuple[float, float]]:
-        """返回 (price, size) 或 None：内存优先，CLOB 兜底"""
-        book = self.get_order_book(asset_id)
-        if book:
-            result = book.get_best_bid()
-            if result:
-                return result
-        for attempt in range(3):
-            try:
-                ob = await asyncio.to_thread(self._clob_client.get_order_book, asset_id)
-                bids = ob.get("bids", [])
-                if bids:
-                    best = bids[-1]
-                    return (float(best["price"]), float(best["size"]))
-                return None
-            except Exception as e:
-                if attempt == 2:
-                    logger.warning(f"[Market] get_best_bid({asset_id[:8]}...) CLOB fallback failed: {e}")
-                else:
-                    await asyncio.sleep(0.1 * (attempt + 1))
-        return None
-
-    async def get_best_ask(self, asset_id: str) -> Optional[Tuple[float, float]]:
-        """返回 (price, size) 或 None：内存优先，CLOB 兜底"""
-        book = self.get_order_book(asset_id)
-        if book:
-            result = book.get_best_ask()
-            if result:
-                return result
-        for attempt in range(3):
-            try:
-                ob = await asyncio.to_thread(self._clob_client.get_order_book, asset_id)
-                asks = ob.get("asks", [])
-                if asks:
-                    best = asks[-1]
-                    return (float(best["price"]), float(best["size"]))
-                return None
-            except Exception as e:
-                if attempt == 2:
-                    logger.warning(f"[Market] get_best_ask({asset_id[:8]}...) CLOB fallback failed: {e}")
-                else:
-                    await asyncio.sleep(0.1 * (attempt + 1))
-        return None
-
     async def get_mid_price(self, asset_id: str) -> Optional[float]:
-        """返回 (best_bid + best_ask) / 2 或 None"""
-        bid = await self.get_best_bid(asset_id)
-        ask = await self.get_best_ask(asset_id)
-        if bid and ask:
-            return (bid[0] + ask[0]) / 2
+        """返回 midprice 或 None（CLOB REST 查询）"""
         for attempt in range(3):
             try:
                 mid = await asyncio.to_thread(self._clob_client.get_midpoint, asset_id)
@@ -160,11 +110,6 @@ class MarketService:
             logger.warning(f"[Market] get_settlement_price({asset_id[:8]}...) failed: {e}")
             return None
 
-    def get_order_book(self, asset_id: str) -> Optional[OrderBook]:
-        """返回 OrderBook 或 None"""
-        if asset_id not in self._confirmed_subscriptions:
-            return None
-        return self._order_books.get(asset_id)
 
     @staticmethod
     def _parse_json_list(value) -> List:
@@ -381,27 +326,6 @@ class MarketService:
         """注册清扫回调，callback(asset_id, price, size)"""
         self._on_sweep_trigger = callback
 
-    def _check_sweep_trigger(self, asset_id: str):
-        """检查 asset 订单簿中是否有可清扫的 ask（同价位 3s 冷却）"""
-        if asset_id not in self._exit_watches:
-            return
-        if not self._on_sweep_trigger:
-            return
-        book = self._order_books.get(asset_id)
-        if not book or not book.asks:
-            return
-        now = time.time()
-        for price, size in list(book.asks.items()):
-            if price < self._sweep_price_min:
-                continue
-            if price > self._sweep_price_max:
-                break
-            key = (asset_id, price)
-            last = self._sweep_last_trigger.get(key, 0)
-            if now - last < self._sweep_cooldown_sec:
-                continue
-            self._sweep_last_trigger[key] = now
-            self._on_sweep_trigger(asset_id, price, size)
 
     # --- 订阅管理 ---
 
@@ -422,7 +346,6 @@ class MarketService:
         self._subscribed.discard(asset_id)
         self._pending_subscriptions.discard(asset_id)
         self._confirmed_subscriptions.discard(asset_id)
-        self._order_books.pop(asset_id, None)
         if self._ws and self._ws_running:
             asyncio.create_task(self._send_unsubscribe(asset_id))
 
@@ -604,37 +527,28 @@ class MarketService:
             if not asset_id:
                 continue
 
-            bids = item.get("bids", [])
-            asks = item.get("asks", [])
-
-            # 初始化订单簿
-            if asset_id not in self._order_books:
-                self._order_books[asset_id] = OrderBook()
-            self._order_books[asset_id].from_book(bids, asks)
             self._mark_subscribe_confirmed(asset_id)
 
     def _process_price_change(self, data: dict):
-        """处理 price_change 事件"""
+        """处理 price_change 事件，SELL 侧直接用事件 price/size 判断清扫"""
         price_changes = data.get("price_changes", [])
-        sweep_assets = set()
+        now = time.time()
         for change in price_changes:
             asset_id = change.get("asset_id")
-            if not asset_id or asset_id not in self._confirmed_subscriptions:
-                continue
 
             price = change.get("price")
             size = change.get("size")
             side = change.get("side")
 
-            if price and side:
-                if asset_id not in self._order_books:
-                    continue
-                self._order_books[asset_id].update(price, size, side)
-                if side == "SELL" and size != "0" and asset_id in self._exit_watches:
-                    sweep_assets.add(asset_id)
+            # 清扫判断：SELL 侧新增挂单，直接用事件数据
+            if side == "SELL" and size != "0":
+                p = float(price)
+                if self._sweep_price_min <= p <= self._sweep_price_max:
+                    key = (asset_id, p)
+                    if now - self._sweep_last_trigger.get(key, 0) >= self._sweep_cooldown_sec:
+                        self._sweep_last_trigger[key] = now
+                        self._on_sweep_trigger(asset_id, p, float(size))
 
-        for asset_id in sweep_assets:
-            self._check_sweep_trigger(asset_id)
 
     def _process_tick_size_change(self, data: dict):
         """处理 tick_size_change 事件"""
