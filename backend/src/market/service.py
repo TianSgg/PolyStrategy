@@ -190,10 +190,10 @@ class MarketService:
                 assets = self._extract_market_assets(market)
                 matched = next((a for a in assets if a["asset_id"] == asset_id), None)
                 if matched:
-                    logger.info(f"[Market] Gamma metadata found: {asset_id[:10]} - {matched['question']}[{matched['outcome']}]")
+                    logger.info(f"[Market] Gamma metadata found: {asset_id[:8]} - {matched['question']}[{matched['outcome']}]")
                     return assets
         except Exception as e:
-            logger.warning(f"[Market] Gamma clob_token_ids metadata failed: asset={asset_id[:10]}, error={e}")
+            logger.warning(f"[Market] Gamma clob_token_ids metadata failed: asset={asset_id[:8]}, error={e}")
 
         try:
             market_by_token = await self._get_json(
@@ -211,10 +211,10 @@ class MarketService:
                     assets = self._extract_market_assets(market)
                     matched = next((a for a in assets if a["asset_id"] == asset_id), None)
                     if matched:
-                        logger.info(f"[Market] CLOB+Gamma metadata found: {asset_id[:10]} - {matched['question']}[{matched['outcome']}]")
+                        logger.info(f"[Market] CLOB+Gamma metadata found: {asset_id[:8]} - {matched['question']}[{matched['outcome']}]")
                         return assets
         except Exception as e:
-            logger.warning(f"[Market] CLOB token metadata failed: asset={asset_id[:10]}, error={e}")
+            logger.warning(f"[Market] CLOB token metadata failed: asset={asset_id[:8]}, error={e}")
 
         return []
 
@@ -285,7 +285,7 @@ class MarketService:
             self._token_pair_cache[secondary] = (condition_id, primary)
             return self._token_pair_cache[asset_id]
         except Exception as e:
-            logger.warning(f"[Market] get_condition_and_pair({asset_id[:10]}) failed: {e}")
+            logger.warning(f"[Market] get_condition_and_pair({asset_id[:8]}) failed: {e}")
         return None
 
     # --- 退出监控 ---
@@ -301,7 +301,7 @@ class MarketService:
         self._exit_watches.add(asset_id)
         self._subscribe_times[asset_id] = time.time()
         self.subscribe([asset_id])
-        logger.info(f"[Market] Watching: {asset_id[:10]} (exit + sweep)")
+        logger.info(f"[Market] Watching: {asset_id[:8]} (exit + sweep)")
 
     def unwatch_exit(self, asset_id: str):
         """取消退出监控和清扫"""
@@ -318,7 +318,7 @@ class MarketService:
             return
         if new_tick_size == "0.001":
             self._exit_triggered.add(asset_id)
-            logger.info(f"[Market] EXIT detected (WS): {asset_id[:10]} tick_size -> 0.001, will sell on window expiry")
+            logger.info(f"[Market] EXIT detected (WS): {asset_id[:8]} tick_size -> 0.001, will sell on window expiry")
 
     # --- 清扫监控 ---
 
@@ -359,7 +359,7 @@ class MarketService:
     def _mark_subscribe_confirmed(self, asset_id: str):
         self._pending_subscriptions.discard(asset_id)
         self._confirmed_subscriptions.add(asset_id)
-        logger.info(f"[Market] Subscribe confirmed for {asset_id[:10]}...")
+        logger.info(f"[Market] Subscribe confirmed for {asset_id[:8]}...")
 
     def _invalidate_live_subscriptions(self):
         """连接断开后，内存订单簿不再视为实时有效，直到新的 snapshot 到达。"""
@@ -382,7 +382,7 @@ class MarketService:
         try:
             await self._ws.send(json.dumps(msg))
             if len(asset_ids) == 1:
-                logger.info(f"[Market] Subscribed to {asset_ids[0][:10]}...")
+                logger.info(f"[Market] Subscribed to {asset_ids[0][:8]}...")
             else:
                 logger.info(f"[Market] Batch subscribed to {len(asset_ids)} assets")
         except Exception as e:
@@ -444,23 +444,23 @@ class MarketService:
             ]
             for asset_id in expired:
                 if asset_id in self._exit_triggered:
-                    logger.info(f"[Market] Window expired: {asset_id[:10]} already detected 0.001, triggering sell")
+                    logger.info(f"[Market] Window expired: {asset_id[:8]} already detected 0.001, triggering sell")
                     if self._on_exit_trigger:
                         self._on_exit_trigger(asset_id)
                     continue
                 try:
                     ts = await asyncio.to_thread(self._clob_client.get_tick_size, asset_id)
                 except Exception as e:
-                    logger.warning(f"[Market] Timeout check get_tick_size failed for {asset_id[:10]}: {e}")
+                    logger.warning(f"[Market] Timeout check get_tick_size failed for {asset_id[:8]}: {e}")
                     self._subscribe_times[asset_id] = now
                     continue
                 if ts == "0.001":
-                    logger.info(f"[Market] Window expired: {asset_id[:10]} tick_size=0.001, triggering sell")
+                    logger.info(f"[Market] Window expired: {asset_id[:8]} tick_size=0.001, triggering sell")
                     self._exit_triggered.add(asset_id)
                     if self._on_exit_trigger:
                         self._on_exit_trigger(asset_id)
                 else:
-                    logger.info(f"[Market] Window expired: {asset_id[:10]} tick_size={ts}, next window")
+                    logger.info(f"[Market] Window expired: {asset_id[:8]} tick_size={ts}, next window")
                     self._subscribe_times[asset_id] = now
 
     async def _run_ws_loop(self):

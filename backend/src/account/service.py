@@ -62,11 +62,11 @@ class AccountService:
         addr = proxy_wallet.lower()
         if addr not in self._proxy_to_name:
             asyncio.create_task(self._warm_account_cache(addr))
-            return proxy_wallet[:10]
+            return proxy_wallet[:8]
         cached = self._proxy_to_name[addr]
         # loading marker → 当作未命中处理
         if cached == "__loading__":
-            return proxy_wallet[:10]
+            return proxy_wallet[:8]
         return cached
 
     async def _warm_account_cache(self, addr: str):
@@ -133,7 +133,7 @@ class AccountService:
                 data = resp.json()
                 return data.get("name") or data.get("pseudonym") or ""
         except Exception as e:
-            logger.warning(f"[Account] Failed to fetch profile for {address[:10]}...: {e}")
+            logger.warning(f"[Account] Failed to fetch profile for {address[:8]}...: {e}")
         return ""
 
     def add_account(self, private_key: str, owner_user_id: Optional[int], signature_type: int, builder_code: Optional[str] = None) -> dict:
@@ -143,7 +143,7 @@ class AccountService:
         try:
             private_key_bytes = bytes.fromhex(private_key_hex)
         except Exception:
-            raise ValueError(f"无效的私钥格式: {private_key[:10]}...")
+            raise ValueError(f"无效的私钥格式: {private_key[:8]}...")
         if len(private_key_bytes) != 32:
             raise ValueError(f"私钥长度错误，期望 32 字节，实际 {len(private_key_bytes)}")
         key = keys.PrivateKey(private_key_bytes)
@@ -159,7 +159,7 @@ class AccountService:
         # 3. 从 Gamma API 获取账户名
         name = self._fetch_account_name_from_poly(proxy_wallet)
         if not name:
-            name = proxy_wallet[:10] + "..."  # fallback to address prefix
+            name = proxy_wallet[:8] + "..."  # fallback to address prefix
 
         # 4. 创建临时 ClobClient 获取 Builder Creds
         temp_client = ClobClient(

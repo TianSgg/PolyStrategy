@@ -135,21 +135,21 @@ class CopyTradingService:
         self._fl_key_to_config.pop(f_addr + "_" + l_addr, None)
 
     def _asset_label(self, asset_id: str) -> str:
-        """返回 asset 可读标签，如 '1234455612 - Will X happen?[Yes]'。未缓存时降级为 asset_id[:10]"""
+        """返回 asset 可读标签，如 '1234455612 - Will X happen?[Yes]'。未缓存时降级为 asset_id[:8]"""
         label = self._asset_labels.get(asset_id)
         if label:
             return label
         row = get_asset_question_and_outcome(asset_id)
         if row:
             question, outcome = row
-            label = f"{asset_id[:10]} - {question}[{outcome}]"
+            label = f"{asset_id[:8]} - {question}[{outcome}]"
             self._asset_labels[asset_id] = label
             return label
-        return f"{asset_id[:10]}"
+        return f"{asset_id[:8]}"
 
     def _cache_asset_label(self, asset_id: str, question: str, outcome: str = ""):
         """主动填充 asset 标签缓存"""
-        label = f"{asset_id[:10]} - {question}[{outcome}]"
+        label = f"{asset_id[:8]} - {question}[{outcome}]"
         self._asset_labels[asset_id] = label
 
     def _remove_follower_config_index(self, config: CopyTradingConfig):
@@ -291,7 +291,7 @@ class CopyTradingService:
 
         async with self._get_tx_lock(leader_addr):
             if tx_hash in self._processed_txs:
-                logger.debug(f"[CopyTrade] process_signal: tx {tx_hash[:10]} already processed, skipping")
+                logger.debug(f"[CopyTrade] process_signal: tx {tx_hash[:8]} already processed, skipping")
                 return
             self._processed_txs.add(tx_hash)
 
@@ -503,7 +503,7 @@ class CopyTradingService:
 
 
     async def _get_asset_label(self, asset_id: str) -> str:
-        """根据 asset_id 返回可读标签 'id[:10] - question[outcome]'
+        """根据 asset_id 返回可读标签 'id[:8] - question[outcome]'
         内存 → DB → API fetch → _cache_asset_label 填充内存缓存"""
         label = self._asset_labels.get(asset_id)
         if label:
@@ -537,7 +537,7 @@ class CopyTradingService:
         for asset in assets:
             self._cache_asset_label(asset["asset_id"], asset["question"], asset.get("outcome", ""))
         if not any(a["asset_id"] == asset_id for a in assets):
-            logger.warning(f"[AssetQuestion] No title for {asset_id[:10]}")
+            logger.warning(f"[AssetQuestion] No title for {asset_id[:8]}")
 
     def _register_post_order_result(self, config: CopyTradingConfig, result: PlaceOrderResult):
         """登记程序下单返回结果，供 WS 去重和后续 config/price 反查使用。"""
@@ -595,7 +595,7 @@ class CopyTradingService:
         ))
 
         if result.raw_status in ("ERROR", "SKIPPED", "DELAYED"):
-            logger.warning(f"[CopyTrade] order {result.raw_status}: {signal.side} {signal.asset[:10]} size={result.size} err={result.err_msg}")
+            logger.warning(f"[CopyTrade] order {result.raw_status}: {signal.side} {signal.asset[:8]} size={result.size} err={result.err_msg}")
 
     async def _patch_order_match_from_trade(self, order_id: str, matched_amount: float, order=None):
         """trade CONFIRMED 增量推进订单表的 size_matched；仅在未终态时补 status。"""
@@ -626,7 +626,7 @@ class CopyTradingService:
         )
         if updated:
             logger.debug(
-                f"[CopyTrade] trade patched order row: order_id={order_id[:10]} "
+                f"[CopyTrade] trade patched order row: order_id={order_id[:8]} "
                 f"size_matched={order.size_matched:.4f}->{new_size_matched:.4f} status={order.status}->{new_status}"
             )
             order.size_matched = new_size_matched
@@ -656,17 +656,17 @@ class CopyTradingService:
             status = result.get("status") if result else None
             order_id = result.get("orderID") if result else None
             if status == "live":
-                logger.info(f"[CopyTrade] order LIVE: {side} {size} @ {order_price} asset={self._asset_label(asset_id)} order_id={order_id[:10]}")
+                logger.info(f"[CopyTrade] order LIVE: {side} {size} @ {order_price} asset={self._asset_label(asset_id)} order_id={order_id[:8]}")
                 return PlaceOrderResult(pending_delta=size, position_delta=0, size=size, price=order_price, raw_status="LIVE", order_id=order_id, err_msg=None)
             elif status == "matched":
                 taking = float(result.get("takingAmount") or 0)
                 making = float(result.get("makingAmount") or 0)
                 filled_size = taking if side == "BUY" else making
                 remaining = size - filled_size
-                logger.info(f"[CopyTrade] order MATCHED: {side} {size} @ {order_price} filled={filled_size} remaining={remaining} asset={self._asset_label(asset_id)} order_id={order_id[:10]}")
+                logger.info(f"[CopyTrade] order MATCHED: {side} {size} @ {order_price} filled={filled_size} remaining={remaining} asset={self._asset_label(asset_id)} order_id={order_id[:8]}")
                 return PlaceOrderResult(pending_delta=remaining, position_delta=filled_size, size=size, price=order_price, raw_status="MATCHED" if remaining == 0 else "LIVE", order_id=order_id, err_msg=None)
             elif status == "delayed":
-                logger.info(f"[CopyTrade] order DELAYED: {side} {size} @ {order_price} asset={self._asset_label(asset_id)} order_id={order_id[:10]}")
+                logger.info(f"[CopyTrade] order DELAYED: {side} {size} @ {order_price} asset={self._asset_label(asset_id)} order_id={order_id[:8]}")
                 return PlaceOrderResult(pending_delta=size, position_delta=0, size=size, price=order_price, raw_status="DELAYED", order_id=order_id, err_msg=None)
 
             err_msg = f"unexpected order status: {status}, result={result}"
@@ -691,17 +691,17 @@ class CopyTradingService:
                     retry_status = retry_result.get("status")
                     retry_order_id = retry_result.get("orderID")
                     if retry_status == "live":
-                        logger.info(f"[CopyTrade] order RETRY LIVE: {side} {retry_size} @ {order_price} asset={self._asset_label(asset_id)} order_id={retry_order_id[:10]}")
+                        logger.info(f"[CopyTrade] order RETRY LIVE: {side} {retry_size} @ {order_price} asset={self._asset_label(asset_id)} order_id={retry_order_id[:8]}")
                         return PlaceOrderResult(pending_delta=retry_size, position_delta=0, size=retry_size, price=order_price, raw_status="LIVE", order_id=retry_order_id, err_msg=None)
                     elif retry_status == "matched":
                         taking = float(retry_result.get("takingAmount") or 0)
                         making = float(retry_result.get("makingAmount") or 0)
                         retry_filled = taking if side == "BUY" else making
                         retry_remaining = retry_size - retry_filled
-                        logger.info(f"[CopyTrade] order RETRY MATCHED: {side} {retry_size} @ {order_price} filled={retry_filled} remaining={retry_remaining} asset={self._asset_label(asset_id)} order_id={retry_order_id[:10]}")
+                        logger.info(f"[CopyTrade] order RETRY MATCHED: {side} {retry_size} @ {order_price} filled={retry_filled} remaining={retry_remaining} asset={self._asset_label(asset_id)} order_id={retry_order_id[:8]}")
                         return PlaceOrderResult(pending_delta=retry_remaining, position_delta=retry_filled, size=retry_size, price=order_price, raw_status="MATCHED" if retry_remaining == 0 else "LIVE", order_id=retry_order_id, err_msg=None)
                     elif retry_status == "delayed":
-                        logger.info(f"[CopyTrade] order RETRY DELAYED: {side} {retry_size} @ {order_price} asset={self._asset_label(asset_id)} order_id={retry_order_id[:10]}")
+                        logger.info(f"[CopyTrade] order RETRY DELAYED: {side} {retry_size} @ {order_price} asset={self._asset_label(asset_id)} order_id={retry_order_id[:8]}")
                         return PlaceOrderResult(pending_delta=retry_size, position_delta=0, size=retry_size, price=order_price, raw_status="DELAYED", order_id=retry_order_id, err_msg=None)
                     err_msg = f"unexpected retry order status: {retry_status}, result={retry_result}"
                     logger.error(f"[CopyTrade] {err_msg}")
@@ -731,15 +731,15 @@ class CopyTradingService:
                     retry_status = retry_result.get("status")
                     retry_order_id = retry_result.get("orderID")
                     if retry_status == "live":
-                        logger.info(f"[CopyTrade] order RETRY LIVE: SELL {retry_size} @ {order_price} asset={self._asset_label(asset_id)} order_id={retry_order_id[:10]}")
+                        logger.info(f"[CopyTrade] order RETRY LIVE: SELL {retry_size} @ {order_price} asset={self._asset_label(asset_id)} order_id={retry_order_id[:8]}")
                         return PlaceOrderResult(pending_delta=retry_size, position_delta=0, size=retry_size, price=order_price, raw_status="LIVE", order_id=retry_order_id, err_msg=None)
                     elif retry_status == "matched":
                         retry_filled = float(retry_result.get("makingAmount") or 0)
                         retry_remaining = retry_size - retry_filled
-                        logger.info(f"[CopyTrade] order RETRY MATCHED: SELL {retry_size} @ {order_price} filled={retry_filled} remaining={retry_remaining} asset={self._asset_label(asset_id)} order_id={retry_order_id[:10]}")
+                        logger.info(f"[CopyTrade] order RETRY MATCHED: SELL {retry_size} @ {order_price} filled={retry_filled} remaining={retry_remaining} asset={self._asset_label(asset_id)} order_id={retry_order_id[:8]}")
                         return PlaceOrderResult(pending_delta=retry_remaining, position_delta=retry_filled, size=retry_size, price=order_price, raw_status="MATCHED" if retry_remaining == 0 else "LIVE", order_id=retry_order_id, err_msg=None)
                     elif retry_status == "delayed":
-                        logger.info(f"[CopyTrade] order RETRY DELAYED: SELL {retry_size} @ {order_price} asset={self._asset_label(asset_id)} order_id={retry_order_id[:10]}")
+                        logger.info(f"[CopyTrade] order RETRY DELAYED: SELL {retry_size} @ {order_price} asset={self._asset_label(asset_id)} order_id={retry_order_id[:8]}")
                         return PlaceOrderResult(pending_delta=retry_size, position_delta=0, size=retry_size, price=order_price, raw_status="DELAYED", order_id=retry_order_id, err_msg=None)
 
                     err_msg = f"unexpected SELL retry order status: {retry_status}, result={retry_result}"
@@ -806,7 +806,7 @@ class CopyTradingService:
         await self._sync_pending_orders_from_poly(follower_proxy_wallet)
         await self._sync_follower_positions_from_poly(follower_proxy_wallet)
 
-        logger.info(f"[CopyTrade] Created config: follower={follower_proxy_wallet[:10]} follows leader={leader_proxy_wallet[:10]}")
+        logger.info(f"[CopyTrade] Created config: follower={follower_proxy_wallet[:8]} follows leader={leader_proxy_wallet[:8]}")
         return config_id
 
     async def _save_pending_sell_with_question(self, f_addr: str, asset_id: str, pending: float):
@@ -814,7 +814,7 @@ class CopyTradingService:
         try:
             label = await self._get_asset_label(asset_id)
             await asyncio.to_thread(upsert_follower_pending_sell, f_addr, asset_id, pending, label)
-            logger.debug(f"[CopyTrade] Saved pending_sell to DB: {f_addr[:10]} {label} pending={pending}")
+            logger.debug(f"[CopyTrade] Saved pending_sell to DB: {f_addr[:8]} {label} pending={pending}")
         except Exception as e:
             logger.error(f"[CopyTrade] Failed to save pending_sell to DB: {e}")
 
@@ -823,7 +823,7 @@ class CopyTradingService:
         try:
             label = await self._get_asset_label(asset_id)
             await asyncio.to_thread(upsert_follower_pending_buy, f_addr, asset_id, pending, label)
-            logger.debug(f"[CopyTrade] Saved pending_buy to DB: {f_addr[:10]} {label} pending={pending}")
+            logger.debug(f"[CopyTrade] Saved pending_buy to DB: {f_addr[:8]} {label} pending={pending}")
         except Exception as e:
             logger.error(f"[CopyTrade] Failed to save pending_buy to DB: {e}")
 
@@ -841,7 +841,7 @@ class CopyTradingService:
                 # 去重：程序发起的单已在下单入口返回落库并记录id
                 # 只有手动下单才会通过
                 if order_id in self._order_live_on_post_ids or order_id in self._order_delayed_on_post_ids or order_id in self._order_post_filled:
-                    logger.debug(f"[CopyTrade] Order {order_id[:10]} already processed by _place_order, skip WS PLACEMENT")
+                    logger.debug(f"[CopyTrade] Order {order_id[:8]} already processed by _place_order, skip WS PLACEMENT")
                     return
                 self._order_live_on_post_ids.add(order_id)
 
@@ -857,7 +857,7 @@ class CopyTradingService:
                     new_pending = cur_pending + original_size
                     self._pending_sell_orders.setdefault(f_addr, {})[asset_id] = new_pending
                     asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
-            logger.info(f"[CopyTrade] order PLACEMENT: {side:>4} {original_size:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:10]} (new_pos={cur_pos:>7.2f}, new_pending={new_pending:>7.2f})")
+            logger.info(f"[CopyTrade] order PLACEMENT: {side:>4} {original_size:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:8]} (new_pos={cur_pos:>7.2f}, new_pending={new_pending:>7.2f})")
 
             asyncio.create_task(asyncio.to_thread(record_copy_trading_order,
                 order_id=order_id,
@@ -883,10 +883,10 @@ class CopyTradingService:
             async with self._get_addr_lock(f_addr):
                 order = await asyncio.to_thread(get_order_by_id, order_id)
                 if order and (order.status or "") == "MATCHED":
-                    logger.debug(f"[CopyTrade] Order {order_id[:10]} already matched, skip cancellation")
+                    logger.debug(f"[CopyTrade] Order {order_id[:8]} already matched, skip cancellation")
                     return
                 if order_id in self._processed_canceled_order_ids:
-                    logger.debug(f"[CopyTrade] Order {order_id[:10]} cancellation already processed, skip")
+                    logger.debug(f"[CopyTrade] Order {order_id[:8]} cancellation already processed, skip")
                     return
                 self._processed_canceled_order_ids.add(order_id)
 
@@ -909,7 +909,7 @@ class CopyTradingService:
                     else:
                         self._pending_sell_orders[f_addr][asset_id] = new_pending
                     asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
-            logger.info(f"[CopyTrade] order CANCELED : {side:>4} {released:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:10]} (position={cur_pos:>7.2f}, pending={new_pending:>7.2f})")
+            logger.info(f"[CopyTrade] order CANCELED : {side:>4} {released:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:8]} (position={cur_pos:>7.2f}, pending={new_pending:>7.2f})")
 
             asyncio.create_task(asyncio.to_thread(update_copy_trading_order,
                 order_id=order_id,
@@ -950,9 +950,9 @@ class CopyTradingService:
                 else:
                     self._order_post_filled[order_id] = remaining_skip
                 if matched_amount <= 0.001:
-                    logger.debug(f"[CopyTrade] Trade {order_id[:10]} already processed by _place_order, skip position update (skipped={skip_amount:.4f})")
+                    logger.debug(f"[CopyTrade] Trade {order_id[:8]} already processed by _place_order, skip position update (skipped={skip_amount:.4f})")
                     return
-                logger.debug(f"[CopyTrade] Trade {order_id[:10]} partially skipped (skipped={skip_amount:.4f}, remaining={matched_amount:.4f})")
+                logger.debug(f"[CopyTrade] Trade {order_id[:8]} partially skipped (skipped={skip_amount:.4f}, remaining={matched_amount:.4f})")
 
             if side == "BUY":
                 new_size = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) + matched_amount
@@ -981,7 +981,7 @@ class CopyTradingService:
                     self._pending_sell_orders[f_addr][asset_id] = new_pending
                 asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
 
-        logger.info(f"[CopyTrade] Trade CONFIRMED: {side:>4} {matched_amount:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:10]} (new_pos={new_size:>7.2f}, new_pending={new_pending:>7.2f})")
+        logger.info(f"[CopyTrade] Trade CONFIRMED: {side:>4} {matched_amount:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:8]} (new_pos={new_size:>7.2f}, new_pending={new_pending:>7.2f})")
 
 
     async def _sync_follower_positions_from_poly(self, follower_addr: str, delay: int = 0) -> int:

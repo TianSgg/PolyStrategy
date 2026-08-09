@@ -28,7 +28,7 @@ class CopyTradingWS:
         """启动 WS 连接"""
         self._running = True
         self._task = asyncio.create_task(self._run())
-        logger.info(f"[CopyTradingWS] {self.follower_addr[:10]} WebSocket starting")
+        logger.info(f"[CopyTradingWS] {self.follower_addr[:8]} WebSocket starting")
 
     async def stop(self):
         """停止 WS 连接"""
@@ -40,7 +40,7 @@ class CopyTradingWS:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        logger.info(f"[CopyTradingWS] {self.follower_addr[:10]} WebSocket stopped")
+        logger.info(f"[CopyTradingWS] {self.follower_addr[:8]} WebSocket stopped")
 
     async def _run(self):
         """连接循环（指数退避重连：1s → 2s → 4s → ... → 60s）"""
@@ -60,7 +60,7 @@ class CopyTradingWS:
                         "type": "user"
                     }
                     await ws.send(json.dumps(auth_msg))
-                    logger.info(f"[CopyTradingWS] {self.follower_addr[:10]} subscribed to user channel")
+                    logger.info(f"[CopyTradingWS] {self.follower_addr[:8]} subscribed to user channel")
 
                     async for msg in ws:
                         if not self._running:
@@ -72,10 +72,10 @@ class CopyTradingWS:
                 break
             except Exception as e:
                 self._ws = None
-                logger.error(f"[CopyTradingWS] {self.follower_addr[:10]} error: {e}")
+                logger.error(f"[CopyTradingWS] {self.follower_addr[:8]} error: {e}")
 
             if self._running:
-                logger.info(f"[CopyTradingWS] {self.follower_addr[:10]} Reconnecting in {delay}s (exp backoff)")
+                logger.info(f"[CopyTradingWS] {self.follower_addr[:8]} Reconnecting in {delay}s (exp backoff)")
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
 
@@ -125,7 +125,7 @@ class CopyTradingWS:
                         )
                         continue
                     self._processed_trades.add(trade_key)
-                    logger.debug(f"[CopyTradingWS] Trade CONFIRMED: {self.follower_addr[:10]}, {side} {size} @ {price} {service._asset_label(asset_id)} order_id={order_id[:10]}")
+                    logger.debug(f"[CopyTradingWS] Trade CONFIRMED: {self.follower_addr[:8]}, {side} {size} @ {price} {service._asset_label(asset_id)} order_id={order_id[:8]}")
                     await service.handle_trade_confirmed(self.follower_addr, asset_id, size, side, price, order_id)
 
             elif event_type == "order":
@@ -143,7 +143,7 @@ class CopyTradingWS:
                 order_id = data.get("id")
                 price = float(data.get("price") or 0)
                 service = get_copy_trading_service()
-                logger.debug(f"[CopyTradingWS] Order {type}: {status} {side} original={original_size} matched={size_matched} @ price={price} {service._asset_label(asset_id)} order_id={order_id[:10]}")
+                logger.debug(f"[CopyTradingWS] Order {type}: {status} {side} original={original_size} matched={size_matched} @ price={price} {service._asset_label(asset_id)} order_id={order_id[:8]}")
                 await service.handle_order_event(self.follower_addr, asset_id, original_size, size_matched, type, status, side, order_id, price)
 
         except json.JSONDecodeError:

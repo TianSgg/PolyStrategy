@@ -162,7 +162,7 @@ class LeaderService:
             conn.commit()
             leader_id = cursor.lastrowid
             self._cache[proxy_wallet.lower()] = name
-            logger.info(f"[Leader] Added leader: id={leader_id}, name='{name}', address={proxy_wallet[:10]}...")
+            logger.info(f"[Leader] Added leader: id={leader_id}, name='{name}', address={proxy_wallet[:8]}...")
             return leader_id, name
         finally:
             conn.close()
@@ -174,7 +174,7 @@ class LeaderService:
             return False
         name = profile.get("name") or profile.get("pseudonym") or ""
         self._cache[proxy_wallet.lower()] = name
-        logger.info(f"[Leader] Refreshed profile for {proxy_wallet[:10]}..., name='{name}'")
+        logger.info(f"[Leader] Refreshed profile for {proxy_wallet[:8]}..., name='{name}'")
         return True
 
     def update_leader(self, leader_id: int, name: str) -> bool:
@@ -217,11 +217,11 @@ class LeaderService:
         addr = leader_address.lower()
         if addr not in self._cache:
             asyncio.create_task(self._warm_leader_cache(addr))
-            return leader_address[:10]
+            return leader_address[:8]
         cached = self._cache[addr]
         # loading marker → 当作未命中处理
         if cached == "__loading__":
-            return leader_address[:10]
+            return leader_address[:8]
         return cached
 
     async def _warm_leader_cache(self, addr):
@@ -253,15 +253,15 @@ class LeaderService:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                logger.debug(f"[Leader] Polymarket profile for {leader_address[:10]}...: name='{data.get('name')}', pseudonym='{data.get('pseudonym')}'")
+                logger.debug(f"[Leader] Polymarket profile for {leader_address[:8]}...: name='{data.get('name')}', pseudonym='{data.get('pseudonym')}'")
                 return data
             else:
                 logger.warning(
                     f"[Leader] Polymarket API returned {resp.status_code} for "
-                    f"{leader_address[:10]}..."
+                    f"{leader_address[:8]}..."
                 )
         except Exception as e:
-            logger.warning(f"[Leader] Failed to fetch Polymarket profile for {leader_address[:10]}...: {e}")
+            logger.warning(f"[Leader] Failed to fetch Polymarket profile for {leader_address[:8]}...: {e}")
         return {}
 
 
