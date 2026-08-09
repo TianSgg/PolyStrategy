@@ -320,7 +320,12 @@ class CopyTradingService:
         """对单个 config 执行 BUY NO 下单"""
         asset_id = signal.asset
         follow_price = 0.99
-        follow_buy_size = config.buy_size
+        if config.size_mode == "ratio":
+            follow_buy_size = round(signal.size * config.size_ratio, 2)
+            if config.size_min > 0 and follow_buy_size < config.size_min:
+                follow_buy_size = config.size_min
+        else:
+            follow_buy_size = config.buy_size
 
         f_addr = config.follower_proxy_wallet
         async with self._get_addr_lock(f_addr):

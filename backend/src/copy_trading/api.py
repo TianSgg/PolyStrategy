@@ -22,6 +22,9 @@ class UpdateConfigRequest(BaseModel):
     enabled: Optional[bool] = None
     gtd_expiration_sec: Optional[int] = None
     buy_size: Optional[float] = None
+    size_mode: Optional[str] = None
+    size_ratio: Optional[float] = None
+    size_min: Optional[float] = None
 
 
 def _assert_config_access(config, current_user: AuthUser):
@@ -76,6 +79,9 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
             "owner_user_id": c.owner_user_id,
             "gtd_expiration_sec": c.gtd_expiration_sec,
             "buy_size": c.buy_size,
+            "size_mode": c.size_mode,
+            "size_ratio": c.size_ratio,
+            "size_min": c.size_min,
         }
         for c in all_configs
     ]
@@ -96,6 +102,9 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
         "owner_user_id": config.owner_user_id,
         "gtd_expiration_sec": config.gtd_expiration_sec,
         "buy_size": config.buy_size,
+        "size_mode": config.size_mode,
+        "size_ratio": config.size_ratio,
+        "size_min": config.size_min,
     }
 
 
@@ -115,6 +124,18 @@ async def update_config(config_id: int, data: UpdateConfigRequest, current_user:
         if data.buy_size < 1:
             raise HTTPException(status_code=400, detail="buy_size must be >= 1")
         kwargs["buy_size"] = data.buy_size
+    if data.size_mode is not None:
+        if data.size_mode not in ("fixed", "ratio"):
+            raise HTTPException(status_code=400, detail="size_mode must be 'fixed' or 'ratio'")
+        kwargs["size_mode"] = data.size_mode
+    if data.size_ratio is not None:
+        if data.size_ratio <= 0:
+            raise HTTPException(status_code=400, detail="size_ratio must be > 0")
+        kwargs["size_ratio"] = data.size_ratio
+    if data.size_min is not None:
+        if data.size_min < 0:
+            raise HTTPException(status_code=400, detail="size_min must be >= 0")
+        kwargs["size_min"] = data.size_min
 
     if not kwargs:
         raise HTTPException(status_code=400, detail="No fields to update")
