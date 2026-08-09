@@ -111,6 +111,8 @@ class CopyTradingService:
         # asset_id -> 持有该 asset 的 config 集合，用于 sell 信号反查
         self._asset_to_configs: Dict[str, Set[int]] = {}
 
+        # 清扫: 单次最大吃单量
+        self._sweep_max_size: float = 50.0
 
         # 启动持仓轮询兜底任务（依赖 _config_id_to_config，由 initialize 填充）
         self._follower_poller_task: Optional[asyncio.Task] = None
@@ -230,13 +232,15 @@ class CopyTradingService:
         """启动时加载配置，各 poller 自行初始化同步"""
         market_svc = get_market_service()
         market_svc.set_exit_callback(self._on_market_exit)
+        market_svc.set_sweep_callback(self._on_sweep_signal)
         await market_svc.start()
         await self._load_configs()
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
 
     def _on_market_exit(self, no_asset_id: str):
-        """MarketService 触发卖出回调"""
+        """MarketService 窗口到期确认 tick_size=0.001，触发卖出"""
+        logger.info(f"[CopyTrade] Window expired, selling {self._asset_label(no_asset_id)}")
         asyncio.create_task(self.execute_sell(no_asset_id))
 
     def _restore_exit_watches(self):
@@ -453,6 +457,48 @@ class CopyTradingService:
             status=result.raw_status,
             err_msg=result.err_msg,
         ))
+
+    # ==================== 清扫策略 ====================
+
+    def _on_sweep_signal(self, asset_id: str, price: float, size: float):
+        """market svc 回调：订单簿出现可清扫 ask"""
+        sweep_size = min(size, self._sweep_max_size)
+        asyncio.create_task(self._execute_sweep_buy(asset_id, price, sweep_size))
+
+
+    async def _execute_sweep_buy(self, asset_id: str, price: float, size: float):
+        """对所有持有该 asset 的 config 执行清扫买单"""
+        config_ids = self._asset_to_configs.get(asset_id)
+        if not config_ids:
+            return
+        for config_id in list(config_ids):
+            config = self._config_id_to_config.get(config_id)
+            if not config or not config.enabled:
+                continue
+            f_addr = config.follower_proxy_wallet
+
+            async with self._get_addr_lock(f_addr):
+                follower_name = self._account_service.get_acc_name(f_addr)
+                logger.info(
+                    f"[Sweep] BUY {self._asset_label(asset_id)} | "
+                    f"follower={follower_name} {size:.2f}@{price}"
+                )
+                result = await self._place_order(
+                    config, asset_id, "BUY", size,
+                    price=price, tick_size="0.01", neg_risk=True
+                )
+                self._register_post_order_result(config, result)
+
+                new_pending = self._pending_buy_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
+                self._pending_buy_orders.setdefault(f_addr, {})[asset_id] = new_pending
+                new_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) + result.position_delta
+                self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
+
+            if result.pending_delta:
+                asyncio.create_task(self._save_pending_buy_with_question(f_addr, asset_id, new_pending))
+            if result.position_delta:
+                logger.info(f"[Sweep] BUY filled: {result.position_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos})")
+                asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
 
 
 

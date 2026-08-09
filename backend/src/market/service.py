@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import requests
@@ -48,6 +49,16 @@ class MarketService:
         self._exit_triggered: Set[str] = set()
         # 卖出回调: callback(asset_id)
         self._on_exit_trigger: Optional[Callable[[str], None]] = None
+        # 清扫回调: callback(asset_id, price, size) — 有可吃 ask 时触发
+        self._on_sweep_trigger: Optional[Callable[[str, float, float], None]] = None
+        self._sweep_price_min: float = 0.99
+        self._sweep_price_max: float = 0.995
+        self._sweep_cooldown_sec: float = 3.0
+        self._sweep_last_trigger: Dict[Tuple[str, float], float] = {}
+        # 订阅超时管理
+        self._subscribe_times: Dict[str, float] = {}
+        self._timeout_task: Optional[asyncio.Task] = None
+        self._subscribe_timeout_sec: int = 600
         # 无 L1 认证的 CLOB Client，用于市场元信息兜底
         self._clob_client = ClobClient(
             host="https://clob.polymarket.com",
@@ -339,29 +350,58 @@ class MarketService:
         self._on_exit_trigger = callback
 
     def watch_for_exit(self, asset_id: str):
-        """监控 asset 的 tick_size_change 事件，当 tick_size 变为 0.001 时触发卖出"""
+        """监控 asset：tick_size→0.001 触发卖出 + 订单簿清扫"""
         if asset_id in self._exit_watches:
             return
         self._exit_watches.add(asset_id)
+        self._subscribe_times[asset_id] = time.time()
         self.subscribe([asset_id])
-        logger.info(f"[Market] Watching exit: {asset_id[:10]} (trigger on tick_size -> 0.001)")
+        logger.info(f"[Market] Watching: {asset_id[:10]} (exit + sweep)")
 
     def unwatch_exit(self, asset_id: str):
-        """取消退出监控"""
+        """取消退出监控和清扫"""
         self._exit_watches.discard(asset_id)
         self._exit_triggered.discard(asset_id)
+        self._subscribe_times.pop(asset_id, None)
+        self._sweep_last_trigger = {k: v for k, v in self._sweep_last_trigger.items() if k[0] != asset_id}
 
     def _check_exit_trigger(self, asset_id: str, new_tick_size: str):
-        """tick_size 变为 0.001 时触发卖出"""
+        """tick_size 变为 0.001 时记录（不立即触发卖出，由窗口到期轮询处理）"""
         if asset_id not in self._exit_watches:
             return
         if asset_id in self._exit_triggered:
             return
         if new_tick_size == "0.001":
             self._exit_triggered.add(asset_id)
-            logger.info(f"[Market] EXIT triggered: {asset_id[:10]} tick_size -> 0.001")
-            if self._on_exit_trigger:
-                self._on_exit_trigger(asset_id)
+            logger.info(f"[Market] EXIT detected (WS): {asset_id[:10]} tick_size -> 0.001, will sell on window expiry")
+
+    # --- 清扫监控 ---
+
+    def set_sweep_callback(self, callback: Callable[[str, float, float], None]):
+        """注册清扫回调，callback(asset_id, price, size)"""
+        self._on_sweep_trigger = callback
+
+    def _check_sweep_trigger(self, asset_id: str):
+        """检查 asset 订单簿中是否有可清扫的 ask（同价位 3s 冷却）"""
+        if asset_id not in self._exit_watches:
+            return
+        if not self._on_sweep_trigger:
+            return
+        book = self._order_books.get(asset_id)
+        if not book or not book.asks:
+            return
+        now = time.time()
+        for price, size in list(book.asks.items()):
+            if price < self._sweep_price_min:
+                continue
+            if price > self._sweep_price_max:
+                break
+            key = (asset_id, price)
+            last = self._sweep_last_trigger.get(key, 0)
+            if now - last < self._sweep_cooldown_sec:
+                continue
+            self._sweep_last_trigger[key] = now
+            self._on_sweep_trigger(asset_id, price, size)
 
     # --- 订阅管理 ---
 
@@ -446,11 +486,19 @@ class MarketService:
             return
         self._ws_running = True
         self._ws_task = asyncio.create_task(self._run_ws_loop())
+        self._timeout_task = asyncio.create_task(self._run_timeout_loop())
         logger.info("[Market] MarketService started")
 
     async def stop(self):
         """停止 WebSocket 连接"""
         self._ws_running = False
+        if self._timeout_task:
+            self._timeout_task.cancel()
+            try:
+                await self._timeout_task
+            except asyncio.CancelledError:
+                pass
+            self._timeout_task = None
         if self._ws_task:
             self._ws_task.cancel()
             try:
@@ -461,6 +509,36 @@ class MarketService:
         self._ws = None
         self._invalidate_live_subscriptions()
         logger.info("[Market] MarketService stopped")
+
+    async def _run_timeout_loop(self):
+        """每10min检查一次，窗口到期的 asset 查询 tick_size，0.001则触发卖出，否则重置进入下一窗口"""
+        while self._ws_running:
+            await asyncio.sleep(self._subscribe_timeout_sec)
+            now = time.time()
+            expired = [
+                asset_id for asset_id, t in list(self._subscribe_times.items())
+                if now - t >= self._subscribe_timeout_sec
+            ]
+            for asset_id in expired:
+                if asset_id in self._exit_triggered:
+                    logger.info(f"[Market] Window expired: {asset_id[:10]} already detected 0.001, triggering sell")
+                    if self._on_exit_trigger:
+                        self._on_exit_trigger(asset_id)
+                    continue
+                try:
+                    ts = await asyncio.to_thread(self._clob_client.get_tick_size, asset_id)
+                except Exception as e:
+                    logger.warning(f"[Market] Timeout check get_tick_size failed for {asset_id[:10]}: {e}")
+                    self._subscribe_times[asset_id] = now
+                    continue
+                if ts == "0.001":
+                    logger.info(f"[Market] Window expired: {asset_id[:10]} tick_size=0.001, triggering sell")
+                    self._exit_triggered.add(asset_id)
+                    if self._on_exit_trigger:
+                        self._on_exit_trigger(asset_id)
+                else:
+                    logger.info(f"[Market] Window expired: {asset_id[:10]} tick_size={ts}, next window")
+                    self._subscribe_times[asset_id] = now
 
     async def _run_ws_loop(self):
         """WebSocket 连接循环（指数退避重连：1s → 2s → ... → 60s）"""
@@ -538,6 +616,7 @@ class MarketService:
     def _process_price_change(self, data: dict):
         """处理 price_change 事件"""
         price_changes = data.get("price_changes", [])
+        sweep_assets = set()
         for change in price_changes:
             asset_id = change.get("asset_id")
             if not asset_id or asset_id not in self._confirmed_subscriptions:
@@ -551,6 +630,11 @@ class MarketService:
                 if asset_id not in self._order_books:
                     continue
                 self._order_books[asset_id].update(price, size, side)
+                if side == "SELL" and size != "0" and asset_id in self._exit_watches:
+                    sweep_assets.add(asset_id)
+
+        for asset_id in sweep_assets:
+            self._check_sweep_trigger(asset_id)
 
     def _process_tick_size_change(self, data: dict):
         """处理 tick_size_change 事件"""
