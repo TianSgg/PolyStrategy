@@ -300,7 +300,6 @@ class PerformanceService:
             self._cache_block("market", "tick_sizes", "Tick Sizes", self._dict_items(service._tick_sizes, "asset_id", "tick_size")),
             self._cache_block("market", "neg_risks", "Negative Risk", self._dict_items(service._neg_risks, "asset_id", "neg_risk")),
             self._cache_block("market", "exit_watches", "Exit Watches", self._set_items(service._exit_watches)),
-            self._cache_block("market", "exit_triggered", "Exit Triggered", self._set_items(service._exit_triggered)),
             self._cache_block("market", "runtime", "Runtime", [
                 {"name": "ws_running", "value": service._ws_running},
                 {"name": "ws_connected", "value": service._ws is not None},
@@ -414,7 +413,6 @@ class PerformanceService:
                 "tick_sizes": lambda: self._dict_items(market._tick_sizes, "asset_id", "tick_size"),
                 "neg_risks": lambda: self._dict_items(market._neg_risks, "asset_id", "neg_risk"),
                 "exit_watches": lambda: self._set_items(market._exit_watches),
-                "exit_triggered": lambda: self._set_items(market._exit_triggered),
                 "runtime": lambda: [
                     {"name": "ws_running", "value": market._ws_running},
                     {"name": "ws_connected", "value": market._ws is not None},

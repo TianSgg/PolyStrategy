@@ -41,10 +41,8 @@ class MarketService:
         self._tick_sizes: Dict[str, str] = {}      # {asset_id: tick_size_str}
         self._neg_risks: Dict[str, Optional[bool]] = {}  # {asset_id: neg_risk}
         self._token_pair_cache: Dict[str, Tuple[str, str]] = {}  # {asset_id: (condition_id, opposite_asset_id)}
-        # 退出监控: 当 tick_size 变为 0.001 时触发卖出的 asset_id 集合
+        # 退出监控: 订阅中的 asset，窗口到期后查 tick_size 决定是否卖出
         self._exit_watches: Set[str] = set()
-        # 已触发过的 asset_id（防止重复触发）
-        self._exit_triggered: Set[str] = set()
         # 卖出回调: callback(asset_id)
         self._on_exit_trigger: Optional[Callable[[str], None]] = None
         # 清扫回调: callback(asset_id, price, size) — 有可吃 ask 时触发
@@ -306,19 +304,8 @@ class MarketService:
     def unwatch_exit(self, asset_id: str):
         """取消退出监控和清扫"""
         self._exit_watches.discard(asset_id)
-        self._exit_triggered.discard(asset_id)
         self._subscribe_times.pop(asset_id, None)
         self._sweep_last_trigger = {k: v for k, v in self._sweep_last_trigger.items() if k[0] != asset_id}
-
-    def _check_exit_trigger(self, asset_id: str, new_tick_size: str):
-        """tick_size 变为 0.001 时记录（不立即触发卖出，由窗口到期轮询处理）"""
-        if asset_id not in self._exit_watches:
-            return
-        if asset_id in self._exit_triggered:
-            return
-        if new_tick_size == "0.001":
-            self._exit_triggered.add(asset_id)
-            logger.info(f"[Market] EXIT detected (WS): {asset_id[:8]} tick_size -> 0.001, will sell on window expiry")
 
     # --- 清扫监控 ---
 
@@ -434,7 +421,7 @@ class MarketService:
         logger.info("[Market] MarketService stopped")
 
     async def _run_timeout_loop(self):
-        """每10min检查一次，窗口到期的 asset 查询 tick_size，0.001则触发卖出，否则重置进入下一窗口"""
+        """每10min检查一次，窗口到期的 asset 判断 tick_size：缓存优先，REST 兜底"""
         while self._ws_running:
             await asyncio.sleep(self._subscribe_timeout_sec)
             now = time.time()
@@ -443,20 +430,16 @@ class MarketService:
                 if now - t >= self._subscribe_timeout_sec
             ]
             for asset_id in expired:
-                if asset_id in self._exit_triggered:
-                    logger.info(f"[Market] Window expired: {asset_id[:8]} already detected 0.001, triggering sell")
-                    if self._on_exit_trigger:
-                        self._on_exit_trigger(asset_id)
-                    continue
-                try:
-                    ts = await asyncio.to_thread(self._clob_client.get_tick_size, asset_id)
-                except Exception as e:
-                    logger.warning(f"[Market] Timeout check get_tick_size failed for {asset_id[:8]}: {e}")
-                    self._subscribe_times[asset_id] = now
-                    continue
+                ts = self._tick_sizes.get(asset_id)
+                if not ts:
+                    try:
+                        ts = await asyncio.to_thread(self._clob_client.get_tick_size, asset_id)
+                    except Exception as e:
+                        logger.warning(f"[Market] Timeout get_tick_size failed for {asset_id[:8]}: {e}")
+                        self._subscribe_times[asset_id] = now
+                        continue
                 if ts == "0.001":
                     logger.info(f"[Market] Window expired: {asset_id[:8]} tick_size=0.001, triggering sell")
-                    self._exit_triggered.add(asset_id)
                     if self._on_exit_trigger:
                         self._on_exit_trigger(asset_id)
                 else:
@@ -557,4 +540,3 @@ class MarketService:
         if asset_id and new_tick_size:
             self._tick_sizes[asset_id] = new_tick_size
             logger.info(f"[Market] Updated tick_size for {asset_id[:8]}...: {new_tick_size}")
-            self._check_exit_trigger(asset_id, new_tick_size)
