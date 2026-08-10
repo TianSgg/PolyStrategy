@@ -237,7 +237,8 @@ class MarketService:
             return self._tick_sizes[asset_id]
         for attempt in range(3):
             try:
-                ts = await asyncio.to_thread(self._clob_client.get_tick_size, asset_id)
+                result = await asyncio.to_thread(self._clob_client.get_tick_size, asset_id)
+                ts = str(result["minimum_tick_size"])
                 self._tick_sizes[asset_id] = ts
                 return ts
             except Exception as e:
@@ -430,14 +431,10 @@ class MarketService:
                 if now - t >= self._subscribe_timeout_sec
             ]
             for asset_id in expired:
-                ts = self._tick_sizes.get(asset_id)
+                ts = await self.get_tick_size(asset_id)
                 if not ts:
-                    try:
-                        ts = await asyncio.to_thread(self._clob_client.get_tick_size, asset_id)
-                    except Exception as e:
-                        logger.warning(f"[Market] Timeout get_tick_size failed for {asset_id[:8]}: {e}")
-                        self._subscribe_times[asset_id] = now
-                        continue
+                    self._subscribe_times[asset_id] = now
+                    continue
                 if ts == "0.001":
                     logger.info(f"[Market] Window expired: {asset_id[:8]} tick_size=0.001, triggering sell")
                     if self._on_exit_trigger:
