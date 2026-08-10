@@ -494,6 +494,11 @@ class CopyTradingService:
                 new_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) + result.position_delta
                 self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
 
+            if result.raw_status == "ERROR":
+                logger.warning(f"[Sweep] BUY failed: {self._asset_label(asset_id)} err={result.err_msg}")
+            elif result.pending_delta and not result.position_delta:
+                logger.info(f"[Sweep] BUY pending: {result.pending_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos} pending={new_pending})")
+
             if result.pending_delta:
                 asyncio.create_task(self._save_pending_buy_with_question(f_addr, asset_id, new_pending))
             if result.position_delta:
