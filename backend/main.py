@@ -164,36 +164,72 @@ async def lifespan(app: FastAPI):
     market_client = PolymarketMarketClient(http_session)
     event_bus = EventBus()
 
-    from datetime import date as _date
+    from datetime import timezone as _tz
+    from zoneinfo import ZoneInfo
     from weather_orderbook.types import WeatherNotificationRecord
 
-    def _parse_event_slug(event_slug: str):
-        """Parse direction, city_slug, local_date from event_slug like 'highest-temperature-in-taipei-on-august-14-2026'."""
-        import re
-        m = re.match(r"(highest|lowest)-temperature-in-(.+?)-on-(\w+)-(\d+)-(\d+)", event_slug)
-        if not m:
-            return None, None, None
-        direction = m.group(1)
-        city_slug = m.group(2)
-        month_name, day, year = m.group(3), int(m.group(4)), int(m.group(5))
-        months = {"january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
-                  "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12}
-        month = months.get(month_name.lower(), 1)
-        return direction, city_slug, _date(year, month, day)
+    city_by_name = {city.name: city for city in cities}
 
-    async def on_weather_event(event, main_ctx=None):
-        logger.info("Weather event: %s %s", event.event_type, event.asset.event_slug)
-        direction, city_slug, local_date = _parse_event_slug(event.asset.event_slug)
-        if not direction:
-            return
-        notification_key = f"{event.event_type}:{event.asset.event_slug}:{event.asset.market_slug}:{event.asset.outcome}"
-        record = WeatherNotificationRecord(
-            notification_key=notification_key,
-            occurred_at=datetime.now(tz=None),
+    def _format_orderbook(state: str, orderbook: dict | None) -> str:
+        if orderbook is None:
+            return f"**Order Book ({state})** [N/A | initial snapshot]"
+        def level(label: str) -> str:
+            item = orderbook.get(label)
+            return "-" if item is None else f"{item['price']} (size: {item['size']})"
+        return (
+            f"**Order Book ({state})** [{orderbook.get('observed_at', '?')}]\n"
+            f"Best Ask: {level('best_ask')}\n"
+            f"Best Bid: {level('best_bid')}\n"
+            f"Ask Levels: {orderbook.get('ask_levels', '?')}\n"
+            f"Bid Levels: {orderbook.get('bid_levels', '?')}"
+        )
+
+    def _format_weather(event, main_ctx=None) -> str:
+        asset = event.asset
+        sweep_threshold = event.reason.removeprefix("ask_levels_through_").removesuffix("_cleared")
+        event_label = {
+            "sweep": f"Sweep ({asset.outcome.upper()} token all Ask <= {sweep_threshold} cleared)" if event.reason.startswith("ask_levels_through_") else "Sweep",
+            "no_longer_possible": "No longer possible",
+            "market_resolved": "Market resolved",
+        }[event.event_type]
+        confirm_line = ""
+        if event.event_type in ("no_longer_possible", "market_resolved") and event.reason.startswith("high_certainty_maintained_"):
+            confirm_line = f"\nConfirm duration: {event.reason.removeprefix('high_certainty_maintained_')}"
+        main_line = ""
+        if main_ctx:
+            main_outcome_label = main_ctx['main_outcome'].upper() if main_ctx.get('main_outcome') else '?'
+            main_line = f"\nMain monitor: {main_ctx['main_temperature_label']} {main_outcome_label} ({main_ctx['main_market_slug']})"
+        return (
+            f"Weather {event_label}\n"
+            f"City: {asset.city}\n"
+            f"Event slug: {asset.event_slug}\n"
+            f"Market: {asset.temperature_label}\n"
+            f"Market slug: {asset.market_slug}\n"
+            f"Outcome: {asset.outcome.upper()}\n"
+            f"Token: {asset.asset_id}\n"
+            f"Reason: {event.reason}{confirm_line}{main_line}\n\n"
+            f"{_format_orderbook('before', event.previous_orderbook)}\n\n"
+            f"{_format_orderbook('after', event.current_orderbook)}"
+        )
+
+    def _build_notification_record(event, city, main_ctx):
+        occurred_at_ms = event.current_orderbook.get("observed_at_unix_ms")
+        try:
+            occurred_at = datetime.fromtimestamp(int(occurred_at_ms) / 1000, _tz.utc)
+        except (TypeError, ValueError, OSError):
+            occurred_at = datetime.now(_tz.utc)
+        direction = event.asset.event_slug.split("-temperature-in-", 1)[0]
+        local_date = occurred_at.astimezone(ZoneInfo(city.timezone)).date()
+        payload = event.payload()
+        if main_ctx:
+            payload["main_monitor"] = main_ctx
+        return WeatherNotificationRecord(
+            notification_key=f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
+            occurred_at=occurred_at,
             event_type=event.event_type,
             event_slug=event.asset.event_slug,
             city=event.asset.city,
-            city_slug=city_slug,
+            city_slug=city.slug,
             direction=direction,
             local_date=local_date,
             market_slug=event.asset.market_slug,
@@ -206,9 +242,21 @@ async def lifespan(app: FastAPI):
             status=None,
             reason=event.reason,
             message=f"[{event.event_type}] {event.asset.city} {direction} {event.asset.temperature_label} ({event.reason})",
-            payload=event.payload(),
+            payload=payload,
         )
-        inserted = await notification_repository.insert_if_absent(record)
+
+    async def on_weather_event(event, main_ctx=None):
+        logger.info("Weather event: %s %s", event.event_type, event.asset.event_slug)
+        city = city_by_name.get(event.asset.city)
+        if city is None:
+            logger.error("Cannot persist weather notification: unknown city=%s", event.asset.city)
+            return
+        try:
+            record = _build_notification_record(event, city, main_ctx)
+            inserted = await notification_repository.insert_if_absent(record)
+        except Exception:
+            logger.exception("Failed to persist weather notification event=%s", event.asset.event_slug)
+            return
         if inserted:
             svc = app.state.weather_service
             if svc:
