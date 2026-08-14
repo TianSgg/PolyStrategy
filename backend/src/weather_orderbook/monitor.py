@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from time import time
 from typing import Literal
 
@@ -94,7 +94,7 @@ class WeatherOrderBookMonitor:
         if not self._books:
             return {"city": self.candidate.city, "direction": self.candidate.direction,
                     "market_slug": self.candidate.market_slug, "books": {}}
-        observed_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " UTC"
+        observed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " UTC"
         books: dict[str, dict] = {}
         for asset_id, asset in self._assets.items():
             book = self._books.get(asset_id)
@@ -190,7 +190,7 @@ class WeatherOrderBookMonitor:
         book = self._books[asset_id]
         previous, current = self._last.get(asset_id), {
             **book.top_of_book(),
-            "observed_at": datetime.now(UTC).strftime("%H:%M:%S.%f")[:-3] + " UTC",
+            "observed_at": datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3] + " UTC",
             "observed_at_unix_ms": int(time() * 1000),
         }
         if (

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from weather_orderbook.gateway import PolymarketMarketClient
@@ -53,7 +53,7 @@ class WeatherDiscovery:
         return None
 
     async def local_date(self, city: WeatherCity):
-        return datetime.now(UTC).astimezone(ZoneInfo(city.timezone)).date()
+        return datetime.now(timezone.utc).astimezone(ZoneInfo(city.timezone)).date()
 
     async def timezone_name(self, city: WeatherCity) -> str:
         return city.timezone

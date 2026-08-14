@@ -204,9 +204,9 @@ class SharedMarketWebSocket:
                 self.connected = False
 
     def _dispatch(self, raw: str) -> None:
-        from datetime import UTC, datetime
+        from datetime import datetime, timezone
 
-        self.last_message_at = datetime.now(UTC).isoformat()
+        self.last_message_at = datetime.now(timezone.utc).isoformat()
         data = json.loads(raw)
 
         if isinstance(data, list):

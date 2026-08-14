@@ -75,6 +75,9 @@ for lib in ["websockets", "httpcore", "httpx", "hpack", "hyperframe", "urllib3",
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+import aiohttp
+import asyncmy
+
 from account.api import router as account_router
 from account.service import get_account_service
 from auth.api import router as auth_router
@@ -84,12 +87,20 @@ from copy_trading.api import router as copy_trading_router
 from copy_trading.predexon import get_copy_trading_predexon
 from copy_trading.service import get_copy_trading_service
 from copy_trading.ws import CopyTradingWS, add_copy_trading_ws, stop_all_copy_trading_ws
+from event_bus import EventBus
 from leader.api import router as leader_router
 from market.api import router as market_router
 from performance.router import router as performance_router
 from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
+from weather_orderbook import (
+    PolymarketMarketClient,
+    WeatherCityRepository,
+    WeatherNotificationRepository,
+    WeatherOrderBookService,
+    weather_orderbook_router,
+)
 
 
 @asynccontextmanager
@@ -128,9 +139,99 @@ async def lifespan(app: FastAPI):
         pnl_svc = get_pnl_service()
         pnl_svc.start()
 
+    # --- Weather OrderBook 模块初始化 ---
+    mysql_pool = await asyncmy.create_pool(
+        host=os.getenv("MYSQL_HOST", "localhost"),
+        port=int(os.getenv("MYSQL_PORT", "3306")),
+        user=os.getenv("MYSQL_USER", "root"),
+        password=os.getenv("MYSQL_PASSWORD", "123456"),
+        db=os.getenv("MYSQL_DATABASE", "weathertaker"),
+        minsize=3,
+        maxsize=10,
+        pool_recycle=1800,
+        autocommit=True,
+        connect_timeout=5,
+    )
+    city_repository = WeatherCityRepository(mysql_pool)
+    cities = await city_repository.list_enabled()
+    logger.info("Weather: loaded %d cities from database", len(cities))
+
+    notification_repository = WeatherNotificationRepository(mysql_pool)
+    await notification_repository.ping()
+    app.state.weather_notification_repository = notification_repository
+
+    http_session = aiohttp.ClientSession()
+    market_client = PolymarketMarketClient(http_session)
+    event_bus = EventBus()
+
+    from datetime import date as _date
+    from weather_orderbook.types import WeatherNotificationRecord
+
+    def _parse_event_slug(event_slug: str):
+        """Parse direction, city_slug, local_date from event_slug like 'highest-temperature-in-taipei-on-august-14-2026'."""
+        import re
+        m = re.match(r"(highest|lowest)-temperature-in-(.+?)-on-(\w+)-(\d+)-(\d+)", event_slug)
+        if not m:
+            return None, None, None
+        direction = m.group(1)
+        city_slug = m.group(2)
+        month_name, day, year = m.group(3), int(m.group(4)), int(m.group(5))
+        months = {"january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+                  "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12}
+        month = months.get(month_name.lower(), 1)
+        return direction, city_slug, _date(year, month, day)
+
+    async def on_weather_event(event, main_ctx=None):
+        logger.info("Weather event: %s %s", event.event_type, event.asset.event_slug)
+        direction, city_slug, local_date = _parse_event_slug(event.asset.event_slug)
+        if not direction:
+            return
+        notification_key = f"{event.event_type}:{event.asset.event_slug}:{event.asset.market_slug}:{event.asset.outcome}"
+        record = WeatherNotificationRecord(
+            notification_key=notification_key,
+            occurred_at=datetime.now(tz=None),
+            event_type=event.event_type,
+            event_slug=event.asset.event_slug,
+            city=event.asset.city,
+            city_slug=city_slug,
+            direction=direction,
+            local_date=local_date,
+            market_slug=event.asset.market_slug,
+            temperature_label=event.asset.temperature_label,
+            outcome=event.asset.outcome,
+            main_market_slug=main_ctx.get("main_market_slug") if main_ctx else None,
+            main_temperature_label=main_ctx.get("main_temperature_label") if main_ctx else None,
+            main_outcome=main_ctx.get("main_outcome") if main_ctx else None,
+            token_id=event.asset.asset_id,
+            status=None,
+            reason=event.reason,
+            message=f"[{event.event_type}] {event.asset.city} {direction} {event.asset.temperature_label} ({event.reason})",
+            payload=event.payload(),
+        )
+        inserted = await notification_repository.insert_if_absent(record)
+        if inserted:
+            svc = app.state.weather_service
+            if svc:
+                svc.note_persisted_notification(event.asset.event_slug, record)
+
+    weather_service = WeatherOrderBookService(
+        cities,
+        market_client,
+        on_weather_event,
+        notification_repository=notification_repository,
+        event_bus=event_bus,
+    )
+    app.state.weather_service = weather_service
+    await weather_service.start()
+    logger.info("Weather OrderBook service started")
+
     try:
         yield
     finally:
+        await weather_service.stop()
+        await http_session.close()
+        mysql_pool.close()
+        await mysql_pool.wait_closed()
         if _env == "prod":
             copy_trading_predexon.stop()
             copy_trading_predexon_task.cancel()
@@ -150,6 +251,7 @@ app.include_router(account_router)
 app.include_router(market_router)
 app.include_router(performance_router)
 app.include_router(pnl_router)
+app.include_router(weather_orderbook_router)
 
 # CORS 配置
 app.add_middleware(

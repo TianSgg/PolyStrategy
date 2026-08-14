@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from event_bus import EventBus
@@ -402,7 +402,7 @@ class WeatherCoordinator:
 
     async def dashboard(self) -> list[dict]:
         """Frontend-ready city, direction, market, and local-time status."""
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         cities: list[dict] = []
         for city in self.cities:
             timezone_name = city.timezone

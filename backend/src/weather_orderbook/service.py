@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from event_bus import EventBus
@@ -169,7 +169,7 @@ class WeatherOrderBookService:
         UTC+05:30), so a UTC-hour-only scheduler can be 30 minutes late.
         """
         while True:
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             next_rollover = self._next_local_midnight(now)
             await asyncio.sleep(max(0, (next_rollover - now).total_seconds()))
             try:
@@ -193,7 +193,7 @@ class WeatherOrderBookService:
             (
                 (now.astimezone(ZoneInfo(city.timezone)).replace(
                     hour=0, minute=0, second=0, microsecond=0,
-                ) + timedelta(days=1)).astimezone(UTC)
+                ) + timedelta(days=1)).astimezone(timezone.utc)
                 for city in self.cities
             ),
             default=now + timedelta(hours=1),

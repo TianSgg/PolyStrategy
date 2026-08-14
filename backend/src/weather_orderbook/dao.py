@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -340,10 +340,10 @@ class WeatherNotificationRepository:
 def _mysql_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("occurred_at must be timezone-aware UTC")
-    return value.astimezone(UTC).replace(tzinfo=None)
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _utc_datetime(value: datetime) -> datetime:
     if value.tzinfo is not None:
-        return value.astimezone(UTC)
-    return value.replace(tzinfo=UTC)
+        return value.astimezone(timezone.utc)
+    return value.replace(tzinfo=timezone.utc)

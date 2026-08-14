@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request
@@ -171,7 +171,7 @@ async def weather_orderbook(token_id: str, request: Request) -> WeatherOrderbook
     asks = sorted(book.get("asks") or [], key=lambda row: float(row["price"]))
     return WeatherOrderbookResponse(
         token_id=token_id,
-        observed_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " UTC",
+        observed_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " UTC",
         tick_size=book.get("tick_size") or book.get("min_tick_size"),
         best_bid=bids[0] if bids else None,
         best_ask=asks[0] if asks else None,
@@ -195,10 +195,12 @@ async def weather_live_orderbooks(request: Request) -> StreamingResponse:
             while True:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=15)
-                except TimeoutError:
+                except (TimeoutError, asyncio.CancelledError):
                     yield ": keepalive\n\n"
                     continue
                 yield f"event: orderbook\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
         finally:
             service.unsubscribe_live_orderbooks(queue)
 
@@ -221,10 +223,12 @@ async def weather_notification_counts_live(request: Request) -> StreamingRespons
             while True:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=15)
-                except TimeoutError:
+                except (TimeoutError, asyncio.CancelledError):
                     yield ": keepalive\n\n"
                     continue
                 yield f"event: notification-count\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
         finally:
             service.unsubscribe_notification_counts(queue)
 
