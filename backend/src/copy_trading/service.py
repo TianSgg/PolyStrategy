@@ -868,7 +868,6 @@ class CopyTradingService:
                 order_price,
                 tick_size,
                 neg_risk,
-                config.gtd_expiration_sec,
             )
             logger.debug(f"[CopyTrade] Order result: {result}")
 
@@ -905,7 +904,7 @@ class CopyTradingService:
                     retry_result = await asyncio.to_thread(
                         self._account_service.place_limit_order,
                         config.follower_proxy_wallet, asset_id, side, retry_size,
-                        order_price, tick_size, neg_risk, config.gtd_expiration_sec,
+                        order_price, tick_size, neg_risk,
                     )
                     retry_status = retry_result.get("status")
                     retry_order_id = retry_result.get("orderID")
@@ -945,7 +944,7 @@ class CopyTradingService:
                     retry_result = await asyncio.to_thread(
                         self._account_service.place_limit_order,
                         config.follower_proxy_wallet, asset_id, side, retry_size,
-                        order_price, tick_size, neg_risk, config.gtd_expiration_sec,
+                        order_price, tick_size, neg_risk,
                     )
                     retry_status = retry_result.get("status")
                     retry_order_id = retry_result.get("orderID")
