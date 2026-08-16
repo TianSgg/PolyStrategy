@@ -1,6 +1,6 @@
 from py_clob_client_v2 import ClobClient
 from py_clob_client_v2.clob_types import (
-    ApiCreds, BalanceAllowanceParams, AssetType, PartialCreateOrderOptions, BuilderConfig, OrderType
+    ApiCreds, BalanceAllowanceParams, AssetType, PartialCreateOrderOptions, BuilderConfig, OrderType, OrderPayload
 )
 from py_clob_client_v2.clob_types import OrderArgsV2 as OrderArgs
 from py_clob_client_v2.order_builder.constants import BUY, SELL
@@ -388,6 +388,13 @@ class AccountService:
         )
         return result
  
+
+    def cancel_order(self, f_addr: str, order_id: str) -> dict:
+        """取消指定订单，返回 cancel 响应"""
+        client = self.get_or_create_clob_client(f_addr)
+        if not client:
+            raise RuntimeError(f"No client for {self.get_acc_name(f_addr)}")
+        return client.cancel_order(OrderPayload(orderID=order_id))
 
     # ==================== 缓存管理 ====================
 
