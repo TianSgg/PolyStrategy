@@ -721,6 +721,11 @@ class CopyTradingService:
 
         self._record_sell_order(config, asset_id, follow_price, follow_sell_size, result)
 
+        market_svc = get_market_service()
+        market_svc.unwatch_exit(asset_id)
+        market_svc.unsubscribe(asset_id)
+        logger.info(f"[SweepExit] unsubscribed {self._asset_label(asset_id)}")
+
     async def _get_asset_label(self, asset_id: str) -> str:
         """根据 asset_id 返回可读标签 'id[:8] - question[outcome]'
         内存 → DB → API fetch → _cache_asset_label 填充内存缓存"""
