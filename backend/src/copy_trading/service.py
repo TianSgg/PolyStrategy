@@ -111,6 +111,9 @@ class CopyTradingService:
         # asset_id -> 持有该 asset 的 config 集合，用于 sell 信号反查
         self._asset_to_configs: Dict[str, Set[int]] = {}
 
+        # config_id -> 剩余可用余额（近似 1 share ≈ 1 USDC）
+        self._config_balances: Dict[int, float] = {}
+
         # 清扫: 单次最大吃单量
         self._sweep_max_size: float = 50.0
 
@@ -268,6 +271,7 @@ class CopyTradingService:
             self._follower_addr_to_configs.setdefault(config.follower_proxy_wallet, set()).add(config)
             self._followers.add(config.follower_proxy_wallet)
             self._config_id_to_config[config.id] = config
+            self._config_balances[config.id] = config.buy_size
             self._add_fl_key(config)
             predexon.add_leader(config.leader_proxy_wallet)
 
@@ -324,12 +328,12 @@ class CopyTradingService:
         """对单个 config 执行 BUY NO 下单"""
         asset_id = signal.asset
         follow_price = 0.99
-        if config.size_mode == "ratio":
-            follow_buy_size = round(signal.size * config.size_ratio, 2)
-            if config.size_min > 0 and follow_buy_size < config.size_min:
-                follow_buy_size = config.size_min
-        else:
-            follow_buy_size = config.buy_size
+
+        balance = self._config_balances.get(config.id, 0)
+        if balance < 5:
+            logger.info(f"[CopyTrade] BUY skipped: balance exhausted ({balance:.2f}) config={config.id}")
+            return
+        follow_buy_size = balance
 
         f_addr = config.follower_proxy_wallet
         async with self._get_addr_lock(f_addr):
@@ -641,8 +645,26 @@ class CopyTradingService:
     async def _place_order(self, config: CopyTradingConfig, asset_id: str, side: str, size: float, price: float, tick_size: str=None, neg_risk: bool=None) -> PlaceOrderResult:
         """
         纯下单函数，返回 PlaceOrderResult（状态登记和 pending_delta 由调用方处理）。
-        SELL 余额不足时内部重试一次（使用实际余额）。
+        BUY 成功时自动扣减 config 余额；SELL 余额不足时内部重试一次（使用实际余额）。
         """
+        order_result = await self._do_place_order(config, asset_id, side, size, price, tick_size, neg_risk)
+
+        # BUY 成功：扣减余额
+        if side == "BUY":
+            used = order_result.pending_delta + order_result.position_delta
+            if used > 0:
+                self._config_balances[config.id] = max(0, self._config_balances.get(config.id, 0) - used)
+                logger.info(f"[CopyTrade] balance: -{used:.2f} config={config.id} remaining={self._config_balances[config.id]:.2f}")
+
+        # SELL 即时成交：回补余额
+        if side == "SELL" and order_result.position_delta > 0:
+            self._config_balances[config.id] = self._config_balances.get(config.id, 0) + order_result.position_delta
+            logger.info(f"[CopyTrade] balance: +{order_result.position_delta:.2f} (sell immediate) config={config.id} remaining={self._config_balances[config.id]:.2f}")
+
+        return order_result
+
+    async def _do_place_order(self, config: CopyTradingConfig, asset_id: str, side: str, size: float, price: float, tick_size: str=None, neg_risk: bool=None) -> PlaceOrderResult:
+        """实际下单逻辑（含重试）"""
         order_price = price
         try:
             result = await asyncio.to_thread(
@@ -804,6 +826,7 @@ class CopyTradingService:
         self._follower_addr_to_configs.setdefault(follower_proxy_wallet, set()).add(new_config)
         self._followers.add(follower_proxy_wallet)
         self._config_id_to_config[config_id] = new_config
+        self._config_balances.setdefault(config_id, new_config.buy_size)
         self._add_fl_key(new_config)
         self._follower_positions.setdefault(follower_proxy_wallet, {})
 
@@ -904,6 +927,11 @@ class CopyTradingService:
                     else:
                         self._pending_buy_orders[f_addr][asset_id] = new_pending
                     asyncio.create_task(self._save_pending_buy_with_question(f_addr, asset_id, new_pending))
+                    # 回补余额
+                    config_id = self._order_id_to_config_id.get(order_id)
+                    if config_id and config_id in self._config_balances:
+                        self._config_balances[config_id] += released
+                        logger.info(f"[CopyTrade] balance: +{released:.2f} (cancel) config={config_id} remaining={self._config_balances[config_id]:.2f}")
 
                 else:
                     cur_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0)
@@ -977,7 +1005,7 @@ class CopyTradingService:
                 self._follower_positions.setdefault(f_addr, {})[asset_id] = new_size
                 upsert_follower_position(f_addr, asset_id, new_size)
                 # 释放 pending（加锁防与轮询并发）
-                
+
                 pending = self._pending_sell_orders.setdefault(f_addr, {}).get(asset_id, 0)
                 new_pending = max(0, pending - matched_amount)
                 if new_pending <= 0.01:
@@ -985,6 +1013,10 @@ class CopyTradingService:
                 else:
                     self._pending_sell_orders[f_addr][asset_id] = new_pending
                 asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
+                # 回补余额
+                if config_id and config_id in self._config_balances:
+                    self._config_balances[config_id] += matched_amount
+                    logger.info(f"[CopyTrade] balance: +{matched_amount:.2f} (sell filled) config={config_id} remaining={self._config_balances[config_id]:.2f}")
 
         logger.info(f"[CopyTrade] Trade CONFIRMED: {side:>4} {matched_amount:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:8]} (new_pos={new_size:>7.2f}, new_pending={new_pending:>7.2f})")
 
@@ -1111,6 +1143,7 @@ class CopyTradingService:
                     config.gtd_expiration_sec = int(kwargs["gtd_expiration_sec"])
                 if "buy_size" in kwargs:
                     config.buy_size = float(kwargs["buy_size"])
+                    self._config_balances[config_id] = config.buy_size
         return success
 
     def delete_config(self, config_id: int) -> bool:

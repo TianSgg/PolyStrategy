@@ -14,9 +14,6 @@ interface CopyTradingConfig {
   enabled: boolean
   gtd_expiration_sec: number
   buy_size: number
-  size_mode: 'fixed' | 'ratio'
-  size_ratio: number
-  size_min: number
 }
 
 interface Account {
@@ -137,8 +134,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [editingGtdValue, setEditingGtdValue] = useState('')
   const [editingBuySizeConfigId, setEditingBuySizeConfigId] = useState<number | null>(null)
   const [editingBuySizeValue, setEditingBuySizeValue] = useState('')
-  const [editingSizeMode, setEditingSizeMode] = useState<'fixed' | 'ratio'>('fixed')
-  const [editingSizeMin, setEditingSizeMin] = useState('')
 
 
   // 曲线时间范围
@@ -370,43 +365,26 @@ export default function CopyTrading({ darkMode, visible }: Props) {
 
   const handleBuySizeClick = (config: CopyTradingConfig) => {
     setEditingBuySizeConfigId(config.id)
-    setEditingBuySizeValue(config.size_mode === 'ratio' ? String(config.size_ratio || 1) : String(config.buy_size || 100))
-    setEditingSizeMode(config.size_mode || 'fixed')
-    setEditingSizeMin(String(config.size_min || 0))
+    setEditingBuySizeValue(String(config.buy_size || 100))
   }
 
   const handleBuySizeSave = async (configId: number) => {
     const value = parseFloat(editingBuySizeValue)
-    if (editingSizeMode === 'fixed') {
-      if (isNaN(value) || value < 1) {
-        toast('固定数量需 >= 1')
-        return
-      }
-    } else {
-      if (isNaN(value) || value <= 0) {
-        toast('比例需 > 0')
-        return
-      }
-    }
-    const payload: Record<string, unknown> = { size_mode: editingSizeMode }
-    if (editingSizeMode === 'fixed') {
-      payload.buy_size = value
-    } else {
-      payload.size_ratio = value
-      const min = parseFloat(editingSizeMin)
-      payload.size_min = isNaN(min) ? 0 : min
+    if (isNaN(value) || value < 1) {
+      toast('余额需 >= 1')
+      return
     }
     try {
       await apiFetch(`/api/copy-trading/configs/${configId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ buy_size: value })
       })
       setConfigs(prev => prev.map(c =>
-        c.id === configId ? { ...c, ...payload as Partial<CopyTradingConfig> } : c
+        c.id === configId ? { ...c, buy_size: value } : c
       ))
     } catch (e) {
-      console.error('Failed to update size config:', e)
+      console.error('Failed to update buy_size:', e)
     } finally {
       setEditingBuySizeConfigId(null)
     }
@@ -912,27 +890,15 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                               onClick={() => handleBuySizeClick(config)}
                               title="点击修改份额配置"
                             >
-                              {config.size_mode === 'ratio' ? `${config.size_ratio}x` : config.buy_size || 100}
+                              {config.buy_size || 100}
                             </strong>
                             {editingBuySizeConfigId === config.id && (
                               <div className="price-popover">
                                 <div className="price-popover-row">
-                                  <select
-                                    value={editingSizeMode}
-                                    onChange={e => {
-                                      const mode = e.target.value as 'fixed' | 'ratio'
-                                      setEditingSizeMode(mode)
-                                      setEditingBuySizeValue(mode === 'ratio' ? String(config.size_ratio || 1) : String(config.buy_size || 100))
-                                    }}
-                                    style={{ width: 70, fontSize: 12 }}
-                                  >
-                                    <option value="fixed">固定</option>
-                                    <option value="ratio">比例</option>
-                                  </select>
                                   <input
                                     type="number"
-                                    step={editingSizeMode === 'ratio' ? '0.1' : '1'}
-                                    min={editingSizeMode === 'ratio' ? '0.01' : '1'}
+                                    step="1"
+                                    min="1"
                                     value={editingBuySizeValue}
                                     onChange={e => setEditingBuySizeValue(e.target.value)}
                                     onKeyDown={e => {
@@ -942,26 +908,8 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                                     autoFocus
                                     style={{ width: 60 }}
                                   />
-                                  <span style={{ fontSize: 11 }}>{editingSizeMode === 'ratio' ? 'x' : 'shares'}</span>
+                                  <span style={{ fontSize: 11 }}>USDC</span>
                                 </div>
-                                {editingSizeMode === 'ratio' && (
-                                  <div className="price-popover-row">
-                                    <span style={{ fontSize: 11 }}>min</span>
-                                    <input
-                                      type="number"
-                                      step="1"
-                                      min="0"
-                                      value={editingSizeMin}
-                                      onChange={e => setEditingSizeMin(e.target.value)}
-                                      onKeyDown={e => {
-                                        if (e.key === 'Enter') handleBuySizeSave(config.id)
-                                        if (e.key === 'Escape') handleBuySizeCancel()
-                                      }}
-                                      style={{ width: 60 }}
-                                    />
-                                    <span style={{ fontSize: 11 }}>shares</span>
-                                  </div>
-                                )}
                                 <div className="price-popover-actions">
                                   <button onClick={() => handleBuySizeSave(config.id)} className="btn-save">✓</button>
                                   <button onClick={handleBuySizeCancel} className="btn-cancel">✕</button>
