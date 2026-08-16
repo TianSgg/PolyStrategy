@@ -57,6 +57,7 @@ class SweepEntry:
     order_id: Optional[str] = None
     entry_time: float = 0
     filled_size: float = 0
+    timer_task: Optional[asyncio.Task] = None
 
 
 # 全局服务实例（供 RTDS 和 API 使用）
@@ -133,7 +134,6 @@ class CopyTradingService:
 
         # 天气 asset 状态机: {(config_id, asset_id): SweepEntry}
         self._weather_states: Dict[tuple, SweepEntry] = {}
-        self._sweep_confirm_task: Optional[asyncio.Task] = None
 
         # 天气 EventBus 订阅
         self._weather_sweep_queue: Optional[asyncio.Queue] = None
@@ -251,15 +251,15 @@ class CopyTradingService:
         if self._pending_poller_task:
             self._pending_poller_task.cancel()
             self._pending_poller_task = None
-        if self._sweep_confirm_task:
-            self._sweep_confirm_task.cancel()
-            self._sweep_confirm_task = None
         if self._weather_sweep_task:
             self._weather_sweep_task.cancel()
             self._weather_sweep_task = None
         if self._weather_sweep_queue:
             get_event_bus().unsubscribe("weather.sweep", self._weather_sweep_queue)
             self._weather_sweep_queue = None
+        for entry in self._weather_states.values():
+            if entry.timer_task:
+                entry.timer_task.cancel()
         asyncio.create_task(get_market_service().stop())
 
     async def initialize(self):
@@ -271,7 +271,6 @@ class CopyTradingService:
         await self._load_configs()
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
-        self._sweep_confirm_task = asyncio.create_task(self._run_sweep_confirm_loop())
 
         event_bus = get_event_bus()
         self._weather_sweep_queue = event_bus.subscribe("weather.sweep")
@@ -361,7 +360,10 @@ class CopyTradingService:
         state_key = (config.id, signal.asset)
         entry = self._weather_states.get(state_key)
         if entry and entry.state == WeatherAssetState.SWEEP_PENDING:
-            # sweep 先入场，leader 信号到达 → 确认，转 ACTIVE
+            # sweep 先入场，leader 信号到达 → 确认，转 ACTIVE，取消定时器
+            if entry.timer_task:
+                entry.timer_task.cancel()
+                entry.timer_task = None
             entry.state = WeatherAssetState.ACTIVE
             entry.order_id = None
             logger.info(f"[WeatherState] SWEEP_PENDING→ACTIVE: leader confirmed {self._asset_label(signal.asset)} config={config.id}")
@@ -635,45 +637,39 @@ class CopyTradingService:
             if result.raw_status in ("LIVE", "MATCHED", "DELAYED"):
                 get_market_service().watch_for_exit(asset_id)
                 self._asset_to_configs.setdefault(asset_id, set()).add(config.id)
-                self._weather_states[state_key] = SweepEntry(
+                entry = SweepEntry(
                     state=WeatherAssetState.SWEEP_PENDING,
                     order_id=result.order_id,
                     entry_time=now,
                     filled_size=result.position_delta,
                 )
+                entry.timer_task = asyncio.create_task(
+                    self._sweep_timeout(state_key, config, entry)
+                )
+                self._weather_states[state_key] = entry
                 logger.info(f"[WeatherState] IDLE→SWEEP_PENDING: {self._asset_label(asset_id)} config={config.id} window={config.sweep_confirm_window_ms}ms")
 
         if asset_id not in self._asset_labels:
             asyncio.create_task(self._get_asset_label(asset_id))
 
-    async def _run_sweep_confirm_loop(self):
-        """每秒检查 SWEEP_PENDING 状态的确认窗口，到期未确认则 cancel + sell"""
-        while True:
-            try:
-                await asyncio.sleep(1)
-                now = time.time()
-                expired: List[tuple] = []
-                for key, entry in list(self._weather_states.items()):
-                    if entry.state != WeatherAssetState.SWEEP_PENDING:
-                        continue
-                    config_id, asset_id = key
-                    config = self._config_id_to_config.get(config_id)
-                    if not config:
-                        self._weather_states.pop(key, None)
-                        continue
-                    window_sec = config.sweep_confirm_window_ms / 1000.0
-                    if now - entry.entry_time >= window_sec:
-                        expired.append((key, entry, config))
-
-                for key, entry, config in expired:
-                    config_id, asset_id = key
-                    logger.info(f"[WeatherState] SWEEP_PENDING→IDLE (timeout): {self._asset_label(asset_id)} config={config_id}")
-                    self._weather_states.pop(key, None)
-                    asyncio.create_task(self._execute_sweep_exit(asset_id, config, entry))
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"[SweepConfirm] Loop error: {e}")
+    async def _sweep_timeout(self, state_key: tuple, config: CopyTradingConfig, entry: SweepEntry):
+        """单个入场的确认窗口定时器，到期触发 cancel + sell"""
+        config_id, asset_id = state_key
+        window_sec = config.sweep_confirm_window_ms / 1000.0
+        try:
+            await asyncio.sleep(window_sec)
+        except asyncio.CancelledError:
+            return
+        # 到期时再检查状态是否仍为 SWEEP_PENDING（可能已被 leader 确认）
+        current = self._weather_states.get(state_key)
+        if current is not entry or entry.state != WeatherAssetState.SWEEP_PENDING:
+            return
+        logger.info(f"[WeatherState] SWEEP_PENDING→IDLE (timeout): {self._asset_label(asset_id)} config={config_id}")
+        self._weather_states.pop(state_key, None)
+        try:
+            await self._execute_sweep_exit(asset_id, config, entry)
+        except Exception as e:
+            logger.error(f"[SweepExit] Error during exit for {self._asset_label(asset_id)} config={config_id}: {e}")
 
     async def _execute_sweep_exit(self, asset_id: str, config: CopyTradingConfig, entry: SweepEntry):
         """sweep 确认窗口到期：cancel 挂单 + sell 已成交部分 → 回 IDLE"""
