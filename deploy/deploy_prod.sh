@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# WeatherTaker 测试环境部署脚本
-# 独立 nginx 实例 + 独立 pid/log，不影响生产
+# WeatherTaker 生产环境部署脚本
+# 独立 nginx 实例，一键拉起前后端
 
 APP_DIR="${APP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 APP_USER="${APP_USER:-$(id -un)}"
-BACKEND_PORT="${BACKEND_PORT:-9092}"
-NGINX_LISTEN="${NGINX_LISTEN:-8082}"
-NGINX_CONF="/etc/nginx/weathertaker-test-nginx.conf"
-NGINX_SERVER_CONF="/etc/nginx/weathertaker-test.conf"
-NGINX_PID="/run/weathertaker-test-nginx.pid"
+BACKEND_PORT="${BACKEND_PORT:-9091}"
+NGINX_LISTEN="${NGINX_LISTEN:-8081}"
+NGINX_CONF="/etc/nginx/weathertaker-nginx.conf"
+NGINX_SERVER_CONF="/etc/nginx/weathertaker.conf"
+NGINX_PID="/run/weathertaker-nginx.pid"
 STATE_DIR="$APP_DIR/deploy/state"
 PID_FILE="$STATE_DIR/backend.pid"
 STDOUT_LOG="$STATE_DIR/backend.out.log"
@@ -51,7 +51,7 @@ start_backend() {
   : >> "$STDOUT_LOG"
   (
     cd "$APP_DIR/backend"
-    ENV=test PORT="$BACKEND_PORT" nohup "$APP_DIR/backend/.venv/bin/python" "$APP_DIR/backend/main.py" >> "$STDOUT_LOG" 2>&1 &
+    ENV=prod PORT="$BACKEND_PORT" nohup "$APP_DIR/backend/.venv/bin/python" "$APP_DIR/backend/main.py" >> "$STDOUT_LOG" 2>&1 &
     echo $! > "$PID_FILE"
   )
 
@@ -72,10 +72,10 @@ install_nginx() {
   sed \
     -e "s#<USER>#$APP_USER#g" \
     -e "s#<SERVER_NAME>#$(hostname -I | awk '{print $1}')#g" \
-    -e "s#listen 8082;#listen $NGINX_LISTEN;#g" \
-    -e "s#127.0.0.1:9092#127.0.0.1:$BACKEND_PORT#g" \
-    -e "s#/home/$APP_USER/WeatherTaker_testenv/WeatherTaker#$APP_DIR#g" \
-    "$APP_DIR/deploy/nginx_test.conf.example" > "$tmp_server"
+    -e "s#listen 8081;#listen $NGINX_LISTEN;#g" \
+    -e "s#127.0.0.1:9091#127.0.0.1:$BACKEND_PORT#g" \
+    -e "s#/home/$APP_USER/weathertaker#$APP_DIR#g" \
+    "$APP_DIR/deploy/nginx_prod.conf.example" > "$tmp_server"
   sudo install -m 0644 "$tmp_server" "$NGINX_SERVER_CONF"
   rm -f "$tmp_server"
 
@@ -84,7 +84,7 @@ install_nginx() {
   cat > "$tmp_main" <<NGINX_MAIN
 user $APP_USER;
 worker_processes auto;
-error_log /var/log/nginx/weathertaker-test.error.log notice;
+error_log /var/log/nginx/weathertaker.error.log notice;
 pid $NGINX_PID;
 
 include /usr/share/nginx/modules/*.conf;
@@ -98,7 +98,7 @@ http {
                     '\$status \$body_bytes_sent "\$http_referer" '
                     '"\$http_user_agent" "\$http_x_forwarded_for"';
 
-    access_log /var/log/nginx/weathertaker-test.access.log main;
+    access_log /var/log/nginx/weathertaker.access.log main;
 
     sendfile on;
     tcp_nopush on;
@@ -127,12 +127,12 @@ reload_or_start_nginx() {
     master_pid="$(cat "$NGINX_PID")"
   fi
   if [ -n "$master_pid" ] && kill -0 "$master_pid" 2>/dev/null; then
-    echo "Reloading weathertaker-test nginx master pid=$master_pid"
+    echo "Reloading weathertaker nginx master pid=$master_pid"
     sudo kill -HUP "$master_pid"
     return
   fi
 
-  echo "Starting weathertaker-test nginx"
+  echo "Starting weathertaker nginx"
   if [ -f "$NGINX_PID" ] && [ ! -s "$NGINX_PID" ]; then
     sudo rm -f "$NGINX_PID"
   fi
@@ -142,13 +142,12 @@ reload_or_start_nginx() {
 # --- Main ---
 cd "$APP_DIR"
 
-# Verify .env.prod exists and PORT matches
-if [ ! -f backend/.env.test ]; then
-  echo "missing backend/.env.test" >&2
+if [ ! -f backend/.env.prod ]; then
+  echo "missing backend/.env.prod" >&2
   exit 1
 fi
-if ! grep -q "^PORT=$BACKEND_PORT$" backend/.env.test; then
-  echo "backend/.env.test PORT must be $BACKEND_PORT" >&2
+if ! grep -q "^PORT=$BACKEND_PORT$" backend/.env.prod; then
+  echo "backend/.env.prod PORT must be $BACKEND_PORT" >&2
   exit 1
 fi
 
@@ -169,7 +168,7 @@ install_nginx
 reload_or_start_nginx
 
 echo ""
-echo "=== Test environment deployed ==="
+echo "=== Production deployed ==="
 echo "Frontend: http://$(hostname -I | awk '{print $1}'):$NGINX_LISTEN"
 echo "Backend:  http://127.0.0.1:$BACKEND_PORT"
 echo "Logs:     $STDOUT_LOG"

@@ -31,7 +31,6 @@ __pycache__/
 # 机器相关配置
 deploy/backend.service
 deploy/nginx.conf
-deploy/deploy_prod.sh
 deploy/state/
 
 *.png
