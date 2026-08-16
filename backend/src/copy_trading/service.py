@@ -585,8 +585,12 @@ class CopyTradingService:
                 asset = payload.get("asset", {})
                 asset_id = asset.get("asset_id")
                 reason = payload.get("reason", "")
-                if asset.get("outcome") == "no" and asset_id and "0.99" in reason:
+                outcome = asset.get("outcome")
+                logger.info(f"[WeatherSweep] Received: asset={asset_id[:8] if asset_id else '?'} outcome={outcome} reason={reason}")
+                if outcome == "no" and asset_id and "0.99" in reason:
                     await self._execute_weather_sweep(asset_id)
+                else:
+                    logger.debug(f"[WeatherSweep] Skipped: outcome={outcome} reason={reason}")
             except asyncio.CancelledError:
                 break
             except Exception as e:

@@ -292,25 +292,31 @@ class WeatherCoordinator:
         state = self._states[state_key] if state_key else None
         main_ctx = self._main_monitor_context(state) if state else None
 
+        logger.info(
+            "[Coordinator] event=%s city=%s asset=%s outcome=%s reason=%s",
+            event.event_type, event.asset.city, event.asset.asset_id[:8], event.asset.outcome, event.reason,
+        )
+
         asyncio.create_task(self._on_event(event, main_ctx), name=f"notify-{event.event_type}")
-        # Schema: see event_bus.py module docstring "weather.{sweep,no_longer_possible,market_resolved}"
         if self._event_bus:
             payload = event.payload()
             if main_ctx:
                 payload["main_monitor"] = main_ctx
             self._event_bus.publish(f"weather.{event.event_type}", payload)
+            logger.info("[Coordinator] EventBus published: weather.%s", event.event_type)
 
         if not state_key:
             return
         state = self._states[state_key]
 
         if event.event_type == "no_longer_possible":
-            # Only the main_monitor triggers advancement
             if state.main_monitor and state.main_monitor.candidate.market_slug == event.asset.market_slug:
+                logger.info("[Coordinator] Promoting next candidate: city=%s direction=%s", state_key[0], state_key[1])
                 await self._promote_next(state_key)
 
         elif event.event_type == "market_resolved":
             if state.main_monitor and state.main_monitor.candidate.market_slug == event.asset.market_slug:
+                logger.info("[Coordinator] Market resolved: city=%s direction=%s → status=resolved", state_key[0], state_key[1])
                 await self._unregister_monitor(state.main_monitor)
                 state.main_monitor = None
                 if state.next_monitor:

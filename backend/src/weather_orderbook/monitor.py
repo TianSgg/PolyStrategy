@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ from typing import Literal
 from weather_orderbook.types import MarketCandidate
 from weather_orderbook.types import WeatherEvent
 from weather_orderbook.orderbook import LocalOrderBook
+
+logger = logging.getLogger(__name__)
 
 CONFIRM_SECONDS = int(os.environ.get("HIGH_CERTAINTY_CONFIRM_SECONDS", "60"))
 MAX_HIGH_CERTAINTY_TICK = 0.001
@@ -203,6 +206,11 @@ class WeatherOrderBookMonitor:
                 before_exists = any(price <= threshold and size > 0 for price, size in previous_asks.items())
                 after_exists = any(price <= threshold and size > 0 for price, size in book.asks.items())
                 if before_exists and not after_exists:
+                    asset = self._assets[asset_id]
+                    logger.info(
+                        "[Monitor] SWEEP detected: %s %s %s outcome=%s threshold=%.2f tick=%s",
+                        asset.city, asset.temperature_label, asset_id[:8], asset.outcome, threshold, self._ticks[asset_id],
+                    )
                     self._publish("sweep", asset_id, previous, current, f"ask_levels_through_{threshold:.2f}_cleared")
                     break
         self._last[asset_id] = current
@@ -210,8 +218,15 @@ class WeatherOrderBookMonitor:
         if self.mode == "full":
             if self._high(asset_id):
                 if asset_id not in self._confirmations:
+                    asset = self._assets[asset_id]
+                    logger.info(
+                        "[Monitor] High-certainty timer started: %s %s %s outcome=%s (%ds)",
+                        asset.city, asset.temperature_label, asset_id[:8], asset.outcome, CONFIRM_SECONDS,
+                    )
                     self._confirmations[asset_id] = asyncio.create_task(self._confirm(asset_id, previous))
             elif task := self._confirmations.pop(asset_id, None):
+                asset = self._assets[asset_id]
+                logger.info("[Monitor] High-certainty cancelled: %s %s %s", asset.city, asset.temperature_label, asset_id[:8])
                 task.cancel()
 
     def check_high_certainty(self) -> None:
@@ -264,6 +279,11 @@ class WeatherOrderBookMonitor:
             after = self._last.get(asset_id)
             if after and self._high(asset_id):
                 event_type = "market_resolved" if self._assets[asset_id].outcome == "yes" else "no_longer_possible"
+                asset = self._assets[asset_id]
+                logger.info(
+                    "[Monitor] High-certainty confirmed → %s: %s %s %s outcome=%s",
+                    event_type, asset.city, asset.temperature_label, asset_id[:8], asset.outcome,
+                )
                 self._publish(event_type, asset_id, before, after, f"high_certainty_maintained_{CONFIRM_SECONDS}s")
         except asyncio.CancelledError:
             raise
