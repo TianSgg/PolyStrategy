@@ -16,6 +16,7 @@ from market import get_market_service
 from .predexon import get_copy_trading_predexon
 from account.service import get_account_service
 from leader.service import get_leader_service
+from event_bus import get_event_bus
 from .models import (
     get_copy_trading_configs,
     delete_follower_positions,
@@ -117,6 +118,10 @@ class CopyTradingService:
         # 天气扫单确认窗口: {asset_id: {config_id: entry_time}}
         self._sweep_pending: Dict[str, Dict[int, float]] = {}
         self._sweep_confirm_task: Optional[asyncio.Task] = None
+
+        # 天气 EventBus 订阅
+        self._weather_sweep_queue: Optional[asyncio.Queue] = None
+        self._weather_sweep_task: Optional[asyncio.Task] = None
 
         # 启动持仓轮询兜底任务（依赖 _config_id_to_config，由 initialize 填充）
         self._follower_poller_task: Optional[asyncio.Task] = None
@@ -233,6 +238,12 @@ class CopyTradingService:
         if self._sweep_confirm_task:
             self._sweep_confirm_task.cancel()
             self._sweep_confirm_task = None
+        if self._weather_sweep_task:
+            self._weather_sweep_task.cancel()
+            self._weather_sweep_task = None
+        if self._weather_sweep_queue:
+            get_event_bus().unsubscribe("weather.sweep", self._weather_sweep_queue)
+            self._weather_sweep_queue = None
         asyncio.create_task(get_market_service().stop())
 
     async def initialize(self):
@@ -245,6 +256,10 @@ class CopyTradingService:
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
         self._sweep_confirm_task = asyncio.create_task(self._run_sweep_confirm_loop())
+
+        event_bus = get_event_bus()
+        self._weather_sweep_queue = event_bus.subscribe("weather.sweep")
+        self._weather_sweep_task = asyncio.create_task(self._consume_weather_sweep())
 
     def _on_market_exit(self, no_asset_id: str):
         """MarketService 窗口到期确认 tick_size=0.001，触发卖出"""
@@ -526,8 +541,32 @@ class CopyTradingService:
 
     # ==================== 天气扫单入场 ====================
 
+    async def _consume_weather_sweep(self):
+        """从 EventBus 消费 weather.sweep 事件，筛选 outcome=no 后触发入场
+
+        payload schema (from coordinator event.payload()):
+            {"event_type": "sweep", "asset": {"asset_id": str, "outcome": "yes"|"no", ...}, ...}
+        """
+        while True:
+            try:
+                payload = await self._weather_sweep_queue.get()
+                asset = payload.get("asset", {})
+                asset_id = asset.get("asset_id")
+                if asset.get("outcome") == "no" and asset_id:
+                    await self.on_weather_sweep(asset_id)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[WeatherSweep] Consumer error: {e}")
+
     async def on_weather_sweep(self, asset_id: str):
         """天气模块检测到 NO token 被扫，触发入场 + 确认窗口"""
+        try:
+            await self._execute_weather_sweep(asset_id)
+        except Exception as e:
+            logger.error(f"[WeatherSweep] Unhandled error for {asset_id[:8]}: {e}")
+
+    async def _execute_weather_sweep(self, asset_id: str):
         now = time.time()
         for config in list(self._config_id_to_config.values()):
             if not config.enabled or config.sweep_confirm_window_ms <= 0:
@@ -583,28 +622,33 @@ class CopyTradingService:
     async def _run_sweep_confirm_loop(self):
         """每秒检查 sweep 确认窗口，到期未确认则卖出"""
         while True:
-            await asyncio.sleep(1)
-            now = time.time()
-            expired_pairs: List[tuple] = []
-            for asset_id, config_entries in list(self._sweep_pending.items()):
-                for config_id, entry_time in list(config_entries.items()):
+            try:
+                await asyncio.sleep(1)
+                now = time.time()
+                expired_pairs: List[tuple] = []
+                for asset_id, config_entries in list(self._sweep_pending.items()):
+                    for config_id, entry_time in list(config_entries.items()):
+                        config = self._config_id_to_config.get(config_id)
+                        if not config:
+                            config_entries.pop(config_id, None)
+                            continue
+                        window_sec = config.sweep_confirm_window_ms / 1000.0
+                        if now - entry_time >= window_sec:
+                            expired_pairs.append((asset_id, config_id))
+                            config_entries.pop(config_id, None)
+                    if not config_entries:
+                        self._sweep_pending.pop(asset_id, None)
+
+                for asset_id, config_id in expired_pairs:
                     config = self._config_id_to_config.get(config_id)
                     if not config:
-                        config_entries.pop(config_id, None)
                         continue
-                    window_sec = config.sweep_confirm_window_ms / 1000.0
-                    if now - entry_time >= window_sec:
-                        expired_pairs.append((asset_id, config_id))
-                        config_entries.pop(config_id, None)
-                if not config_entries:
-                    self._sweep_pending.pop(asset_id, None)
-
-            for asset_id, config_id in expired_pairs:
-                config = self._config_id_to_config.get(config_id)
-                if not config:
-                    continue
-                logger.info(f"[SweepConfirm] Window expired for {self._asset_label(asset_id)} config={config_id}, triggering exit")
-                asyncio.create_task(self._execute_sweep_exit(asset_id, config))
+                    logger.info(f"[SweepConfirm] Window expired for {self._asset_label(asset_id)} config={config_id}, triggering exit")
+                    asyncio.create_task(self._execute_sweep_exit(asset_id, config))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[SweepConfirm] Loop error: {e}")
 
     async def _execute_sweep_exit(self, asset_id: str, config: CopyTradingConfig):
         """sweep 确认窗口到期，卖出该 config 在此 asset 上的持仓"""

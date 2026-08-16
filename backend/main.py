@@ -75,9 +75,6 @@ for lib in ["websockets", "httpcore", "httpx", "hpack", "hyperframe", "urllib3",
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-import aiohttp
-import asyncmy
-
 from account.api import router as account_router
 from account.service import get_account_service
 from auth.api import router as auth_router
@@ -87,20 +84,14 @@ from copy_trading.api import router as copy_trading_router
 from copy_trading.predexon import get_copy_trading_predexon
 from copy_trading.service import get_copy_trading_service
 from copy_trading.ws import CopyTradingWS, add_copy_trading_ws, stop_all_copy_trading_ws
-from event_bus import EventBus
 from leader.api import router as leader_router
 from market.api import router as market_router
 from performance.router import router as performance_router
 from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
-from weather_orderbook import (
-    PolymarketMarketClient,
-    WeatherCityRepository,
-    WeatherNotificationRepository,
-    WeatherOrderBookService,
-    weather_orderbook_router,
-)
+from weather_orderbook import weather_orderbook_router
+from weather_orderbook.bootstrap import WeatherBootstrap
 
 
 @asynccontextmanager
@@ -140,152 +131,15 @@ async def lifespan(app: FastAPI):
         pnl_svc.start()
 
     # --- Weather OrderBook 模块初始化 ---
-    mysql_pool = await asyncmy.create_pool(
-        host=os.getenv("MYSQL_HOST", "localhost"),
-        port=int(os.getenv("MYSQL_PORT", "3306")),
-        user=os.getenv("MYSQL_USER", "root"),
-        password=os.getenv("MYSQL_PASSWORD", "123456"),
-        db=os.getenv("MYSQL_DATABASE", "weathertaker"),
-        minsize=3,
-        maxsize=10,
-        pool_recycle=1800,
-        autocommit=True,
-        connect_timeout=5,
-    )
-    city_repository = WeatherCityRepository(mysql_pool)
-    cities = await city_repository.list_enabled()
-    logger.info("Weather: loaded %d cities from database", len(cities))
-
-    notification_repository = WeatherNotificationRepository(mysql_pool)
-    await notification_repository.ping()
-    app.state.weather_notification_repository = notification_repository
-
-    http_session = aiohttp.ClientSession()
-    market_client = PolymarketMarketClient(http_session)
-    event_bus = EventBus()
-
-    from datetime import timezone as _tz
-    from zoneinfo import ZoneInfo
-    from weather_orderbook.types import WeatherNotificationRecord
-
-    city_by_name = {city.name: city for city in cities}
-
-    def _format_orderbook(state: str, orderbook: dict | None) -> str:
-        if orderbook is None:
-            return f"**Order Book ({state})** [N/A | initial snapshot]"
-        def level(label: str) -> str:
-            item = orderbook.get(label)
-            return "-" if item is None else f"{item['price']} (size: {item['size']})"
-        return (
-            f"**Order Book ({state})** [{orderbook.get('observed_at', '?')}]\n"
-            f"Best Ask: {level('best_ask')}\n"
-            f"Best Bid: {level('best_bid')}\n"
-            f"Ask Levels: {orderbook.get('ask_levels', '?')}\n"
-            f"Bid Levels: {orderbook.get('bid_levels', '?')}"
-        )
-
-    def _format_weather(event, main_ctx=None) -> str:
-        asset = event.asset
-        sweep_threshold = event.reason.removeprefix("ask_levels_through_").removesuffix("_cleared")
-        event_label = {
-            "sweep": f"Sweep ({asset.outcome.upper()} token all Ask <= {sweep_threshold} cleared)" if event.reason.startswith("ask_levels_through_") else "Sweep",
-            "no_longer_possible": "No longer possible",
-            "market_resolved": "Market resolved",
-        }[event.event_type]
-        confirm_line = ""
-        if event.event_type in ("no_longer_possible", "market_resolved") and event.reason.startswith("high_certainty_maintained_"):
-            confirm_line = f"\nConfirm duration: {event.reason.removeprefix('high_certainty_maintained_')}"
-        main_line = ""
-        if main_ctx:
-            main_outcome_label = main_ctx['main_outcome'].upper() if main_ctx.get('main_outcome') else '?'
-            main_line = f"\nMain monitor: {main_ctx['main_temperature_label']} {main_outcome_label} ({main_ctx['main_market_slug']})"
-        return (
-            f"Weather {event_label}\n"
-            f"City: {asset.city}\n"
-            f"Event slug: {asset.event_slug}\n"
-            f"Market: {asset.temperature_label}\n"
-            f"Market slug: {asset.market_slug}\n"
-            f"Outcome: {asset.outcome.upper()}\n"
-            f"Token: {asset.asset_id}\n"
-            f"Reason: {event.reason}{confirm_line}{main_line}\n\n"
-            f"{_format_orderbook('before', event.previous_orderbook)}\n\n"
-            f"{_format_orderbook('after', event.current_orderbook)}"
-        )
-
-    def _build_notification_record(event, city, main_ctx):
-        occurred_at_ms = event.current_orderbook.get("observed_at_unix_ms")
-        try:
-            occurred_at = datetime.fromtimestamp(int(occurred_at_ms) / 1000, _tz.utc)
-        except (TypeError, ValueError, OSError):
-            occurred_at = datetime.now(_tz.utc)
-        direction = event.asset.event_slug.split("-temperature-in-", 1)[0]
-        local_date = occurred_at.astimezone(ZoneInfo(city.timezone)).date()
-        payload = event.payload()
-        if main_ctx:
-            payload["main_monitor"] = main_ctx
-        return WeatherNotificationRecord(
-            notification_key=f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
-            occurred_at=occurred_at,
-            event_type=event.event_type,
-            event_slug=event.asset.event_slug,
-            city=event.asset.city,
-            city_slug=city.slug,
-            direction=direction,
-            local_date=local_date,
-            market_slug=event.asset.market_slug,
-            temperature_label=event.asset.temperature_label,
-            outcome=event.asset.outcome,
-            main_market_slug=main_ctx.get("main_market_slug") if main_ctx else None,
-            main_temperature_label=main_ctx.get("main_temperature_label") if main_ctx else None,
-            main_outcome=main_ctx.get("main_outcome") if main_ctx else None,
-            token_id=event.asset.asset_id,
-            status=None,
-            reason=event.reason,
-            message=f"[{event.event_type}] {event.asset.city} {direction} {event.asset.temperature_label} ({event.reason})",
-            payload=payload,
-        )
-
-    async def on_weather_event(event, main_ctx=None):
-        logger.info("Weather event: %s %s", event.event_type, event.asset.event_slug)
-
-        # sweep + NO token → 触发跟单入场
-        if event.event_type == "sweep" and event.asset.outcome == "no":
-            ct_svc = get_copy_trading_service()
-            asyncio.create_task(ct_svc.on_weather_sweep(event.asset.asset_id))
-
-        city = city_by_name.get(event.asset.city)
-        if city is None:
-            logger.error("Cannot persist weather notification: unknown city=%s", event.asset.city)
-            return
-        try:
-            record = _build_notification_record(event, city, main_ctx)
-            inserted = await notification_repository.insert_if_absent(record)
-        except Exception:
-            logger.exception("Failed to persist weather notification event=%s", event.asset.event_slug)
-            return
-        if inserted:
-            svc = app.state.weather_service
-            if svc:
-                svc.note_persisted_notification(event.asset.event_slug, record)
-
-    weather_service = WeatherOrderBookService(
-        cities,
-        market_client,
-        on_weather_event,
-        notification_repository=notification_repository,
-        event_bus=event_bus,
-    )
+    weather_bootstrap = WeatherBootstrap()
+    weather_service = await weather_bootstrap.start()
     app.state.weather_service = weather_service
-    await weather_service.start()
-    logger.info("Weather OrderBook service started")
+    app.state.weather_notification_repository = weather_bootstrap.notification_repository
 
     try:
         yield
     finally:
-        await weather_service.stop()
-        await http_session.close()
-        mysql_pool.close()
-        await mysql_pool.wait_closed()
+        await weather_bootstrap.stop()
         if _env == "prod":
             copy_trading_predexon.stop()
             copy_trading_predexon_task.cancel()

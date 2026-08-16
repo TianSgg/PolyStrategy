@@ -1,0 +1,144 @@
+"""天气模块启动引导：封装初始化、事件处理、通知持久化逻辑"""
+import logging
+import os
+from datetime import datetime, timezone as _tz
+from zoneinfo import ZoneInfo
+
+import aiohttp
+import asyncmy
+
+from event_bus import get_event_bus
+from .dao import WeatherCityRepository, WeatherNotificationRepository
+from .gateway import PolymarketMarketClient
+from .service import WeatherOrderBookService
+from .types import WeatherEvent, WeatherNotificationRecord
+
+logger = logging.getLogger(__name__)
+
+
+def _format_orderbook(state: str, orderbook: dict | None) -> str:
+    if orderbook is None:
+        return f"**Order Book ({state})** [N/A | initial snapshot]"
+
+    def level(label: str) -> str:
+        item = orderbook.get(label)
+        return "-" if item is None else f"{item['price']} (size: {item['size']})"
+
+    return (
+        f"**Order Book ({state})** [{orderbook.get('observed_at', '?')}]\n"
+        f"Best Ask: {level('best_ask')}\n"
+        f"Best Bid: {level('best_bid')}\n"
+        f"Ask Levels: {orderbook.get('ask_levels', '?')}\n"
+        f"Bid Levels: {orderbook.get('bid_levels', '?')}"
+    )
+
+
+
+def _build_notification_record(
+    event: WeatherEvent, city, main_ctx
+) -> WeatherNotificationRecord:
+    occurred_at_ms = event.current_orderbook.get("observed_at_unix_ms")
+    try:
+        occurred_at = datetime.fromtimestamp(int(occurred_at_ms) / 1000, _tz.utc)
+    except (TypeError, ValueError, OSError):
+        occurred_at = datetime.now(_tz.utc)
+    direction = event.asset.event_slug.split("-temperature-in-", 1)[0]
+    local_date = occurred_at.astimezone(ZoneInfo(city.timezone)).date()
+    payload = event.payload()
+    if main_ctx:
+        payload["main_monitor"] = main_ctx
+    return WeatherNotificationRecord(
+        notification_key=f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
+        occurred_at=occurred_at,
+        event_type=event.event_type,
+        event_slug=event.asset.event_slug,
+        city=event.asset.city,
+        city_slug=city.slug,
+        direction=direction,
+        local_date=local_date,
+        market_slug=event.asset.market_slug,
+        temperature_label=event.asset.temperature_label,
+        outcome=event.asset.outcome,
+        main_market_slug=main_ctx.get("main_market_slug") if main_ctx else None,
+        main_temperature_label=main_ctx.get("main_temperature_label") if main_ctx else None,
+        main_outcome=main_ctx.get("main_outcome") if main_ctx else None,
+        token_id=event.asset.asset_id,
+        status=None,
+        reason=event.reason,
+        message=f"[{event.event_type}] {event.asset.city} {direction} {event.asset.temperature_label} ({event.reason})",
+        payload=payload,
+    )
+
+
+class WeatherBootstrap:
+    """天气模块生命周期管理：初始化资源、注册事件回调、启停服务"""
+
+    def __init__(self):
+        self.service: WeatherOrderBookService | None = None
+        self.notification_repository: WeatherNotificationRepository | None = None
+        self._mysql_pool = None
+        self._http_session: aiohttp.ClientSession | None = None
+        self._city_by_name: dict = {}
+
+    async def start(self) -> WeatherOrderBookService:
+        self._mysql_pool = await asyncmy.create_pool(
+            host=os.getenv("MYSQL_HOST", "localhost"),
+            port=int(os.getenv("MYSQL_PORT", "3306")),
+            user=os.getenv("MYSQL_USER", "root"),
+            password=os.getenv("MYSQL_PASSWORD", "123456"),
+            db=os.getenv("MYSQL_DATABASE", "weathertaker"),
+            minsize=3,
+            maxsize=10,
+            pool_recycle=1800,
+            autocommit=True,
+            connect_timeout=5,
+        )
+
+        city_repository = WeatherCityRepository(self._mysql_pool)
+        cities = await city_repository.list_enabled()
+        logger.info("Weather: loaded %d cities from database", len(cities))
+
+        self.notification_repository = WeatherNotificationRepository(self._mysql_pool)
+        await self.notification_repository.ping()
+
+        self._http_session = aiohttp.ClientSession()
+        market_client = PolymarketMarketClient(self._http_session)
+        event_bus = get_event_bus()
+
+        self._city_by_name = {city.name: city for city in cities}
+
+        self.service = WeatherOrderBookService(
+            cities,
+            market_client,
+            self._on_weather_event,
+            notification_repository=self.notification_repository,
+            event_bus=event_bus,
+        )
+        await self.service.start()
+        logger.info("Weather OrderBook service started")
+        return self.service
+
+    async def stop(self):
+        if self.service:
+            await self.service.stop()
+        if self._http_session:
+            await self._http_session.close()
+        if self._mysql_pool:
+            self._mysql_pool.close()
+            await self._mysql_pool.wait_closed()
+
+    async def _on_weather_event(self, event: WeatherEvent, main_ctx=None):
+        logger.info("Weather event: %s %s", event.event_type, event.asset.event_slug)
+
+        city = self._city_by_name.get(event.asset.city)
+        if city is None:
+            logger.error("Cannot persist weather notification: unknown city=%s", event.asset.city)
+            return
+        try:
+            record = _build_notification_record(event, city, main_ctx)
+            inserted = await self.notification_repository.insert_if_absent(record)
+        except Exception:
+            logger.exception("Failed to persist weather notification event=%s", event.asset.event_slug)
+            return
+        if inserted and self.service:
+            self.service.note_persisted_notification(event.asset.event_slug, record)
