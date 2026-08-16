@@ -293,6 +293,7 @@ class WeatherCoordinator:
         main_ctx = self._main_monitor_context(state) if state else None
 
         asyncio.create_task(self._on_event(event, main_ctx), name=f"notify-{event.event_type}")
+        # Schema: see event_bus.py module docstring "weather.{sweep,no_longer_possible,market_resolved}"
         if self._event_bus:
             payload = event.payload()
             if main_ctx:
@@ -347,7 +348,7 @@ class WeatherCoordinator:
                 state.next_monitor.start()
                 await self._register_monitor(state.next_monitor)
 
-            # Publish advancement to event bus
+            # Schema: see event_bus.py module docstring "weather.next_candidate"
             if self._event_bus:
                 candidate = state.candidates[new_index]
                 self._event_bus.publish("weather.next_candidate", {

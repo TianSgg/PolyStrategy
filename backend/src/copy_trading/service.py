@@ -544,8 +544,7 @@ class CopyTradingService:
     async def _consume_weather_sweep(self):
         """从 EventBus 消费 weather.sweep 事件，筛选 outcome=no 后触发入场
 
-        payload schema (from coordinator event.payload()):
-            {"event_type": "sweep", "asset": {"asset_id": str, "outcome": "yes"|"no", ...}, ...}
+        Payload schema: see event_bus.py module docstring "weather.sweep"
         """
         while True:
             try:

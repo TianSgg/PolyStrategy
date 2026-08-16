@@ -1,3 +1,46 @@
+"""
+Async pub/sub event bus.
+
+Registered topics and their payload schemas:
+
+weather.sweep
+    Fired when a weather monitor detects an orderbook sweep (ask levels cleared).
+    Payload: {
+        "event_type": "sweep",
+        "asset": {
+            "asset_id": str,        # Polymarket token ID
+            "outcome": "yes" | "no",
+            "city": str,
+            "event_slug": str,
+            "market_slug": str,
+            "temperature_label": str,
+        },
+        "previous_orderbook": dict | None,
+        "current_orderbook": dict,
+        "reason": str,              # e.g. "ask_levels_through_0.95_cleared"
+        "main_monitor": dict | None,  # present if a main monitor context exists
+    }
+
+weather.no_longer_possible
+    Fired when a market is confirmed no longer possible (high certainty maintained).
+    Payload: same structure as weather.sweep, with event_type="no_longer_possible".
+
+weather.market_resolved
+    Fired when a market is confirmed resolved.
+    Payload: same structure as weather.sweep, with event_type="market_resolved".
+
+weather.next_candidate
+    Fired when the coordinator promotes the next temperature candidate to main.
+    Payload: {
+        "city": str,
+        "direction": str,           # e.g. "highest" | "lowest"
+        "event_slug": str,
+        "market_slug": str,
+        "temperature_label": str,
+        "yes_token_id": str,
+        "no_token_id": str,
+    }
+"""
 from __future__ import annotations
 
 import asyncio
