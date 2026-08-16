@@ -584,7 +584,8 @@ class CopyTradingService:
                 payload = await self._weather_sweep_queue.get()
                 asset = payload.get("asset", {})
                 asset_id = asset.get("asset_id")
-                if asset.get("outcome") == "no" and asset_id:
+                reason = payload.get("reason", "")
+                if asset.get("outcome") == "no" and asset_id and "0.99" in reason:
                     await self._execute_weather_sweep(asset_id)
             except asyncio.CancelledError:
                 break

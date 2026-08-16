@@ -14,6 +14,7 @@ interface CopyTradingConfig {
   enabled: boolean
   gtd_expiration_sec: number
   buy_size: number
+  sweep_confirm_window_ms: number
 }
 
 interface Account {
@@ -134,6 +135,8 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [editingGtdValue, setEditingGtdValue] = useState('')
   const [editingBuySizeConfigId, setEditingBuySizeConfigId] = useState<number | null>(null)
   const [editingBuySizeValue, setEditingBuySizeValue] = useState('')
+  const [editingSweepWindowConfigId, setEditingSweepWindowConfigId] = useState<number | null>(null)
+  const [editingSweepWindowValue, setEditingSweepWindowValue] = useState('')
 
 
   // 曲线时间范围
@@ -394,7 +397,36 @@ export default function CopyTrading({ darkMode, visible }: Props) {
     setEditingBuySizeConfigId(null)
   }
 
+  const handleSweepWindowClick = (config: CopyTradingConfig) => {
+    setEditingSweepWindowConfigId(config.id)
+    setEditingSweepWindowValue(String(config.sweep_confirm_window_ms || 0))
+  }
 
+  const handleSweepWindowSave = async (configId: number) => {
+    const value = parseInt(editingSweepWindowValue)
+    if (isNaN(value) || value < 0) {
+      toast('确认窗口需 >= 0')
+      return
+    }
+    try {
+      await apiFetch(`/api/copy-trading/configs/${configId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sweep_confirm_window_ms: value })
+      })
+      setConfigs(prev => prev.map(c =>
+        c.id === configId ? { ...c, sweep_confirm_window_ms: value } : c
+      ))
+    } catch (e) {
+      console.error('Failed to update sweep_confirm_window_ms:', e)
+    } finally {
+      setEditingSweepWindowConfigId(null)
+    }
+  }
+
+  const handleSweepWindowCancel = () => {
+    setEditingSweepWindowConfigId(null)
+  }
 
   const handleDeleteConfig = async (configId: number) => {
     if (!confirm('确定删除此跟单配置？')) return
@@ -913,6 +945,40 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                                 <div className="price-popover-actions">
                                   <button onClick={() => handleBuySizeSave(config.id)} className="btn-save">✓</button>
                                   <button onClick={handleBuySizeCancel} className="btn-cancel">✕</button>
+                                </div>
+                              </div>
+                            )}
+                          </span>
+                          <span className="meta-item price-anchor">
+                            Sweep窗口:{' '}
+                            <strong
+                              className="ratio-text"
+                              onClick={() => handleSweepWindowClick(config)}
+                              title="点击修改确认窗口(ms)"
+                            >
+                              {config.sweep_confirm_window_ms > 0 ? `${config.sweep_confirm_window_ms}ms` : '关闭'}
+                            </strong>
+                            {editingSweepWindowConfigId === config.id && (
+                              <div className="price-popover">
+                                <div className="price-popover-row">
+                                  <input
+                                    type="number"
+                                    step="1000"
+                                    min="0"
+                                    value={editingSweepWindowValue}
+                                    onChange={e => setEditingSweepWindowValue(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleSweepWindowSave(config.id)
+                                      if (e.key === 'Escape') handleSweepWindowCancel()
+                                    }}
+                                    autoFocus
+                                    style={{ width: 80 }}
+                                  />
+                                  <span style={{ fontSize: 11 }}>ms</span>
+                                </div>
+                                <div className="price-popover-actions">
+                                  <button onClick={() => handleSweepWindowSave(config.id)} className="btn-save">✓</button>
+                                  <button onClick={handleSweepWindowCancel} className="btn-cancel">✕</button>
                                 </div>
                               </div>
                             )}
