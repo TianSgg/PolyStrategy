@@ -114,6 +114,10 @@ class CopyTradingService:
         # 清扫: 单次最大吃单量
         self._sweep_max_size: float = 50.0
 
+        # 天气扫单确认窗口: {asset_id: {config_id: entry_time}}
+        self._sweep_pending: Dict[str, Dict[int, float]] = {}
+        self._sweep_confirm_task: Optional[asyncio.Task] = None
+
         # 启动持仓轮询兜底任务（依赖 _config_id_to_config，由 initialize 填充）
         self._follower_poller_task: Optional[asyncio.Task] = None
         self._pending_poller_task: Optional[asyncio.Task] = None
@@ -226,6 +230,9 @@ class CopyTradingService:
         if self._pending_poller_task:
             self._pending_poller_task.cancel()
             self._pending_poller_task = None
+        if self._sweep_confirm_task:
+            self._sweep_confirm_task.cancel()
+            self._sweep_confirm_task = None
         asyncio.create_task(get_market_service().stop())
 
     async def initialize(self):
@@ -237,6 +244,7 @@ class CopyTradingService:
         await self._load_configs()
         self._start_follower_position_poller(interval=120)
         self._start_pending_poller(interval=120)
+        self._sweep_confirm_task = asyncio.create_task(self._run_sweep_confirm_loop())
 
     def _on_market_exit(self, no_asset_id: str):
         """MarketService 窗口到期确认 tick_size=0.001，触发卖出"""
@@ -317,6 +325,15 @@ class CopyTradingService:
         asyncio.create_task(asyncio.to_thread(batch_upsert_config_asset, [config.id], signal.asset))
         if signal.asset not in self._asset_labels:
             asyncio.create_task(self._get_asset_label(signal.asset))
+
+        # sweep 确认：如果该 asset 已由 sweep 入场，leader 信号确认，不再重复买入
+        pending_configs = self._sweep_pending.get(signal.asset)
+        if pending_configs and config.id in pending_configs:
+            pending_configs.pop(config.id)
+            if not pending_configs:
+                self._sweep_pending.pop(signal.asset, None)
+            logger.info(f"[SweepConfirm] Leader confirmed {self._asset_label(signal.asset)} for config={config.id}, sweep entry validated")
+            return
 
         await self._execute_buy(config, signal)
 
@@ -506,6 +523,127 @@ class CopyTradingService:
                 asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
 
 
+
+    # ==================== 天气扫单入场 ====================
+
+    async def on_weather_sweep(self, asset_id: str):
+        """天气模块检测到 NO token 被扫，触发入场 + 确认窗口"""
+        now = time.time()
+        for config in list(self._config_id_to_config.values()):
+            if not config.enabled or config.sweep_confirm_window_ms <= 0:
+                continue
+            # 避免重复入场
+            if self._sweep_pending.get(asset_id, {}).get(config.id):
+                continue
+            # 已持仓的不再重复入场
+            f_addr = config.follower_proxy_wallet
+            if self._follower_positions.get(f_addr, {}).get(asset_id, 0) > 0:
+                continue
+
+            follow_price = 0.99
+            follow_buy_size = config.buy_size
+
+            async with self._get_addr_lock(f_addr):
+                follower_name = self._account_service.get_acc_name(f_addr)
+                logger.info(
+                    f"[WeatherSweep] BUY {self._asset_label(asset_id)} | "
+                    f"follower={follower_name} {follow_buy_size:.2f}@{follow_price} "
+                    f"window={config.sweep_confirm_window_ms}ms"
+                )
+
+                result = await self._place_order(
+                    config, asset_id, "BUY", follow_buy_size,
+                    price=follow_price, tick_size="0.01", neg_risk=True
+                )
+                self._register_post_order_result(config, result)
+
+                new_pending = self._pending_buy_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
+                self._pending_buy_orders.setdefault(f_addr, {})[asset_id] = new_pending
+                new_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) + result.position_delta
+                self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
+
+            if result.raw_status == "ERROR":
+                logger.warning(f"[WeatherSweep] BUY failed: {self._asset_label(asset_id)} err={result.err_msg}")
+                continue
+
+            if result.pending_delta:
+                asyncio.create_task(self._save_pending_buy_with_question(f_addr, asset_id, new_pending))
+            if result.position_delta:
+                asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
+
+            if result.raw_status in ("LIVE", "MATCHED", "DELAYED"):
+                get_market_service().watch_for_exit(asset_id)
+                self._asset_to_configs.setdefault(asset_id, set()).add(config.id)
+                self._sweep_pending.setdefault(asset_id, {})[config.id] = now
+                logger.info(f"[WeatherSweep] Entry recorded, waiting for leader confirm within {config.sweep_confirm_window_ms}ms")
+
+        if asset_id not in self._asset_labels:
+            asyncio.create_task(self._get_asset_label(asset_id))
+
+    async def _run_sweep_confirm_loop(self):
+        """每秒检查 sweep 确认窗口，到期未确认则卖出"""
+        while True:
+            await asyncio.sleep(1)
+            now = time.time()
+            expired_pairs: List[tuple] = []
+            for asset_id, config_entries in list(self._sweep_pending.items()):
+                for config_id, entry_time in list(config_entries.items()):
+                    config = self._config_id_to_config.get(config_id)
+                    if not config:
+                        config_entries.pop(config_id, None)
+                        continue
+                    window_sec = config.sweep_confirm_window_ms / 1000.0
+                    if now - entry_time >= window_sec:
+                        expired_pairs.append((asset_id, config_id))
+                        config_entries.pop(config_id, None)
+                if not config_entries:
+                    self._sweep_pending.pop(asset_id, None)
+
+            for asset_id, config_id in expired_pairs:
+                config = self._config_id_to_config.get(config_id)
+                if not config:
+                    continue
+                logger.info(f"[SweepConfirm] Window expired for {self._asset_label(asset_id)} config={config_id}, triggering exit")
+                asyncio.create_task(self._execute_sweep_exit(asset_id, config))
+
+    async def _execute_sweep_exit(self, asset_id: str, config: CopyTradingConfig):
+        """sweep 确认窗口到期，卖出该 config 在此 asset 上的持仓"""
+        f_addr = config.follower_proxy_wallet
+
+        async with self._get_addr_lock(f_addr):
+            follower_pos = self._follower_positions.get(f_addr, {}).get(asset_id, 0)
+            pending_sell = self._pending_sell_orders.get(f_addr, {}).get(asset_id, 0)
+            available_pos = max(0, follower_pos - pending_sell)
+            if available_pos <= 0.01:
+                logger.debug(f"[SweepConfirm] No position to exit for {self._asset_label(asset_id)} config={config.id}")
+                return
+
+            follow_price = 0.99
+            follow_sell_size = available_pos
+            follower_name = self._account_service.get_acc_name(f_addr)
+
+            logger.info(
+                f"[SweepConfirm] EXIT SELL {self._asset_label(asset_id)} | "
+                f"follower={follower_name} {follow_sell_size:.2f}@{follow_price}"
+            )
+
+            result = await self._place_order(
+                config, asset_id, "SELL", follow_sell_size,
+                price=follow_price, tick_size="0.01", neg_risk=True
+            )
+            self._register_post_order_result(config, result)
+
+            new_pending = self._pending_sell_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
+            self._pending_sell_orders.setdefault(f_addr, {})[asset_id] = new_pending
+            new_pos = max(0, self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) - result.position_delta)
+            self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
+
+        if result.pending_delta:
+            asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
+        if result.position_delta:
+            asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
+
+        self._record_sell_order(config, asset_id, follow_price, follow_sell_size, result)
 
     async def _get_asset_label(self, asset_id: str) -> str:
         """根据 asset_id 返回可读标签 'id[:8] - question[outcome]'
@@ -1111,6 +1249,8 @@ class CopyTradingService:
                     config.gtd_expiration_sec = int(kwargs["gtd_expiration_sec"])
                 if "buy_size" in kwargs:
                     config.buy_size = float(kwargs["buy_size"])
+                if "sweep_confirm_window_ms" in kwargs:
+                    config.sweep_confirm_window_ms = int(kwargs["sweep_confirm_window_ms"])
         return success
 
     def delete_config(self, config_id: int) -> bool:

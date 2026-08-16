@@ -17,6 +17,7 @@ class CopyTradingConfig:
     size_mode: str = "fixed"
     size_ratio: float = 1.0
     size_min: float = 0.0
+    sweep_confirm_window_ms: int = 0
 
     def __hash__(self):
         return hash(self.id)

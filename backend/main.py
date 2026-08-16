@@ -247,6 +247,12 @@ async def lifespan(app: FastAPI):
 
     async def on_weather_event(event, main_ctx=None):
         logger.info("Weather event: %s %s", event.event_type, event.asset.event_slug)
+
+        # sweep + NO token → 触发跟单入场
+        if event.event_type == "sweep" and event.asset.outcome == "no":
+            ct_svc = get_copy_trading_service()
+            asyncio.create_task(ct_svc.on_weather_sweep(event.asset.asset_id))
+
         city = city_by_name.get(event.asset.city)
         if city is None:
             logger.error("Cannot persist weather notification: unknown city=%s", event.asset.city)

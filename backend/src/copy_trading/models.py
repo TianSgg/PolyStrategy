@@ -20,14 +20,14 @@ def get_copy_trading_configs(enabled_only: bool = False) -> List[CopyTradingConf
             cursor.execute("""
                 SELECT id, leader_proxy_wallet, follower_proxy_wallet,
                        enabled, owner_user_id, gtd_expiration_sec, buy_size,
-                       size_mode, size_ratio, size_min
+                       size_mode, size_ratio, size_min, sweep_confirm_window_ms
                 FROM copy_trading_configs WHERE enabled = 1
             """)
         else:
             cursor.execute("""
                 SELECT id, leader_proxy_wallet, follower_proxy_wallet,
                        enabled, owner_user_id, gtd_expiration_sec, buy_size,
-                       size_mode, size_ratio, size_min
+                       size_mode, size_ratio, size_min, sweep_confirm_window_ms
                 FROM copy_trading_configs
             """)
         return [CopyTradingConfig(
@@ -41,6 +41,7 @@ def get_copy_trading_configs(enabled_only: bool = False) -> List[CopyTradingConf
             size_mode=row[7] or "fixed",
             size_ratio=float(row[8] or 1.0),
             size_min=float(row[9] or 0),
+            sweep_confirm_window_ms=int(row[10] or 0),
         ) for row in cursor.fetchall()]
     finally:
         conn.close()
@@ -54,7 +55,7 @@ def get_copy_trading_config_by_id(config_id: int) -> Optional[CopyTradingConfig]
         cursor.execute("""
             SELECT id, leader_proxy_wallet, follower_proxy_wallet,
                    enabled, owner_user_id, gtd_expiration_sec, buy_size,
-                   size_mode, size_ratio, size_min
+                   size_mode, size_ratio, size_min, sweep_confirm_window_ms
             FROM copy_trading_configs WHERE id = %s
         """, (config_id,))
         row = cursor.fetchone()
@@ -70,6 +71,7 @@ def get_copy_trading_config_by_id(config_id: int) -> Optional[CopyTradingConfig]
                 size_mode=row[7] or "fixed",
                 size_ratio=float(row[8] or 1.0),
                 size_min=float(row[9] or 0),
+                sweep_confirm_window_ms=int(row[10] or 0),
             )
         return None
     finally:
@@ -98,7 +100,7 @@ def create_copy_trading_config(
 
 def update_copy_trading_config(config_id: int, **kwargs) -> bool:
     """更新跟单配置"""
-    allowed_fields = {"enabled", "leader_proxy_wallet", "follower_proxy_wallet", "gtd_expiration_sec", "buy_size", "size_mode", "size_ratio", "size_min"}
+    allowed_fields = {"enabled", "leader_proxy_wallet", "follower_proxy_wallet", "gtd_expiration_sec", "buy_size", "size_mode", "size_ratio", "size_min", "sweep_confirm_window_ms"}
     update_fields = {}
     for k, v in kwargs.items():
         if k in allowed_fields:

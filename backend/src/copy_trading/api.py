@@ -25,6 +25,7 @@ class UpdateConfigRequest(BaseModel):
     size_mode: Optional[str] = None
     size_ratio: Optional[float] = None
     size_min: Optional[float] = None
+    sweep_confirm_window_ms: Optional[int] = None
 
 
 def _assert_config_access(config, current_user: AuthUser):
@@ -82,6 +83,7 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
             "size_mode": c.size_mode,
             "size_ratio": c.size_ratio,
             "size_min": c.size_min,
+            "sweep_confirm_window_ms": c.sweep_confirm_window_ms,
         }
         for c in all_configs
     ]
@@ -105,6 +107,7 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
         "size_mode": config.size_mode,
         "size_ratio": config.size_ratio,
         "size_min": config.size_min,
+        "sweep_confirm_window_ms": config.sweep_confirm_window_ms,
     }
 
 
@@ -136,6 +139,10 @@ async def update_config(config_id: int, data: UpdateConfigRequest, current_user:
         if data.size_min < 0:
             raise HTTPException(status_code=400, detail="size_min must be >= 0")
         kwargs["size_min"] = data.size_min
+    if data.sweep_confirm_window_ms is not None:
+        if data.sweep_confirm_window_ms < 0:
+            raise HTTPException(status_code=400, detail="sweep_confirm_window_ms must be >= 0")
+        kwargs["sweep_confirm_window_ms"] = data.sweep_confirm_window_ms
 
     if not kwargs:
         raise HTTPException(status_code=400, detail="No fields to update")
