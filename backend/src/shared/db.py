@@ -8,7 +8,7 @@ from dbutils.pooled_db import PooledDB
 
 logger = logging.getLogger(__name__)
 
-_MYSQL_CONFIG = {
+MYSQL_CONFIG = {
     "host": os.getenv("MYSQL_HOST", "localhost"),
     "port": int(os.getenv("MYSQL_PORT", "3306")),
     "user": os.getenv("MYSQL_USER", "root"),
@@ -16,6 +16,8 @@ _MYSQL_CONFIG = {
     "database": os.getenv("MYSQL_DATABASE", "weathertaker"),
     "charset": "utf8mb4",
 }
+
+_MYSQL_CONFIG = MYSQL_CONFIG
 
 _pool = None
 

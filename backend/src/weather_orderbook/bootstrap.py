@@ -1,6 +1,5 @@
 """天气模块启动引导：封装初始化、事件处理、通知持久化逻辑"""
 import logging
-import os
 from datetime import datetime, timezone as _tz
 from zoneinfo import ZoneInfo
 
@@ -8,6 +7,7 @@ import aiohttp
 import asyncmy
 
 from event_bus import get_event_bus
+from shared.db import MYSQL_CONFIG
 from .dao import WeatherCityRepository, WeatherNotificationRepository
 from .gateway import PolymarketMarketClient
 from .service import WeatherOrderBookService
@@ -82,11 +82,11 @@ class WeatherBootstrap:
 
     async def start(self) -> WeatherOrderBookService:
         self._mysql_pool = await asyncmy.create_pool(
-            host=os.getenv("MYSQL_HOST", "localhost"),
-            port=int(os.getenv("MYSQL_PORT", "3306")),
-            user=os.getenv("MYSQL_USER", "root"),
-            password=os.getenv("MYSQL_PASSWORD", "123456"),
-            db=os.getenv("MYSQL_DATABASE", "weathertaker"),
+            host=MYSQL_CONFIG["host"],
+            port=MYSQL_CONFIG["port"],
+            user=MYSQL_CONFIG["user"],
+            password=MYSQL_CONFIG["password"],
+            db=MYSQL_CONFIG["database"],
             minsize=3,
             maxsize=10,
             pool_recycle=1800,
