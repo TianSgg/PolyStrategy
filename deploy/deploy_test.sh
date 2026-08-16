@@ -4,9 +4,9 @@ set -euo pipefail
 # WeatherTaker 测试环境部署脚本
 # 独立 nginx 实例 + 独立 pid/log，不影响生产
 
-APP_DIR="/home/ec2-user/WeatherTaker_testenv/WeatherTaker"
-BACKEND_PORT=9092
-NGINX_LISTEN=8082
+APP_DIR="${APP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+BACKEND_PORT="${BACKEND_PORT:-9092}"
+NGINX_LISTEN="${NGINX_LISTEN:-8082}"
 NGINX_CONF="/etc/nginx/weathertaker-test-nginx.conf"
 NGINX_PID="/run/weathertaker-test-nginx.pid"
 STATE_DIR="$APP_DIR/deploy/state"
@@ -49,7 +49,7 @@ start_backend() {
   : >> "$STDOUT_LOG"
   (
     cd "$APP_DIR/backend"
-    ENV=prod PORT="$BACKEND_PORT" nohup "$APP_DIR/backend/.venv/bin/python" "$APP_DIR/backend/main.py" >> "$STDOUT_LOG" 2>&1 &
+    ENV=test PORT="$BACKEND_PORT" nohup "$APP_DIR/backend/.venv/bin/python" "$APP_DIR/backend/main.py" >> "$STDOUT_LOG" 2>&1 &
     echo $! > "$PID_FILE"
   )
 
@@ -97,12 +97,12 @@ reload_or_start_nginx() {
 cd "$APP_DIR"
 
 # Verify .env.prod exists and PORT matches
-if [ ! -f backend/.env.prod ]; then
-  echo "missing backend/.env.prod" >&2
+if [ ! -f backend/.env.test ]; then
+  echo "missing backend/.env.test" >&2
   exit 1
 fi
-if ! grep -q "^PORT=$BACKEND_PORT$" backend/.env.prod; then
-  echo "backend/.env.prod PORT must be $BACKEND_PORT" >&2
+if ! grep -q "^PORT=$BACKEND_PORT$" backend/.env.test; then
+  echo "backend/.env.test PORT must be $BACKEND_PORT" >&2
   exit 1
 fi
 
@@ -124,7 +124,7 @@ reload_or_start_nginx
 
 echo ""
 echo "=== Test environment deployed ==="
-echo "Frontend: http://52.16.80.74:$NGINX_LISTEN"
+echo "Frontend: http://$(hostname -I | awk '{print $1}'):$NGINX_LISTEN"
 echo "Backend:  http://127.0.0.1:$BACKEND_PORT"
 echo "Logs:     $STDOUT_LOG"
 echo ""

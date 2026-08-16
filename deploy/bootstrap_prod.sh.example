@@ -169,7 +169,7 @@ sed \
   -e "s#listen 8081;#listen $NGINX_LISTEN;#g" \
   -e "s#127.0.0.1:9091#127.0.0.1:$BACKEND_PORT#g" \
   -e "s#/home/$APP_USER/weathertaker#$APP_DIR#g" \
-  deploy/nginx.conf.example > "$tmp_nginx"
+  deploy/nginx_prod.conf.example > "$tmp_nginx"
 sudo install -m 0644 "$tmp_nginx" "/etc/nginx/weathertaker.conf"
 rm -f "$tmp_nginx"
 

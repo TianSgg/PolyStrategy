@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
     """管理应用生命周期"""
     run_auth_migrations()
 
-    if _env == "prod":
+    if _env != "dev":
         copy_trading_predexon = get_copy_trading_predexon()
         ct_service = get_copy_trading_service()
         await ct_service.initialize()
@@ -119,14 +119,14 @@ async def lifespan(app: FastAPI):
                 asyncio.create_task(ws.start())
                 started_followers.add(f_addr)
     else:
-        logger.info("非 prod 环境，跳过跟单服务启动")
+        logger.info("dev 环境，跳过跟单服务启动")
 
     from performance import get_performance_service
 
     perf_svc = get_performance_service()
     await perf_svc.start()
 
-    if _env == "prod":
+    if _env != "dev":
         pnl_svc = get_pnl_service()
         pnl_svc.start()
 
@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await weather_bootstrap.stop()
-        if _env == "prod":
+        if _env != "dev":
             copy_trading_predexon.stop()
             copy_trading_predexon_task.cancel()
             await stop_all_copy_trading_ws()
