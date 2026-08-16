@@ -90,6 +90,8 @@ from performance.router import router as performance_router
 from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
+from weather_orderbook import weather_orderbook_router
+from weather_orderbook.bootstrap import WeatherBootstrap
 
 
 @asynccontextmanager
@@ -128,9 +130,16 @@ async def lifespan(app: FastAPI):
         pnl_svc = get_pnl_service()
         pnl_svc.start()
 
+    # --- Weather OrderBook 模块初始化 ---
+    weather_bootstrap = WeatherBootstrap()
+    weather_service = await weather_bootstrap.start()
+    app.state.weather_service = weather_service
+    app.state.weather_notification_repository = weather_bootstrap.notification_repository
+
     try:
         yield
     finally:
+        await weather_bootstrap.stop()
         if _env == "prod":
             copy_trading_predexon.stop()
             copy_trading_predexon_task.cancel()
@@ -150,6 +159,7 @@ app.include_router(account_router)
 app.include_router(market_router)
 app.include_router(performance_router)
 app.include_router(pnl_router)
+app.include_router(weather_orderbook_router)
 
 # CORS 配置
 app.add_middleware(

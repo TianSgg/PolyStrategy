@@ -22,6 +22,7 @@ class UpdateConfigRequest(BaseModel):
     enabled: Optional[bool] = None
     gtd_expiration_sec: Optional[int] = None
     buy_size: Optional[float] = None
+    sweep_confirm_window_ms: Optional[int] = None
 
 
 def _assert_config_access(config, current_user: AuthUser):
@@ -76,6 +77,7 @@ async def list_configs(current_user: AuthUser = Depends(get_current_user)):
             "owner_user_id": c.owner_user_id,
             "gtd_expiration_sec": c.gtd_expiration_sec,
             "buy_size": c.buy_size,
+            "sweep_confirm_window_ms": c.sweep_confirm_window_ms,
         }
         for c in all_configs
     ]
@@ -96,6 +98,7 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
         "owner_user_id": config.owner_user_id,
         "gtd_expiration_sec": config.gtd_expiration_sec,
         "buy_size": config.buy_size,
+        "sweep_confirm_window_ms": config.sweep_confirm_window_ms,
     }
 
 
@@ -115,6 +118,10 @@ async def update_config(config_id: int, data: UpdateConfigRequest, current_user:
         if data.buy_size < 1:
             raise HTTPException(status_code=400, detail="buy_size must be >= 1")
         kwargs["buy_size"] = data.buy_size
+    if data.sweep_confirm_window_ms is not None:
+        if data.sweep_confirm_window_ms < 0:
+            raise HTTPException(status_code=400, detail="sweep_confirm_window_ms must be >= 0")
+        kwargs["sweep_confirm_window_ms"] = data.sweep_confirm_window_ms
 
     if not kwargs:
         raise HTTPException(status_code=400, detail="No fields to update")

@@ -14,6 +14,7 @@ class CopyTradingConfig:
     owner_user_id: int = 0
     gtd_expiration_sec: int = 1800
     buy_size: float = 100.0
+    sweep_confirm_window_ms: int = 0
 
     def __hash__(self):
         return hash(self.id)
