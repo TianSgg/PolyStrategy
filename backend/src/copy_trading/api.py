@@ -7,6 +7,7 @@ from typing import Optional, List
 from auth import AuthUser, get_current_user
 from account.service import get_account_service
 from .service import get_copy_trading_service
+from .models import get_strategy_stats
 from leader.service import get_leader_service
 
 router = APIRouter(prefix="/api/copy-trading", tags=["copy-trading"])
@@ -217,5 +218,8 @@ async def sync_config_positions(config_id: int, current_user: AuthUser = Depends
     }
 
 
-
+@router.get("/stats")
+async def strategy_stats(days: int = Query(default=7, ge=1, le=90), current_user: AuthUser = Depends(get_current_user)):
+    """策略 dashboard 统计：信号质量 + 执行效率"""
+    return await asyncio.to_thread(get_strategy_stats, days)
 

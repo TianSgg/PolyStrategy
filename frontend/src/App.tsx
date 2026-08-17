@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import PnL from './pages/PnL'
 import PerformanceMonitor from './pages/PerformanceMonitor'
 import WeatherMonitor from './pages/WeatherMonitor'
+import StrategyDashboard from './pages/StrategyDashboard'
 import UserManagement from './pages/UserManagement'
 import StatusBar from './components/StatusBar'
 import ChangePasswordModal from './components/ChangePasswordModal'
@@ -13,7 +14,7 @@ import { WS_BASE, apiFetch, setUnauthorizedHandler } from './api'
 import { useBalance } from './contexts/BalanceContext'
 import './ws-client'
 
-type Page = 'account' | 'copytrading' | 'pnl' | 'users' | 'performance' | 'weather'
+type Page = 'account' | 'copytrading' | 'pnl' | 'users' | 'performance' | 'weather' | 'dashboard'
 type AuthUser = { id: number; username: string; role: 'root' | 'admin' | 'user'; enabled: boolean }
 
 const DARK_MODE_STORAGE_KEY = 'weathertaker:dark-mode'
@@ -187,6 +188,13 @@ function App() {
             <span style={styles.navIcon}>🌤</span>
             Weather
           </button>
+          <button
+            onClick={() => setCurrentPage('dashboard')}
+            style={currentPage === 'dashboard' ? theme.navItemActive : theme.navItem}
+          >
+            <span style={styles.navIcon}>🎯</span>
+            Dashboard
+          </button>
           {(authUser.role === 'admin' || authUser.role === 'root') && (
             <>
               <button
@@ -271,6 +279,9 @@ function App() {
         </div>
         <div style={{ display: currentPage === 'weather' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <WeatherMonitor darkMode={darkMode} visible={currentPage === 'weather'} />
+        </div>
+        <div style={{ display: currentPage === 'dashboard' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
+          <StrategyDashboard darkMode={darkMode} />
         </div>
         <div style={{ display: currentPage === 'performance' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <PerformanceMonitor darkMode={darkMode} visible={currentPage === 'performance'} />

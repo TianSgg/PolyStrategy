@@ -579,5 +579,115 @@ def batch_upsert_follower_pending_buy(follower_proxy_wallet: str, pending_buy_as
         conn.close()
 
 
+# ==================== Dashboard 统计 ====================
+
+def get_strategy_stats(days: int = 7) -> dict:
+    """策略运行统计：信号质量 + 执行效率"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # sweep 信号数
+        cursor.execute("""
+            SELECT COUNT(*) FROM weather_notifications
+            WHERE event_type = 'sweep' AND outcome = 'no'
+              AND occurred_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """, (days,))
+        sweep_signal_count = cursor.fetchone()[0]
+
+        # sweep 入场订单数 + 成交量
+        cursor.execute("""
+            SELECT COUNT(*), COALESCE(SUM(size_matched), 0)
+            FROM copy_trading_orders
+            WHERE leader_tx_hash = 'WEATHER_SWEEP' AND side = 'BUY' AND status != 'ERROR'
+              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """, (days,))
+        row = cursor.fetchone()
+        sweep_entry_count = row[0]
+        sweep_filled_total = float(row[1])
+
+        # leader 信号数（真实 tx hash）
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM copy_trading_orders
+            WHERE side = 'BUY' AND leader_tx_hash LIKE '0x%%' AND LENGTH(leader_tx_hash) > 20
+              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """, (days,))
+        leader_signal_count = cursor.fetchone()[0]
+
+        # leader 信号后成功入场数（size_matched > 0）
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM copy_trading_orders
+            WHERE side = 'BUY' AND leader_tx_hash LIKE '0x%%' AND LENGTH(leader_tx_hash) > 20
+              AND size_matched > 0
+              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """, (days,))
+        leader_filled_count = cursor.fetchone()[0]
+
+        # sweep 确认数（sweep BUY 之后同 asset 没有 SWEEP_TIMEOUT_EXIT）
+        cursor.execute("""
+            SELECT COUNT(DISTINCT o.asset_id)
+            FROM copy_trading_orders o
+            WHERE o.leader_tx_hash = 'WEATHER_SWEEP' AND o.side = 'BUY' AND o.status != 'ERROR'
+              AND o.created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+              AND NOT EXISTS (
+                SELECT 1 FROM copy_trading_orders e
+                WHERE e.asset_id = o.asset_id AND e.config_id = o.config_id
+                  AND e.leader_tx_hash = 'SWEEP_TIMEOUT_EXIT' AND e.side = 'SELL'
+                  AND e.created_at >= o.created_at
+                  AND e.created_at <= DATE_ADD(o.created_at, INTERVAL 10 SECOND)
+              )
+        """, (days,))
+        sweep_confirmed_count = cursor.fetchone()[0]
+
+        # sweep 超时退出数
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM copy_trading_orders
+            WHERE leader_tx_hash = 'SWEEP_TIMEOUT_EXIT' AND side = 'SELL'
+              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """, (days,))
+        sweep_timeout_count = cursor.fetchone()[0]
+
+        # 平均入场延迟
+        cursor.execute("""
+            SELECT AVG(signal_latency_ms)
+            FROM copy_trading_orders
+            WHERE side = 'BUY' AND signal_latency_ms IS NOT NULL AND signal_latency_ms > 0
+              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """, (days,))
+        avg_latency = cursor.fetchone()[0]
+
+        # BUY 整体成交率
+        cursor.execute("""
+            SELECT COALESCE(SUM(size_matched), 0), COALESCE(SUM(follow_size), 0)
+            FROM copy_trading_orders
+            WHERE side = 'BUY' AND status != 'ERROR'
+              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """, (days,))
+        row = cursor.fetchone()
+        total_matched = float(row[0])
+        total_ordered = float(row[1])
+
+        return {
+            "days": days,
+            "signal_quality": {
+                "sweep_signal_count": sweep_signal_count,
+                "sweep_entry_count": sweep_entry_count,
+                "sweep_confirmed_count": sweep_confirmed_count,
+                "sweep_timeout_count": sweep_timeout_count,
+                "confirmation_rate": round(sweep_confirmed_count / max(1, sweep_entry_count), 4),
+            },
+            "execution": {
+                "leader_signal_count": leader_signal_count,
+                "leader_filled_count": leader_filled_count,
+                "leader_fill_rate": round(leader_filled_count / max(1, leader_signal_count), 4),
+                "buy_fill_rate": round(total_matched / max(1, total_ordered), 4),
+                "avg_latency_ms": round(float(avg_latency), 1) if avg_latency else None,
+                "sweep_filled_total": round(sweep_filled_total, 2),
+            },
+        }
+    finally:
+        conn.close()
 
 
