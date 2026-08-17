@@ -56,7 +56,7 @@ class PolymarketMarketClient:
 
 
 class MonitorProtocol(Protocol):
-    def deliver(self, raw: str) -> None: ...
+    def deliver(self, data: dict | list) -> None: ...
 
 
 class SharedMarketWebSocket:
@@ -213,7 +213,7 @@ class SharedMarketWebSocket:
             for snapshot in data:
                 asset_id = snapshot.get("asset_id")
                 if asset_id:
-                    self._deliver_to(asset_id, raw)
+                    self._deliver_to(asset_id, data)
                     if asset_id in self._pending_unsub:
                         self._pending_unsub.discard(asset_id)
                         asyncio.create_task(self._unsubscribe_wire(asset_id))
@@ -230,20 +230,18 @@ class SharedMarketWebSocket:
                         mid = id(monitor)
                         if mid not in delivered:
                             delivered.add(mid)
-                            monitor.deliver(raw)
+                            monitor.deliver(data)
             return
 
         if event_type in ("book", "tick_size_change"):
             asset_id = data.get("asset_id")
             if asset_id:
-                self._deliver_to(asset_id, raw)
+                self._deliver_to(asset_id, data)
             return
 
         if event_type == "last_trade_price":
-            asset_id = data.get("asset_id")
-            if asset_id:
-                self._deliver_to(asset_id, raw)
+            return
 
-    def _deliver_to(self, asset_id: str, raw: str) -> None:
+    def _deliver_to(self, asset_id: str, data: dict | list) -> None:
         for monitor in self._routing.get(asset_id, []):
-            monitor.deliver(raw)
+            monitor.deliver(data)

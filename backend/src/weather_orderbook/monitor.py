@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -124,11 +123,10 @@ class WeatherOrderBookMonitor:
             "books": books,
         }
 
-    def deliver(self, raw: str) -> None:
-        """Entry point: receive a raw WS message from SharedMarketWebSocket."""
+    def deliver(self, data: dict | list) -> None:
+        """Entry point: receive a parsed WS message from SharedMarketWebSocket."""
         if not self.running:
             return
-        data = json.loads(raw)
         if isinstance(data, list):
             for snapshot in data:
                 asset_id = snapshot.get("asset_id")
