@@ -269,7 +269,7 @@ class CopyTradingService:
         """启动时加载配置，各 poller 自行初始化同步"""
         market_svc = get_market_service()
         market_svc.set_exit_callback(self._on_market_exit)
-        market_svc.set_sweep_callback(self._on_sweep_signal)
+        # market_svc.set_sweep_callback(self._on_sweep_signal)  # 抢筹策略暂停
         await market_svc.start()
         await self._load_configs()
         self._start_follower_position_poller(interval=120)
@@ -587,7 +587,7 @@ class CopyTradingService:
                 reason = payload.get("reason", "")
                 outcome = asset.get("outcome")
                 logger.info(f"[WeatherSweep] Received: asset={asset_id[:8] if asset_id else '?'} outcome={outcome} reason={reason}")
-                if outcome == "no" and asset_id and "0.99" in reason:
+                if outcome == "no" and asset_id:
                     await self._execute_weather_sweep(asset_id)
                 else:
                     logger.debug(f"[WeatherSweep] Skipped: outcome={outcome} reason={reason}")

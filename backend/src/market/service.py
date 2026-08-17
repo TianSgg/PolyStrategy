@@ -521,17 +521,18 @@ class MarketService:
             side = change.get("side")
 
             # 清扫判断：SELL 侧新增挂单，直接用事件数据
-            if side == "SELL" and size != "0":
-                p = float(price)
-                if self._sweep_price_min <= p <= self._sweep_price_max:
-                    key = (asset_id, p)
-                    remaining_cd = self._sweep_cooldown_sec - (now - self._sweep_last_trigger.get(key, 0))
-                    if remaining_cd > 0:
-                        logger.debug(f"[Sweep] Cooldown {asset_id[:8]} {size}@{price} (remaining={remaining_cd:.1f}s)")
-                        continue
-                    self._sweep_last_trigger[key] = now
-                    logger.info(f"[Sweep] Ask detected: {asset_id[:8]} {size}@{price}")
-                    self._on_sweep_trigger(asset_id, p, float(size))
+            # if side == "SELL" and size != "0":
+            #     p = float(price)
+            #     if self._sweep_price_min <= p <= self._sweep_price_max:
+            #         key = (asset_id, p)
+            #         remaining_cd = self._sweep_cooldown_sec - (now - self._sweep_last_trigger.get(key, 0))
+            #         if remaining_cd > 0:
+            #             logger.debug(f"[Sweep] Cooldown {asset_id[:8]} {size}@{price} (remaining={remaining_cd:.1f}s)")
+            #             continue
+            #         self._sweep_last_trigger[key] = now
+            #         if self._on_sweep_trigger:
+            #             logger.info(f"[Sweep] Ask detected: {asset_id[:8]} {size}@{price}")
+            #             self._on_sweep_trigger(asset_id, p, float(size))
 
 
     def _process_tick_size_change(self, data: dict):
