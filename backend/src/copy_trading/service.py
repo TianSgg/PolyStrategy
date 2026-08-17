@@ -499,8 +499,8 @@ class CopyTradingService:
                 self._weather_states.pop(state_key, None)
         logger.info(f"[CopyTrade] EXIT done, unsubscribed {self._asset_label(asset_id)}")
 
-    def _record_sell_order(self, config: CopyTradingConfig, asset_id: str, follow_price: float, follow_sell_size: float, result: PlaceOrderResult):
-        """记录 EXIT SELL 订单到 order 表"""
+    def _record_sell_order(self, config: CopyTradingConfig, asset_id: str, follow_price: float, follow_sell_size: float, result: PlaceOrderResult, source: str = "EXIT_TICK_SIZE"):
+        """记录 SELL 订单到 order 表"""
         order_id = result.order_id
         if result.raw_status in ("ERROR", "SKIPPED"):
             raw = f"EXIT_{asset_id}_{config.id}_{time.time()}"
@@ -512,9 +512,34 @@ class CopyTradingService:
             config_id=config.id,
             leader=config.leader_proxy_wallet,
             follower=config.follower_proxy_wallet,
-            leader_tx_hash="EXIT_TICK_SIZE",
+            leader_tx_hash=source,
             asset_id=asset_id,
             side="SELL",
+            leader_size=0,
+            leader_price=0,
+            follow_size=result.size,
+            follow_price=follow_price,
+            size_matched=result.position_delta,
+            status=result.raw_status,
+            err_msg=result.err_msg,
+        ))
+
+    def _record_buy_order(self, config: CopyTradingConfig, asset_id: str, follow_price: float, follow_buy_size: float, result: PlaceOrderResult, source: str):
+        """记录 BUY 订单到 order 表"""
+        order_id = result.order_id
+        if result.raw_status in ("ERROR", "SKIPPED"):
+            raw = f"{source}_{asset_id}_{config.id}_{time.time()}"
+            order_id = f"{result.raw_status}_0x" + hashlib.sha256(raw.encode()).hexdigest()
+
+        asyncio.create_task(asyncio.to_thread(
+            record_copy_trading_order,
+            order_id=order_id,
+            config_id=config.id,
+            leader=config.leader_proxy_wallet,
+            follower=config.follower_proxy_wallet,
+            leader_tx_hash=source,
+            asset_id=asset_id,
+            side="BUY",
             leader_size=0,
             leader_price=0,
             follow_size=result.size,
@@ -570,6 +595,8 @@ class CopyTradingService:
             if result.position_delta:
                 logger.info(f"[Sweep] BUY filled: {result.position_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos})")
                 asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
+
+            self._record_buy_order(config, asset_id, price, size, result, "SWEEP_RUSH")
 
 
 
@@ -638,12 +665,15 @@ class CopyTradingService:
 
             if result.raw_status == "ERROR":
                 logger.warning(f"[WeatherSweep] BUY failed: {self._asset_label(asset_id)} err={result.err_msg}")
+                self._record_buy_order(config, asset_id, follow_price, follow_buy_size, result, "WEATHER_SWEEP")
                 continue
 
             if result.pending_delta:
                 asyncio.create_task(self._save_pending_buy_with_question(f_addr, asset_id, new_pending))
             if result.position_delta:
                 asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
+
+            self._record_buy_order(config, asset_id, follow_price, follow_buy_size, result, "WEATHER_SWEEP")
 
             if result.raw_status in ("LIVE", "MATCHED", "DELAYED"):
                 get_market_service().watch_for_exit(asset_id)
@@ -732,7 +762,7 @@ class CopyTradingService:
         if result.position_delta:
             asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
 
-        self._record_sell_order(config, asset_id, follow_price, follow_sell_size, result)
+        self._record_sell_order(config, asset_id, follow_price, follow_sell_size, result, "SWEEP_TIMEOUT_EXIT")
 
         market_svc = get_market_service()
         market_svc.unwatch_exit(asset_id)
@@ -1283,6 +1313,8 @@ class CopyTradingService:
             asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
         if result.position_delta:
             asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
+
+        self._record_sell_order(config, asset_id, follow_price, size, result, "SWEEP_DELAYED_FILL")
 
     async def _sync_follower_positions_from_poly(self, follower_addr: str, delay: int = 0) -> int:
         """从 Polymarket API 拉取 follower 实际持仓，用真实数据覆盖程序记录"""
