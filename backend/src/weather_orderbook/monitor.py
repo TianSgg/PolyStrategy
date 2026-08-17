@@ -208,10 +208,11 @@ class WeatherOrderBookMonitor:
                 if before_exists and not after_exists:
                     asset = self._assets[asset_id]
                     logger.info(
-                        "[Monitor] SWEEP detected: %s %s %s outcome=%s threshold=%.2f tick=%s",
-                        asset.city, asset.temperature_label, asset_id[:8], asset.outcome, threshold, self._ticks[asset_id],
+                        "[Monitor] SWEEP detected: %s %s %s outcome=%s threshold=%.2f tick=%s mode=%s",
+                        asset.city, asset.temperature_label, asset_id[:8], asset.outcome, threshold, self._ticks[asset_id], self.mode,
                     )
-                    self._publish("sweep", asset_id, previous, current, f"ask_levels_through_{threshold:.2f}_cleared")
+                    if self.mode == "full":
+                        self._publish("sweep", asset_id, previous, current, f"ask_levels_through_{threshold:.2f}_cleared")
                     break
         self._last[asset_id] = current
         # High-certainty confirmation only in full mode
