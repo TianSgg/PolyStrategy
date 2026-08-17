@@ -137,6 +137,8 @@ class CopyTradingService:
 
         # 天气 asset 状态机: {(config_id, asset_id): SweepEntry}
         self._weather_states: Dict[tuple, SweepEntry] = {}
+        # 已超时退出但可能有延迟成交的 sweep order: {order_id: (config_id, asset_id)}
+        self._sweep_exited_orders: Dict[str, tuple] = {}
 
         # 天气 EventBus 订阅
         self._weather_sweep_queue: Optional[asyncio.Queue] = None
@@ -675,6 +677,8 @@ class CopyTradingService:
             return
         logger.info(f"[WeatherState] SWEEP_PENDING→IDLE (timeout): {self._asset_label(asset_id)} config={config_id}")
         self._weather_states.pop(state_key, None)
+        if entry.order_id:
+            self._sweep_exited_orders[entry.order_id] = (config_id, asset_id)
         try:
             await self._execute_sweep_exit(asset_id, config, entry)
         except Exception as e:
@@ -687,10 +691,10 @@ class CopyTradingService:
         # 1. cancel 未成交的 buy order（pending 释放由 WS CANCELLATION 事件处理）
         if entry.order_id:
             try:
-                await asyncio.to_thread(
+                cancel_result = await asyncio.to_thread(
                     self._account_service.cancel_order, f_addr, entry.order_id
                 )
-                logger.info(f"[SweepExit] Canceled order {entry.order_id[:8]} for {self._asset_label(asset_id)}")
+                logger.info(f"[SweepExit] Canceled order {entry.order_id[:8]} for {self._asset_label(asset_id)} result={cancel_result}")
             except Exception as e:
                 logger.warning(f"[SweepExit] Cancel failed for {entry.order_id[:8]}: {e}")
 
@@ -1156,6 +1160,9 @@ class CopyTradingService:
                     if config_id and config_id in self._config_balances:
                         self._config_balances[config_id] += released
                         logger.info(f"[CopyTrade] balance: +{released:.2f} (cancel) config={config_id} remaining={self._config_balances[config_id]:.2f}")
+                    # 完全取消的 sweep 订单不再需要延迟成交补偿
+                    if size_matched <= 0.01:
+                        self._sweep_exited_orders.pop(order_id, None)
 
                 else:
                     cur_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0)
@@ -1244,6 +1251,38 @@ class CopyTradingService:
 
         logger.info(f"[CopyTrade] Trade CONFIRMED: {side:>4} {matched_amount:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:8]} (new_pos={new_size:>7.2f}, new_pending={new_pending:>7.2f})")
 
+        # 延迟成交补偿：已超时退出的 sweep 订单成交后触发 SELL
+        if side == "BUY" and order_id in self._sweep_exited_orders:
+            exited_config_id, exited_asset_id = self._sweep_exited_orders.pop(order_id)
+            config = self._config_id_to_config.get(exited_config_id)
+            if config and exited_asset_id == asset_id:
+                logger.info(f"[SweepExit] Delayed fill detected for timed-out sweep: {self._asset_label(asset_id)} order={order_id[:8]} filled={matched_amount:.2f}")
+                asyncio.create_task(self._sell_sweep_delayed_fill(config, asset_id, matched_amount))
+
+    async def _sell_sweep_delayed_fill(self, config: CopyTradingConfig, asset_id: str, size: float):
+        """已超时的 sweep 订单延迟成交后，立即挂 SELL 退出"""
+        f_addr = config.follower_proxy_wallet
+        follow_price = 0.99
+        async with self._get_addr_lock(f_addr):
+            follower_name = self._account_service.get_acc_name(f_addr)
+            logger.info(
+                f"[SweepExit] SELL (delayed fill) {self._asset_label(asset_id)} | "
+                f"follower={follower_name} {size:.2f}@{follow_price}"
+            )
+            result = await self._place_order(
+                config, asset_id, "SELL", size,
+                price=follow_price, tick_size="0.01", neg_risk=True
+            )
+            self._register_post_order_result(config, result)
+            new_pending = self._pending_sell_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
+            self._pending_sell_orders.setdefault(f_addr, {})[asset_id] = new_pending
+            new_pos = max(0, self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) - result.position_delta)
+            self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
+
+        if result.pending_delta:
+            asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
+        if result.position_delta:
+            asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
 
     async def _sync_follower_positions_from_poly(self, follower_addr: str, delay: int = 0) -> int:
         """从 Polymarket API 拉取 follower 实际持仓，用真实数据覆盖程序记录"""
