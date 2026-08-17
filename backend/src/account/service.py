@@ -368,20 +368,36 @@ class AccountService:
         price: float,
         tick_size: str=None,
         neg_risk: bool=None,
+        gtd_expiration_sec: int=None,
     ) -> Optional[dict]:
         client = self.get_or_create_clob_client(f_addr)
         if not client:
             raise RuntimeError(f"No client for {self.get_acc_name(f_addr)}")
-        result = client.create_and_post_order(
-            OrderArgs(
-                token_id=token_id,
-                side=BUY if side == "BUY" else SELL,
-                size=size,
-                price=price,
-            ),
-            PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
-            order_type=OrderType.GTC,
-        )
+        if side == "BUY":
+            exp_sec = gtd_expiration_sec or self.DEFAULT_GTD_EXPIRATION_SEC
+            expiration = int(time.time()) + exp_sec
+            result = client.create_and_post_order(
+                OrderArgs(
+                    token_id=token_id,
+                    side=BUY,
+                    size=size,
+                    price=price,
+                    expiration=expiration,
+                ),
+                PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
+                order_type=OrderType.GTD,
+            )
+        else:
+            result = client.create_and_post_order(
+                OrderArgs(
+                    token_id=token_id,
+                    side=SELL,
+                    size=size,
+                    price=price,
+                ),
+                PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
+                order_type=OrderType.GTC,
+            )
         return result
  
 
