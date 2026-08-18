@@ -148,8 +148,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
   const [scatterAssetFilterDays, setScatterAssetFilterDays] = useState<Record<number, number>>({})
   const [scatterRangeDays, setScatterRangeDays] = useState<Record<number, number | 'custom'>>({})
   const [scatterCustomRange, setScatterCustomRange] = useState<Record<number, { start: string; end: string }>>({})
-  const [scatterShowZeroMatched, setScatterShowZeroMatched] = useState<Record<number, boolean>>({})
-  const [scatterNormalize, setScatterNormalize] = useState<Record<number, boolean>>({})
 
 
 
@@ -1064,14 +1062,6 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                         )}
                       </div>
                       <button
-                        className={`ph-pill${(scatterShowZeroMatched[selectedConfigId] ?? false) ? ' ph-pill--active' : ''}`}
-                        onClick={() => setScatterShowZeroMatched(prev => ({ ...prev, [selectedConfigId]: !(prev[selectedConfigId] ?? false) }))}
-                      >含未成交</button>
-                      <button
-                        className={`ph-pill${(scatterNormalize[selectedConfigId] ?? false) ? ' ph-pill--active' : ''}`}
-                        onClick={() => setScatterNormalize(prev => ({ ...prev, [selectedConfigId]: !(prev[selectedConfigId] ?? false) }))}
-                      >归一化</button>
-                      <button
                         className="btn btn-primary btn-sm"
                         disabled={scatterState[selectedConfigId]?.loading}
                         onClick={() => {
@@ -1090,17 +1080,14 @@ export default function CopyTrading({ darkMode, visible }: Props) {
                     <div className="error-msg">{scatterState[selectedConfigId].error}</div>
                   )}
                   {(() => {
-                    const allTrades = scatterState[selectedConfigId]?.trades || []
-                    const filteredTrades = (scatterShowZeroMatched[selectedConfigId] ?? false)
-                      ? allTrades
-                      : allTrades.filter(t => t.size_matched > 0)
-                    if (!scatterState[selectedConfigId]?.error && filteredTrades.length === 0 && !scatterState[selectedConfigId]?.loading) {
+                    const trades = scatterState[selectedConfigId]?.trades || []
+                    if (!scatterState[selectedConfigId]?.error && trades.length === 0 && !scatterState[selectedConfigId]?.loading) {
                       return <div className="position-history-empty">暂无交易数据</div>
                     }
-                    if (filteredTrades.length > 0) {
+                    if (trades.length > 0) {
                       return (
-                        <div className="chart-panel-chart" style={{ height: (scatterShowZeroMatched[selectedConfigId] ?? false) ? 520 : 360 }}>
-                          <TradeScatterChart trades={filteredTrades} darkMode={darkMode} midPrice={scatterState[selectedConfigId]?.midPrice} showLeader={scatterShowZeroMatched[selectedConfigId] ?? false} normalizePosition={scatterNormalize[selectedConfigId] ?? false} shareRatio={undefined} />
+                        <div className="chart-panel-chart" style={{ height: 520 }}>
+                          <TradeScatterChart trades={trades} darkMode={darkMode} midPrice={scatterState[selectedConfigId]?.midPrice} />
                         </div>
                       )
                     }
