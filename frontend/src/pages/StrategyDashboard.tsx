@@ -1,12 +1,22 @@
 import { useState } from 'react'
 import { apiFetch } from '../api'
 
+interface SweepToLeader {
+  count: number
+  avg_ms: number
+  min_ms: number
+  max_ms: number
+  p50_ms: number
+  p90_ms: number
+}
+
 interface SignalQuality {
   sweep_signal_count: number
   sweep_entry_count: number
   sweep_confirmed_count: number
   sweep_timeout_count: number
   confirmation_rate: number
+  sweep_to_leader: SweepToLeader | null
 }
 
 interface Execution {
@@ -142,6 +152,44 @@ export default function StrategyDashboard({ darkMode }: Props) {
               </div>
             </div>
           </div>
+
+          {/* Sweep → Leader Delay */}
+          {stats.signal_quality.sweep_to_leader && (
+            <div>
+              <h3
+                style={{ margin: '0 0 12px', fontSize: '16px', fontWeight: 600, color: darkMode ? '#cbd5e1' : '#475569', cursor: 'help' }}
+                title="Sweep 信号发出到 Leader 入场信号到达的时间差（仅统计 Leader 确认了的 sweep）。用于调优 sweep_confirm_window_ms 参数：window 应覆盖 P90 以保证大多数确认信号不被超时取消。"
+              >
+                Sweep → Leader Delay
+              </h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' }}>
+                <div style={card}>
+                  <div style={label}>Samples</div>
+                  <div style={value}>{stats.signal_quality.sweep_to_leader.count}</div>
+                </div>
+                <div style={card}>
+                  <div style={label}>Avg</div>
+                  <div style={value}>{(stats.signal_quality.sweep_to_leader.avg_ms / 1000).toFixed(1)}s</div>
+                </div>
+                <div style={card}>
+                  <div style={label}>P50</div>
+                  <div style={value}>{(stats.signal_quality.sweep_to_leader.p50_ms / 1000).toFixed(1)}s</div>
+                </div>
+                <div style={card}>
+                  <div style={label}>P90</div>
+                  <div style={value}>{(stats.signal_quality.sweep_to_leader.p90_ms / 1000).toFixed(1)}s</div>
+                </div>
+                <div style={card}>
+                  <div style={label}>Min</div>
+                  <div style={value}>{(stats.signal_quality.sweep_to_leader.min_ms / 1000).toFixed(1)}s</div>
+                </div>
+                <div style={card}>
+                  <div style={label}>Max</div>
+                  <div style={value}>{(stats.signal_quality.sweep_to_leader.max_ms / 1000).toFixed(1)}s</div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Execution */}
           <div>

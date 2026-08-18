@@ -251,6 +251,22 @@ def record_copy_trading_order(
         conn.close()
 
 
+def update_order_signal_latency(order_id: str, signal_latency_ms: int) -> bool:
+    """更新 sweep 订单的 signal_latency_ms（记录 sweep→leader 确认延迟）"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            UPDATE copy_trading_orders
+            SET signal_latency_ms = %s, updated_at = %s
+            WHERE id = %s
+        """, (signal_latency_ms, now_utc8_dt(), order_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def update_copy_trading_order(
     order_id: str,
     size_matched: float,
@@ -669,6 +685,28 @@ def get_strategy_stats(days: int = 7) -> dict:
         total_matched = float(row[0])
         total_ordered = float(row[1])
 
+        # sweep→leader 确认延迟分布
+        cursor.execute("""
+            SELECT signal_latency_ms
+            FROM copy_trading_orders
+            WHERE leader_tx_hash = 'WEATHER_SWEEP' AND side = 'BUY'
+              AND signal_latency_ms IS NOT NULL AND signal_latency_ms > 0
+              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            ORDER BY signal_latency_ms
+        """, (days,))
+        latency_rows = [int(r[0]) for r in cursor.fetchall()]
+        sweep_to_leader = None
+        if latency_rows:
+            n = len(latency_rows)
+            sweep_to_leader = {
+                "count": n,
+                "avg_ms": round(sum(latency_rows) / n),
+                "min_ms": latency_rows[0],
+                "max_ms": latency_rows[-1],
+                "p50_ms": latency_rows[max(0, n // 2 - 1)],
+                "p90_ms": latency_rows[max(0, int(n * 0.9) - 1)],
+            }
+
         return {
             "days": days,
             "signal_quality": {
@@ -677,6 +715,7 @@ def get_strategy_stats(days: int = 7) -> dict:
                 "sweep_confirmed_count": sweep_confirmed_count,
                 "sweep_timeout_count": sweep_timeout_count,
                 "confirmation_rate": round(sweep_confirmed_count / max(1, sweep_entry_count), 4),
+                "sweep_to_leader": sweep_to_leader,
             },
             "execution": {
                 "leader_signal_count": leader_signal_count,
