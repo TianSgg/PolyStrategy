@@ -25,6 +25,7 @@ from .models import (
     record_copy_trading_order,
     get_order_by_id,
     update_copy_trading_order,
+    update_order_signal_latency,
     create_copy_trading_config,
     update_copy_trading_config,
     delete_copy_trading_config,
@@ -370,9 +371,12 @@ class CopyTradingService:
             if entry.timer_task:
                 entry.timer_task.cancel()
                 entry.timer_task = None
+            sweep_to_leader_ms = round((time.time() - entry.entry_time) * 1000)
             entry.state = WeatherAssetState.ACTIVE
+            if entry.order_id:
+                asyncio.create_task(asyncio.to_thread(update_order_signal_latency, entry.order_id, sweep_to_leader_ms))
             entry.order_id = None
-            logger.info(f"[WeatherState] SWEEP_PENDING→ACTIVE: leader confirmed {self._asset_label(signal.asset)} config={config.id}")
+            logger.info(f"[WeatherState] SWEEP_PENDING→ACTIVE: leader confirmed {self._asset_label(signal.asset)} config={config.id} delay={sweep_to_leader_ms}ms")
             return
         if entry and entry.state == WeatherAssetState.ACTIVE:
             logger.debug(f"[WeatherState] Already ACTIVE for {self._asset_label(signal.asset)} config={config.id}, skip")
