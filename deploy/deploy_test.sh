@@ -19,7 +19,20 @@ is_backend_running() {
   local pid="$1"
   [ -n "$pid" ] || return 1
   kill -0 "$pid" >/dev/null 2>&1 || return 1
-  ps -p "$pid" -o command= | grep -F "$APP_DIR/backend/main.py" >/dev/null 2>&1
+  ps -p "$pid" -o command= | grep -q "main\.py" >/dev/null 2>&1
+}
+
+kill_and_wait() {
+  local pid="$1"
+  echo "Stopping backend pid=$pid"
+  kill "$pid" 2>/dev/null || return 0
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  echo "Backend did not stop in time; killing pid=$pid"
+  kill -9 "$pid" 2>/dev/null
+  sleep 1
 }
 
 stop_backend() {
@@ -29,18 +42,15 @@ stop_backend() {
   fi
 
   if is_backend_running "$pid"; then
-    echo "Stopping backend pid=$pid"
-    kill "$pid"
-    for _ in $(seq 1 20); do
-      if ! is_backend_running "$pid"; then
-        break
-      fi
-      sleep 1
-    done
-    if is_backend_running "$pid"; then
-      echo "Backend did not stop in time; killing pid=$pid"
-      kill -9 "$pid"
-    fi
+    kill_and_wait "$pid"
+  fi
+
+  # Fallback: kill any process holding the backend port
+  local port_pid
+  port_pid="$(lsof -ti :$BACKEND_PORT 2>/dev/null | head -1)" || true
+  if [ -n "$port_pid" ] && [ "$port_pid" != "$pid" ]; then
+    echo "Found stale process on port $BACKEND_PORT: pid=$port_pid"
+    kill_and_wait "$port_pid"
   fi
 
   rm -f "$PID_FILE"
@@ -57,13 +67,27 @@ start_backend() {
 
   local pid
   pid="$(cat "$PID_FILE")"
-  sleep 2
-  if ! is_backend_running "$pid"; then
-    echo "Backend failed to start. Last logs:" >&2
-    tail -80 "$STDOUT_LOG" >&2
-    exit 1
-  fi
-  echo "Backend started pid=$pid port=$BACKEND_PORT"
+
+  # Wait for port to be listening (up to 15s)
+  local waited=0
+  while [ $waited -lt 15 ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "Backend exited during startup. Last logs:" >&2
+      tail -80 "$STDOUT_LOG" >&2
+      exit 1
+    fi
+    if ss -tln sport = :$BACKEND_PORT | grep -q "$BACKEND_PORT"; then
+      echo "Backend started pid=$pid port=$BACKEND_PORT"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  echo "Backend did not bind port $BACKEND_PORT within 15s. Last logs:" >&2
+  tail -80 "$STDOUT_LOG" >&2
+  kill "$pid" 2>/dev/null
+  exit 1
 }
 
 install_nginx() {
@@ -126,7 +150,7 @@ reload_or_start_nginx() {
   if [ -s "$NGINX_PID" ]; then
     master_pid="$(cat "$NGINX_PID")"
   fi
-  if [ -n "$master_pid" ] && kill -0 "$master_pid" 2>/dev/null; then
+  if [ -n "$master_pid" ] && sudo kill -0 "$master_pid" 2>/dev/null; then
     echo "Reloading weathertaker-test nginx master pid=$master_pid"
     sudo kill -HUP "$master_pid"
     return
