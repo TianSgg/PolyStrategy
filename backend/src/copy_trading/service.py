@@ -287,9 +287,10 @@ class CopyTradingService:
         asyncio.create_task(self.execute_sell(no_asset_id))
 
     def _restore_exit_watches(self):
-        """重启后从已有持仓恢复 exit watch 注册和 asset→config 映射"""
+        """重启后从已有持仓恢复 exit watch 注册和 asset→config 映射，并扣减余额"""
         market_svc = get_market_service()
         watched = set()
+        config_position_totals: Dict[int, float] = {}
         for f_addr, positions in self._follower_positions.items():
             configs = self._follower_addr_to_configs.get(f_addr, set())
             for asset_id, size in positions.items():
@@ -299,6 +300,10 @@ class CopyTradingService:
                         watched.add(asset_id)
                     for config in configs:
                         self._asset_to_configs.setdefault(asset_id, set()).add(config.id)
+                        config_position_totals[config.id] = config_position_totals.get(config.id, 0) + size
+        for config_id, held in config_position_totals.items():
+            self._config_balances[config_id] = max(0, self._config_balances.get(config_id, 0) - held)
+            logger.info(f"[CopyTrade] balance adjusted for existing position: config={config_id} held={held:.2f} remaining={self._config_balances[config_id]:.2f}")
         if watched:
             logger.info(f"[CopyTrade] Restored exit watches for {len(watched)} assets")
 
