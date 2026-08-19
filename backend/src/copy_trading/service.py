@@ -1239,8 +1239,8 @@ class CopyTradingService:
             asyncio.create_task(asyncio.to_thread(update_copy_trading_order,
                 order_id=order_id,
                 size_matched=size_matched,
-                status=status,
-                err_msg="canceled",
+                status="CANCELLED",
+                err_msg=f"canceled (ws_status={status})" if status != "CANCELLED" else "canceled",
             ))
             return
 
