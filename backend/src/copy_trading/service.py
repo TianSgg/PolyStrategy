@@ -673,7 +673,11 @@ class CopyTradingService:
                 continue
 
             follow_price = 0.99
-            follow_buy_size = config.buy_size
+            balance = self._config_balances.get(config.id, 0)
+            if balance < 5:
+                logger.info(f"[WeatherSweep] BUY skipped: balance exhausted ({balance:.2f}) config={config.id}")
+                continue
+            follow_buy_size = balance
 
             async with self._get_addr_lock(f_addr):
                 follower_name = self._account_service.get_acc_name(f_addr)
@@ -1469,8 +1473,10 @@ class CopyTradingService:
                 if "gtd_expiration_sec" in kwargs:
                     config.gtd_expiration_sec = int(kwargs["gtd_expiration_sec"])
                 if "buy_size" in kwargs:
+                    old_size = config.buy_size
                     config.buy_size = float(kwargs["buy_size"])
-                    self._config_balances[config_id] = config.buy_size
+                    delta = config.buy_size - old_size
+                    self._config_balances[config_id] = self._config_balances.get(config_id, old_size) + delta
                 if "sweep_confirm_window_ms" in kwargs:
                     config.sweep_confirm_window_ms = int(kwargs["sweep_confirm_window_ms"])
         return success
