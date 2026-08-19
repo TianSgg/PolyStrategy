@@ -251,16 +251,16 @@ def record_copy_trading_order(
         conn.close()
 
 
-def update_order_signal_latency(order_id: str, signal_latency_ms: int) -> bool:
-    """更新 sweep 订单的 signal_latency_ms（记录 sweep→leader 确认延迟）"""
+def update_order_sweep_to_leader(order_id: str, sweep_to_leader_ms: int) -> bool:
+    """更新 sweep 订单的 sweep_to_leader_ms（sweep入场→leader信号确认延迟）"""
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("""
             UPDATE copy_trading_orders
-            SET signal_latency_ms = %s, updated_at = %s
+            SET sweep_to_leader_ms = %s, updated_at = %s
             WHERE id = %s
-        """, (signal_latency_ms, now_utc8_dt(), order_id))
+        """, (sweep_to_leader_ms, now_utc8_dt(), order_id))
         conn.commit()
         return cursor.rowcount > 0
     finally:
@@ -328,7 +328,7 @@ def get_orders_by_config_and_asset(config_id: int, asset_id: str, limit: int = 5
     try:
         sql = """
             SELECT side, follow_size, follow_price, size_matched, status, created_at, leader_size, leader_price,
-                   err_msg, signal_latency_ms
+                   err_msg, signal_latency_ms, sweep_to_leader_ms
             FROM copy_trading_orders
             WHERE config_id = %s AND asset_id = %s
         """
@@ -354,6 +354,7 @@ def get_orders_by_config_and_asset(config_id: int, asset_id: str, limit: int = 5
                 "leader_price": float(row[7]),
                 "err_msg": row[8],
                 "signal_latency_ms": int(row[9]) if row[9] is not None else None,
+                "sweep_to_leader_ms": int(row[10]) if row[10] is not None else None,
             }
             for row in cursor.fetchall()
         ]
@@ -687,12 +688,12 @@ def get_strategy_stats(days: int = 7) -> dict:
 
         # sweep→leader 确认延迟分布
         cursor.execute("""
-            SELECT signal_latency_ms
+            SELECT sweep_to_leader_ms
             FROM copy_trading_orders
             WHERE leader_tx_hash = 'WEATHER_SWEEP' AND side = 'BUY'
-              AND signal_latency_ms IS NOT NULL AND signal_latency_ms > 0
+              AND sweep_to_leader_ms IS NOT NULL AND sweep_to_leader_ms > 0
               AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-            ORDER BY signal_latency_ms
+            ORDER BY sweep_to_leader_ms
         """, (days,))
         latency_rows = [int(r[0]) for r in cursor.fetchall()]
         sweep_to_leader = None

@@ -14,6 +14,7 @@ export interface Trade {
   leader_price: number
   err_msg?: string
   signal_latency_ms?: number | null
+  sweep_to_leader_ms?: number | null
 }
 
 interface TradeScatterChartProps {
@@ -151,8 +152,10 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
     }
     html += `<div><span style="color:${followerColor}">F</span> ${trade.size.toFixed(2)} @ ${trade.price.toFixed(4)}</div>`
     html += `<div style="opacity:0.7">成交 ${trade.size_matched.toFixed(2)} · ${trade.status}</div>`
-    if (trade.signal_latency_ms != null) {
-      html += `<div style="opacity:0.7;font-size:11px">延迟 ${trade.signal_latency_ms}ms</div>`
+    if (trade.sweep_to_leader_ms != null) {
+      html += `<div style="opacity:0.7;font-size:11px">sweep→leader ${trade.sweep_to_leader_ms}ms</div>`
+    } else if (trade.signal_latency_ms != null) {
+      html += `<div style="opacity:0.7;font-size:11px">下单延迟 ${trade.signal_latency_ms}ms</div>`
     }
     if (trade.err_msg) {
       html += `<div style="opacity:0.6;font-size:11px;color:#f59e0b">${trade.err_msg}</div>`
