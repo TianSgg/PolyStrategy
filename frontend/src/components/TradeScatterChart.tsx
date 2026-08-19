@@ -51,7 +51,7 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
   const categories = sorted.map(t => t.created_at)
 
   const followerData: any[] = sorted.map((t, i) => ({
-    value: [i, t.price],
+    value: [i, t.status === 'LEADER_CONFIRM' ? null : t.price],
     trade: t,
     itemStyle: {
       color: t.size_matched > 0 ? (t.side === 'BUY' ? buyColor : sellColor) : 'transparent',
@@ -69,7 +69,7 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
   let fPosAccum = 0
   let lPosAccum = 0
   const fPositionRaw: number[] = sorted.map(t => {
-    if (t.size_matched > 0) fPosAccum += t.side === 'BUY' ? t.size_matched : -t.size_matched
+    if (t.size_matched > 0 && t.status !== 'LEADER_CONFIRM') fPosAccum += t.side === 'BUY' ? t.size_matched : -t.size_matched
     return Math.max(0, fPosAccum)
   })
   const lPositionRaw: number[] = sorted.map(t => {
@@ -144,6 +144,9 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
     }
     if (trade.side === 'MID') {
       return `<div style="line-height:1.6"><span style="color:${midColor};font-weight:700">Midpoint</span> ${trade.price.toFixed(4)}</div>`
+    }
+    if (trade.status === 'LEADER_CONFIRM') {
+      return `<div style="min-width:130px;line-height:1.6"><div style="font-weight:700;margin-bottom:2px">${trade.created_at}</div><div style="opacity:0.7">Leader 确认 (sweep 已入场)</div><div><span style="color:${leaderColor}">L</span> ${trade.leader_size.toFixed(2)} @ ${trade.leader_price.toFixed(4)}</div></div>`
     }
     const sideColor = trade.side === 'BUY' ? buyColor : sellColor
     let html = `<div style="min-width:130px;line-height:1.6"><div style="font-weight:700;margin-bottom:2px">${trade.created_at}</div><div><span style="color:${sideColor};font-weight:700">${trade.side}</span></div>`

@@ -381,6 +381,28 @@ class CopyTradingService:
             if entry.order_id:
                 asyncio.create_task(asyncio.to_thread(update_order_sweep_to_leader, entry.order_id, sweep_to_leader_ms))
             entry.order_id = None
+            # 记录 leader 确认记录（follower 不动作，仅标记 leader 到来）
+            confirm_order_id = f"LEADER_CONFIRM_0x" + hashlib.sha256(
+                f"{signal.transaction_hash}_{signal.asset}_{config.id}_{time.time()}".encode()
+            ).hexdigest()
+            asyncio.create_task(asyncio.to_thread(
+                record_copy_trading_order,
+                order_id=confirm_order_id,
+                config_id=config.id,
+                leader=config.leader_proxy_wallet,
+                follower=config.follower_proxy_wallet,
+                leader_tx_hash=signal.transaction_hash,
+                asset_id=signal.asset,
+                side="BUY",
+                leader_size=signal.size,
+                leader_price=signal.price,
+                follow_size=0,
+                follow_price=0.99,
+                size_matched=0,
+                status="LEADER_CONFIRM",
+                err_msg=None,
+                signal_latency_ms=None,
+            ))
             logger.info(f"[WeatherState] SWEEP_PENDING→ACTIVE: leader confirmed {self._asset_label(signal.asset)} config={config.id} delay={sweep_to_leader_ms}ms")
             return
         if entry and entry.state == WeatherAssetState.ACTIVE:
