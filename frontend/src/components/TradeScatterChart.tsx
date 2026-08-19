@@ -14,6 +14,7 @@ export interface Trade {
   leader_price: number
   err_msg?: string
   signal_latency_ms?: number | null
+  sweep_to_leader_ms?: number | null
 }
 
 interface TradeScatterChartProps {
@@ -50,7 +51,7 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
   const categories = sorted.map(t => t.created_at)
 
   const followerData: any[] = sorted.map((t, i) => ({
-    value: [i, t.price],
+    value: [i, t.status === 'LEADER_CONFIRM' ? null : t.price],
     trade: t,
     itemStyle: {
       color: t.size_matched > 0 ? (t.side === 'BUY' ? buyColor : sellColor) : 'transparent',
@@ -68,7 +69,7 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
   let fPosAccum = 0
   let lPosAccum = 0
   const fPositionRaw: number[] = sorted.map(t => {
-    if (t.size_matched > 0) fPosAccum += t.side === 'BUY' ? t.size_matched : -t.size_matched
+    if (t.size_matched > 0 && t.status !== 'LEADER_CONFIRM') fPosAccum += t.side === 'BUY' ? t.size_matched : -t.size_matched
     return Math.max(0, fPosAccum)
   })
   const lPositionRaw: number[] = sorted.map(t => {
@@ -144,6 +145,9 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
     if (trade.side === 'MID') {
       return `<div style="line-height:1.6"><span style="color:${midColor};font-weight:700">Midpoint</span> ${trade.price.toFixed(4)}</div>`
     }
+    if (trade.status === 'LEADER_CONFIRM') {
+      return `<div style="min-width:130px;line-height:1.6"><div style="font-weight:700;margin-bottom:2px">${trade.created_at}</div><div style="opacity:0.7">Leader 确认 (sweep 已入场)</div><div><span style="color:${leaderColor}">L</span> ${trade.leader_size.toFixed(2)} @ ${trade.leader_price.toFixed(4)}</div></div>`
+    }
     const sideColor = trade.side === 'BUY' ? buyColor : sellColor
     let html = `<div style="min-width:130px;line-height:1.6"><div style="font-weight:700;margin-bottom:2px">${trade.created_at}</div><div><span style="color:${sideColor};font-weight:700">${trade.side}</span></div>`
     if (trade.leader_price > 0) {
@@ -151,8 +155,10 @@ function buildOption(trades: Trade[], darkMode: boolean, midPrice?: number | nul
     }
     html += `<div><span style="color:${followerColor}">F</span> ${trade.size.toFixed(2)} @ ${trade.price.toFixed(4)}</div>`
     html += `<div style="opacity:0.7">成交 ${trade.size_matched.toFixed(2)} · ${trade.status}</div>`
-    if (trade.signal_latency_ms != null) {
-      html += `<div style="opacity:0.7;font-size:11px">延迟 ${trade.signal_latency_ms}ms</div>`
+    if (trade.sweep_to_leader_ms != null) {
+      html += `<div style="opacity:0.7;font-size:11px">sweep→leader ${trade.sweep_to_leader_ms}ms</div>`
+    } else if (trade.signal_latency_ms != null) {
+      html += `<div style="opacity:0.7;font-size:11px">下单延迟 ${trade.signal_latency_ms}ms</div>`
     }
     if (trade.err_msg) {
       html += `<div style="opacity:0.6;font-size:11px;color:#f59e0b">${trade.err_msg}</div>`

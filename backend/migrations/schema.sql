@@ -114,6 +114,7 @@ CREATE TABLE copy_trading_orders (
   status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING / FILLED / CANCELLED / ERROR',
   err_msg VARCHAR(255) COMMENT '错误信息',
   signal_latency_ms INT DEFAULT NULL COMMENT '信号到达→下单结果耗时(ms)',
+  sweep_to_leader_ms INT DEFAULT NULL COMMENT 'sweep入场→leader信号确认延迟(ms)',
   created_at DATETIME(3) NOT NULL,
   updated_at DATETIME(3) NOT NULL,
   INDEX idx_config_id_asset_status (config_id, asset_id, status),
