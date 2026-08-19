@@ -347,7 +347,7 @@ class MarketService:
     def _mark_subscribe_confirmed(self, asset_id: str):
         self._pending_subscriptions.discard(asset_id)
         self._confirmed_subscriptions.add(asset_id)
-        logger.info(f"[Market] Subscribe confirmed for {asset_id[:8]}...")
+        logger.debug(f"[Market] Subscribe confirmed for {asset_id[:8]}...")
 
     def _invalidate_live_subscriptions(self):
         """连接断开后，内存订单簿不再视为实时有效，直到新的 snapshot 到达。"""
@@ -541,4 +541,4 @@ class MarketService:
         new_tick_size = data.get("new_tick_size")
         if asset_id and new_tick_size:
             self._tick_sizes[asset_id] = new_tick_size
-            logger.info(f"[Market] Updated tick_size for {asset_id[:8]}...: {new_tick_size}")
+            logger.debug(f"[Market] Updated tick_size for {asset_id[:8]}...: {new_tick_size}")

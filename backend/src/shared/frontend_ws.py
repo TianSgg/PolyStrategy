@@ -21,11 +21,11 @@ class FrontendWSManager:
     async def add_connection(self, websocket: WebSocket):
         await websocket.accept()
         self._connections.add(websocket)
-        logger.info(f"[WS] Client connected. Total: {len(self._connections)}")
+        logger.debug(f"[WS] Client connected. Total: {len(self._connections)}")
 
     async def remove_connection(self, websocket: WebSocket):
         self._connections.discard(websocket)
-        logger.info(f"[WS] Client disconnected. Total: {len(self._connections)}")
+        logger.debug(f"[WS] Client disconnected. Total: {len(self._connections)}")
 
     async def broadcast(self, data: dict):
         if not self._connections:

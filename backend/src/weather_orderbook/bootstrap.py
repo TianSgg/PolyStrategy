@@ -128,7 +128,7 @@ class WeatherBootstrap:
             await self._mysql_pool.wait_closed()
 
     async def _on_weather_event(self, event: WeatherEvent, main_ctx=None):
-        logger.info("Weather event: %s %s", event.event_type, event.asset.event_slug)
+        logger.debug("Weather event: %s %s", event.event_type, event.asset.event_slug)
 
         city = self._city_by_name.get(event.asset.city)
         if city is None:

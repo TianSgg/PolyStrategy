@@ -646,11 +646,11 @@ class CopyTradingService:
                 asset_id = asset.get("asset_id")
                 reason = payload.get("reason", "")
                 outcome = asset.get("outcome")
-                logger.info(f"[WeatherSweep] Received: asset={asset_id[:8] if asset_id else '?'} outcome={outcome} reason={reason}")
                 if outcome == "no" and asset_id:
+                    logger.info(f"[WeatherSweep] Received: asset={asset_id[:8]} reason={reason}")
                     await self._execute_weather_sweep(asset_id)
                 else:
-                    logger.debug(f"[WeatherSweep] Skipped: outcome={outcome} reason={reason}")
+                    logger.debug(f"[WeatherSweep] Skipped: asset={asset_id[:8] if asset_id else '?'} outcome={outcome}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1245,6 +1245,7 @@ class CopyTradingService:
             return
 
         if type == "UPDATE" and status == "MATCHED":
+            self._sweep_exited_orders.pop(order_id, None)
             asyncio.create_task(asyncio.to_thread(update_copy_trading_order,
                 order_id=order_id,
                 size_matched=size_matched,
@@ -1312,9 +1313,9 @@ class CopyTradingService:
 
         logger.info(f"[CopyTrade] Trade CONFIRMED: {side:>4} {matched_amount:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:8]} (new_pos={new_size:>7.2f}, new_pending={new_pending:>7.2f})")
 
-        # 延迟成交补偿：已超时退出的 sweep 订单成交后触发 SELL
+        # 延迟成交补偿：已超时退出的 sweep 订单成交后触发 SELL（不 pop，支持多笔 fill）
         if side == "BUY" and order_id in self._sweep_exited_orders:
-            exited_config_id, exited_asset_id = self._sweep_exited_orders.pop(order_id)
+            exited_config_id, exited_asset_id = self._sweep_exited_orders[order_id]
             config = self._config_id_to_config.get(exited_config_id)
             if config and exited_asset_id == asset_id:
                 logger.info(f"[SweepExit] Delayed fill detected for timed-out sweep: {self._asset_label(asset_id)} order={order_id[:8]} filled={matched_amount:.2f}")

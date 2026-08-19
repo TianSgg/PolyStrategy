@@ -303,7 +303,7 @@ class WeatherCoordinator:
             if main_ctx:
                 payload["main_monitor"] = main_ctx
             self._event_bus.publish(f"weather.{event.event_type}", payload)
-            logger.info("[Coordinator] EventBus published: weather.%s", event.event_type)
+            logger.debug("[Coordinator] EventBus published: weather.%s", event.event_type)
 
         if not state_key:
             return
