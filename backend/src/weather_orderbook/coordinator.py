@@ -292,7 +292,8 @@ class WeatherCoordinator:
         state = self._states[state_key] if state_key else None
         main_ctx = self._main_monitor_context(state) if state else None
 
-        logger.info(
+        log = logger.debug if (event.event_type == "sweep" and event.asset.outcome != "no") else logger.info
+        log(
             "[Coordinator] event=%s city=%s asset=%s outcome=%s reason=%s",
             event.event_type, event.asset.city, event.asset.asset_id[:8], event.asset.outcome, event.reason,
         )

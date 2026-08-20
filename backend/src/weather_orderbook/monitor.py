@@ -206,7 +206,8 @@ class WeatherOrderBookMonitor:
                 if before_exists and not after_exists:
                     asset = self._assets[asset_id]
                     if self.mode == "full":
-                        logger.info(
+                        log = logger.info if asset.outcome == "no" else logger.debug
+                        log(
                             "[Monitor] SWEEP detected: %s %s %s outcome=%s threshold=%.2f tick=%s",
                             asset.city, asset.temperature_label, asset_id[:8], asset.outcome, threshold, self._ticks[asset_id],
                         )
