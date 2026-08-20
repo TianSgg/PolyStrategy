@@ -368,51 +368,53 @@ class CopyTradingService:
         if signal.asset not in self._asset_labels:
             asyncio.create_task(self._get_asset_label(signal.asset))
 
-        # 天气状态机检查
+        # 状态检查、下单和状态迁移必须与天气 sweep 共用同一临界区。
         state_key = (config.id, signal.asset)
-        entry = self._weather_states.get(state_key)
-        if entry and entry.state == WeatherAssetState.SWEEP_PENDING:
-            # sweep 先入场，leader 信号到达 → 确认，转 ACTIVE，取消定时器
-            if entry.timer_task:
-                entry.timer_task.cancel()
-                entry.timer_task = None
-            sweep_to_leader_ms = round((time.time() - entry.entry_time) * 1000)
-            entry.state = WeatherAssetState.ACTIVE
-            if entry.order_id:
-                asyncio.create_task(asyncio.to_thread(update_order_sweep_to_leader, entry.order_id, sweep_to_leader_ms))
-            # 记录 leader 确认记录（follower 不动作，仅标记 leader 到来）
-            confirm_order_id = f"LEADER_CONFIRM_0x" + hashlib.sha256(
-                f"{signal.transaction_hash}_{signal.asset}_{config.id}_{time.time()}".encode()
-            ).hexdigest()
-            asyncio.create_task(asyncio.to_thread(
-                record_copy_trading_order,
-                order_id=confirm_order_id,
-                config_id=config.id,
-                leader=config.leader_proxy_wallet,
-                follower=config.follower_proxy_wallet,
-                leader_tx_hash=signal.transaction_hash,
-                asset_id=signal.asset,
-                side="BUY",
-                leader_size=signal.size,
-                leader_price=signal.price,
-                follow_size=0,
-                follow_price=0.99,
-                size_matched=0,
-                status="LEADER_CONFIRM",
-                err_msg=None,
-                signal_latency_ms=None,
-            ))
-            logger.info(f"[WeatherState] SWEEP_PENDING→ACTIVE: leader confirmed {self._asset_label(signal.asset)} config={config.id} delay={sweep_to_leader_ms}ms")
-            return
-        if entry and entry.state == WeatherAssetState.ACTIVE:
-            logger.debug(f"[WeatherState] Already ACTIVE for {self._asset_label(signal.asset)} config={config.id}, skip")
-            return
+        f_addr = config.follower_proxy_wallet
+        async with self._get_addr_lock(f_addr):
+            entry = self._weather_states.get(state_key)
+            if entry and entry.state == WeatherAssetState.SWEEP_PENDING:
+                # sweep 先入场，leader 信号到达 → 确认，转 ACTIVE，取消定时器
+                if entry.timer_task:
+                    entry.timer_task.cancel()
+                    entry.timer_task = None
+                sweep_to_leader_ms = round((time.time() - entry.entry_time) * 1000)
+                entry.state = WeatherAssetState.ACTIVE
+                if entry.order_id:
+                    asyncio.create_task(asyncio.to_thread(update_order_sweep_to_leader, entry.order_id, sweep_to_leader_ms))
+                # 记录 leader 确认记录（follower 不动作，仅标记 leader 到来）
+                confirm_order_id = f"LEADER_CONFIRM_0x" + hashlib.sha256(
+                    f"{signal.transaction_hash}_{signal.asset}_{config.id}_{time.time()}".encode()
+                ).hexdigest()
+                asyncio.create_task(asyncio.to_thread(
+                    record_copy_trading_order,
+                    order_id=confirm_order_id,
+                    config_id=config.id,
+                    leader=config.leader_proxy_wallet,
+                    follower=config.follower_proxy_wallet,
+                    leader_tx_hash=signal.transaction_hash,
+                    asset_id=signal.asset,
+                    side="BUY",
+                    leader_size=signal.size,
+                    leader_price=signal.price,
+                    follow_size=0,
+                    follow_price=0.99,
+                    size_matched=0,
+                    status="LEADER_CONFIRM",
+                    err_msg=None,
+                    signal_latency_ms=None,
+                ))
+                logger.info(f"[WeatherState] SWEEP_PENDING→ACTIVE: leader confirmed {self._asset_label(signal.asset)} config={config.id} delay={sweep_to_leader_ms}ms")
+                return
+            if entry and entry.state == WeatherAssetState.ACTIVE:
+                logger.debug(f"[WeatherState] Already ACTIVE for {self._asset_label(signal.asset)} config={config.id}, skip")
+                return
 
-        await self._execute_buy(config, signal)
-        self._weather_states[state_key] = SweepEntry(state=WeatherAssetState.ACTIVE)
+            await self._execute_buy_locked(config, signal)
+            self._weather_states[state_key] = SweepEntry(state=WeatherAssetState.ACTIVE)
 
-    async def _execute_buy(self, config: CopyTradingConfig, signal: ActivitySignal):
-        """对单个 config 执行 BUY NO 下单"""
+    async def _execute_buy_locked(self, config: CopyTradingConfig, signal: ActivitySignal):
+        """执行 Leader BUY；调用方必须持有 follower 地址锁。"""
         asset_id = signal.asset
         follow_price = 0.99
 
@@ -423,34 +425,33 @@ class CopyTradingService:
         follow_buy_size = balance
 
         f_addr = config.follower_proxy_wallet
-        async with self._get_addr_lock(f_addr):
-            follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
-            leader_name = self._leader_service.get_leader_name(config.leader_proxy_wallet)
+        follower_name = self._account_service.get_acc_name(config.follower_proxy_wallet)
+        leader_name = self._leader_service.get_leader_name(config.leader_proxy_wallet)
 
-            logger.info(
-                f"[CopyTrade] BUY {self._asset_label(asset_id)} | "
-                f"leader={leader_name} {signal.size:.2f}@{signal.price} | "
-                f"follower={follower_name} {follow_buy_size:.2f}@{follow_price}"
-            )
+        logger.info(
+            f"[CopyTrade] BUY {self._asset_label(asset_id)} | "
+            f"leader={leader_name} {signal.size:.2f}@{signal.price} | "
+            f"follower={follower_name} {follow_buy_size:.2f}@{follow_price}"
+        )
 
-            order_start = time.time()
-            result = await self._place_order(
-                config, asset_id, "BUY", follow_buy_size,
-                price=follow_price, tick_size="0.01", neg_risk=True
-            )
-            order_elapsed_ms = (time.time() - order_start) * 1000
-            signal_to_result_ms = (time.time() - signal.signal_time) * 1000
-            logger.debug(
-                f"[CopyTrade] timer: signal_to_order_result={signal_to_result_ms:.1f}ms "
-                f"order_elapsed={order_elapsed_ms:.1f}ms side=BUY asset={self._asset_label(asset_id)} "
-                f"status={result.raw_status}"
-            )
-            self._register_post_order_result(config, result)
+        order_start = time.time()
+        result = await self._place_order(
+            config, asset_id, "BUY", follow_buy_size,
+            price=follow_price, tick_size="0.01", neg_risk=True
+        )
+        order_elapsed_ms = (time.time() - order_start) * 1000
+        signal_to_result_ms = (time.time() - signal.signal_time) * 1000
+        logger.debug(
+            f"[CopyTrade] timer: signal_to_order_result={signal_to_result_ms:.1f}ms "
+            f"order_elapsed={order_elapsed_ms:.1f}ms side=BUY asset={self._asset_label(asset_id)} "
+            f"status={result.raw_status}"
+        )
+        self._register_post_order_result(config, result)
 
-            new_pending = self._pending_buy_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
-            self._pending_buy_orders.setdefault(f_addr, {})[asset_id] = new_pending
-            new_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) + result.position_delta
-            self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
+        new_pending = self._pending_buy_orders.setdefault(f_addr, {}).get(asset_id, 0) + result.pending_delta
+        self._pending_buy_orders.setdefault(f_addr, {})[asset_id] = new_pending
+        new_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) + result.position_delta
+        self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
 
         if result.pending_delta:
             logger.debug(f"[CopyTrade] BUY pending: {result.pending_delta:+.2f} {self._asset_label(asset_id)} (position={new_pos} pending={new_pending})")
@@ -676,23 +677,23 @@ class CopyTradingService:
             if not config.enabled or config.sweep_confirm_window_ms <= 0:
                 continue
 
-            state_key = (config.id, asset_id)
-            entry = self._weather_states.get(state_key)
-            if entry and entry.state != WeatherAssetState.IDLE:
-                continue
-
             f_addr = config.follower_proxy_wallet
-            if self._follower_positions.get(f_addr, {}).get(asset_id, 0) > 0:
-                continue
-
+            state_key = (config.id, asset_id)
             follow_price = 0.99
-            balance = self._config_balances.get(config.id, 0)
-            if balance < 5:
-                logger.info(f"[WeatherSweep] BUY skipped: balance exhausted ({balance:.2f}) config={config.id}")
-                continue
-            follow_buy_size = balance
 
             async with self._get_addr_lock(f_addr):
+                entry = self._weather_states.get(state_key)
+                if entry and entry.state != WeatherAssetState.IDLE:
+                    continue
+                if self._follower_positions.get(f_addr, {}).get(asset_id, 0) > 0:
+                    continue
+
+                balance = self._config_balances.get(config.id, 0)
+                if balance < 5:
+                    logger.info(f"[WeatherSweep] BUY skipped: balance exhausted ({balance:.2f}) config={config.id}")
+                    continue
+                follow_buy_size = balance
+
                 follower_name = self._account_service.get_acc_name(f_addr)
                 logger.info(
                     f"[WeatherSweep] BUY {self._asset_label(asset_id)} | "
@@ -711,6 +712,21 @@ class CopyTradingService:
                 new_pos = self._follower_positions.setdefault(f_addr, {}).get(asset_id, 0) + result.position_delta
                 self._follower_positions.setdefault(f_addr, {})[asset_id] = new_pos
 
+                if result.raw_status in ("LIVE", "MATCHED", "DELAYED"):
+                    get_market_service().watch_for_exit(asset_id)
+                    self._asset_to_configs.setdefault(asset_id, set()).add(config.id)
+                    entry = SweepEntry(
+                        state=WeatherAssetState.SWEEP_PENDING,
+                        order_id=result.order_id,
+                        entry_time=now,
+                        filled_size=result.position_delta,
+                    )
+                    entry.timer_task = asyncio.create_task(
+                        self._sweep_timeout(state_key, config, entry)
+                    )
+                    self._weather_states[state_key] = entry
+                    logger.info(f"[WeatherState] IDLE→SWEEP_PENDING: {self._asset_label(asset_id)} config={config.id} window={config.sweep_confirm_window_ms}ms")
+
             if result.raw_status == "ERROR":
                 logger.warning(f"[WeatherSweep] BUY failed: {self._asset_label(asset_id)} err={result.err_msg}")
                 self._record_buy_order(config, asset_id, follow_price, follow_buy_size, result, "WEATHER_SWEEP")
@@ -722,21 +738,6 @@ class CopyTradingService:
                 asyncio.create_task(asyncio.to_thread(upsert_follower_position, f_addr, asset_id, new_pos))
 
             self._record_buy_order(config, asset_id, follow_price, follow_buy_size, result, "WEATHER_SWEEP")
-
-            if result.raw_status in ("LIVE", "MATCHED", "DELAYED"):
-                get_market_service().watch_for_exit(asset_id)
-                self._asset_to_configs.setdefault(asset_id, set()).add(config.id)
-                entry = SweepEntry(
-                    state=WeatherAssetState.SWEEP_PENDING,
-                    order_id=result.order_id,
-                    entry_time=now,
-                    filled_size=result.position_delta,
-                )
-                entry.timer_task = asyncio.create_task(
-                    self._sweep_timeout(state_key, config, entry)
-                )
-                self._weather_states[state_key] = entry
-                logger.info(f"[WeatherState] IDLE→SWEEP_PENDING: {self._asset_label(asset_id)} config={config.id} window={config.sweep_confirm_window_ms}ms")
 
         if asset_id not in self._asset_labels:
             asyncio.create_task(self._get_asset_label(asset_id))
