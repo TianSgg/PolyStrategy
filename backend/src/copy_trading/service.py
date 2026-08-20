@@ -380,7 +380,6 @@ class CopyTradingService:
             entry.state = WeatherAssetState.ACTIVE
             if entry.order_id:
                 asyncio.create_task(asyncio.to_thread(update_order_sweep_to_leader, entry.order_id, sweep_to_leader_ms))
-            entry.order_id = None
             # 记录 leader 确认记录（follower 不动作，仅标记 leader 到来）
             confirm_order_id = f"LEADER_CONFIRM_0x" + hashlib.sha256(
                 f"{signal.transaction_hash}_{signal.asset}_{config.id}_{time.time()}".encode()
@@ -483,6 +482,20 @@ class CopyTradingService:
             if not config:
                 continue
             f_addr = config.follower_proxy_wallet
+
+            # cancel 未完成的 BUY 订单（防止 exit 后延迟成交产生孤儿仓位）
+            state_key = (config_id, asset_id)
+            entry = self._weather_states.get(state_key)
+            if entry and entry.order_id:
+                pending_buy = self._pending_buy_orders.get(f_addr, {}).get(asset_id, 0)
+                if pending_buy > 0:
+                    try:
+                        cancel_result = await asyncio.to_thread(
+                            self._account_service.cancel_order, f_addr, entry.order_id
+                        )
+                        logger.info(f"[CopyTrade] EXIT cancel pending BUY {entry.order_id[:8]} for {self._asset_label(asset_id)} pending={pending_buy:.2f} result={cancel_result}")
+                    except Exception as e:
+                        logger.warning(f"[CopyTrade] EXIT cancel BUY failed {entry.order_id[:8]}: {e}")
 
             async with self._get_addr_lock(f_addr):
                 follower_pos = self._follower_positions.get(f_addr, {}).get(asset_id, 0)
