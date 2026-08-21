@@ -145,8 +145,8 @@ class CopyTradingService:
         self._weather_sweep_queue: Optional[asyncio.Queue] = None
         self._weather_sweep_task: Optional[asyncio.Task] = None
 
-        # 启动持仓轮询兜底任务（依赖 _config_id_to_config，由 initialize 填充）
-        self._follower_poller_task: Optional[asyncio.Task] = None
+        # 启动时执行一次仓位同步，运行期间仅依赖下单返回和 WS 增量维护。
+        self._initial_position_sync_complete = False
         self._pending_poller_task: Optional[asyncio.Task] = None
 
         # Leader 名字解析服务
@@ -208,25 +208,16 @@ class CopyTradingService:
 
 
 
-    def _start_follower_position_poller(self, interval=3600):
-        """启动 follower 仓位轮询兜底同步（WS CONFIRMED 事件的补充）"""
-        async def _poll():
-            for f_addr in list(self._followers):
-                try:
-                    await self._sync_follower_positions_from_poly(f_addr)
-                except Exception as e:
-                    logger.error(f"[PositionPoller] Initial follower sync error for {self._account_service.get_acc_name(f_addr)}: {e}")
-            self._restore_exit_watches()
-            while True:
-                await asyncio.sleep(interval)
-                for f_addr in list(self._followers):
-                    try:
-                        await self._sync_follower_positions_from_poly(f_addr)
-                    except Exception as e:
-                        logger.warning(f"[PositionPoller] Follower poller sync error for {self._account_service.get_acc_name(f_addr)}: {e}")
-
-        self._follower_poller_task = asyncio.create_task(_poll())
-        logger.info(f"[PositionPoller] Follower position poller started ({interval}s interval)")
+    async def _sync_follower_positions_on_startup(self):
+        """启动时同步一次 follower 仓位，之后由下单返回和 WS 增量维护。"""
+        for f_addr in list(self._followers):
+            try:
+                await self._sync_follower_positions_from_poly(f_addr)
+            except Exception as e:
+                logger.error(f"[PositionSync] Initial follower sync error for {self._account_service.get_acc_name(f_addr)}: {e}")
+        self._restore_exit_watches()
+        self._initial_position_sync_complete = True
+        logger.info("[PositionSync] Initial follower position sync completed")
 
 
     def _start_pending_poller(self, interval=3600):
@@ -251,9 +242,6 @@ class CopyTradingService:
 
     def stop(self):
         """停止后台任务"""
-        if self._follower_poller_task:
-            self._follower_poller_task.cancel()
-            self._follower_poller_task = None
         if self._pending_poller_task:
             self._pending_poller_task.cancel()
             self._pending_poller_task = None
@@ -269,13 +257,13 @@ class CopyTradingService:
         asyncio.create_task(get_market_service().stop())
 
     async def initialize(self):
-        """启动时加载配置，各 poller 自行初始化同步"""
+        """启动时加载配置并同步仓位，pending poller 自行初始化同步。"""
         market_svc = get_market_service()
         market_svc.set_exit_callback(self._on_market_exit)
         # market_svc.set_sweep_callback(self._on_sweep_signal)  # 抢筹策略暂停
         await market_svc.start()
         await self._load_configs()
-        self._start_follower_position_poller(interval=120)
+        await self._sync_follower_positions_on_startup()
         self._start_pending_poller(interval=120)
 
         event_bus = get_event_bus()
