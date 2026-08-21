@@ -111,7 +111,7 @@ CREATE TABLE copy_trading_orders (
   follow_size DECIMAL(20,4) NOT NULL COMMENT 'follower 成交数量',
   follow_price DECIMAL(20,4) NOT NULL COMMENT 'follower 成交价（含tick调整）',
   size_matched DECIMAL(20,4) NOT NULL DEFAULT 0 COMMENT '已成交数量',
-  status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING / FILLED / CANCELLED / ERROR',
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING / FILLED / CANCELED / ERROR',
   err_msg VARCHAR(255) COMMENT '错误信息',
   signal_latency_ms INT DEFAULT NULL COMMENT '信号到达→下单结果耗时(ms)',
   sweep_to_leader_ms INT DEFAULT NULL COMMENT 'sweep入场→leader信号确认延迟(ms)',

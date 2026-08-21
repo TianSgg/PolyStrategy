@@ -44,6 +44,7 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 ORDER_MATCH_EPSILON = 0.0001
+ORDER_TERMINAL_STATUSES = {"MATCHED", "CANCELED"}
 
 
 class WeatherAssetState(str, Enum):
@@ -903,12 +904,15 @@ class CopyTradingService:
 
     async def _patch_order_match_from_trade(self, order_id: str, matched_amount: float, order=None):
         """trade CONFIRMED 增量推进订单表的 size_matched；仅在未终态时补 status。"""
+        # CANCELLATION 已处理但 DB 异步更新尚未完成时，也不能再累计订单成交量。
+        if order_id in self._processed_canceled_order_ids:
+            return order
         if order is None:
             order = await asyncio.to_thread(get_order_by_id, order_id)
         if not order:
             return None
 
-        if order.status in ("MATCHED", "CANCELED"):
+        if (order.status or "").upper() in ORDER_TERMINAL_STATUSES:
             return order
 
         new_size_matched = min(order.follow_size, order.size_matched + matched_amount)
@@ -1240,13 +1244,13 @@ class CopyTradingService:
                     else:
                         self._pending_sell_orders[f_addr][asset_id] = new_pending
                     asyncio.create_task(self._save_pending_sell_with_question(f_addr, asset_id, new_pending))
-            logger.info(f"[CopyTrade] order CANCELED : {side:>4} {released:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:8]} (position={cur_pos:>7.2f}, pending={new_pending:>7.2f})")
+            logger.info(f"[CopyTrade] order CANCELED: {side:>4} {released:>7.2f} @ {price:<5} asset={self._asset_label(asset_id)} order_id={order_id[:8]} (position={cur_pos:>7.2f}, pending={new_pending:>7.2f})")
 
             asyncio.create_task(asyncio.to_thread(update_copy_trading_order,
                 order_id=order_id,
                 size_matched=size_matched,
-                status="CANCELLED",
-                err_msg=f"canceled (ws_status={status})" if status != "CANCELLED" else "canceled",
+                status="CANCELED",
+                err_msg=f"canceled (ws_status={status})" if status != "CANCELED" else "canceled",
             ))
             return
 
