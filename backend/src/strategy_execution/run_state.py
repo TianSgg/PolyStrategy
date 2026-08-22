@@ -23,6 +23,7 @@ from strategy_execution.enums import (
     StrategyType,
 )
 from strategy_execution.repository import StrategyRunEventRepository, StrategyRunRepository
+from strategy_execution.ws import get_strategy_ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +214,7 @@ class RunStateMachine:
                 self._version += 1
 
     async def _emit_event(self, event_type: RunEventType, payload: Dict[str, Any]) -> None:
-        """追加不可变事件到时间线。"""
+        """追加不可变事件到时间线，并推送到前端 WS。"""
         self._sequence_no += 1
         event = {
             "run_id": self.run_id,
@@ -227,6 +228,20 @@ class RunStateMachine:
             self._event_repo.append(event)
         except Exception:
             logger.exception("Failed to persist run event for %s seq %d", self.run_id, self._sequence_no)
+
+        # 推送到前端 WebSocket
+        get_strategy_ws_manager().publish({
+            "event_type": "strategy_run_event",
+            "data": {
+                "run_id": self.run_id,
+                "strategy_type": self.strategy_type.value,
+                "token_id": self.token_id,
+                "sequence_no": self._sequence_no,
+                "type": event_type.value,
+                "state": self._state.value,
+                "payload": payload,
+            },
+        })
 
     async def emit_event(self, event_type: RunEventType, payload: Dict[str, Any]) -> None:
         """公开接口 — 策略可以追加自定义事件。"""

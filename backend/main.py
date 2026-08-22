@@ -92,6 +92,7 @@ from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
 from strategy_execution.api import router as strategy_execution_router
 from strategy_execution.runtime import StrategyRuntime
+from strategy_execution.ws import get_strategy_ws_manager
 from weather_orderbook import weather_orderbook_router
 from weather_orderbook.bootstrap import WeatherBootstrap
 
@@ -139,6 +140,8 @@ async def lifespan(app: FastAPI):
     app.state.weather_notification_repository = weather_bootstrap.notification_repository
 
     # --- 策略执行系统初始化 ---
+    strategy_ws = get_strategy_ws_manager()
+    await strategy_ws.start()
     strategy_runtime = StrategyRuntime()
     if _env != "dev":
         await strategy_runtime.start()
@@ -148,6 +151,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await strategy_runtime.stop()
+        await strategy_ws.stop()
         await weather_bootstrap.stop()
         if _env != "dev":
             copy_trading_predexon.stop()
@@ -253,6 +257,25 @@ async def pnl_websocket_endpoint(websocket: WebSocket):
         pass
     finally:
         pnl_svc.remove_ws_queue(queue)
+
+
+@app.websocket("/ws/strategy-execution")
+async def strategy_execution_websocket_endpoint(websocket: WebSocket):
+    """策略执行事件实时推送 WebSocket 端点。"""
+    user = _get_ws_user(websocket)
+    if not user or not user.enabled:
+        await websocket.close(code=1008)
+        return
+
+    se_ws = get_strategy_ws_manager()
+    await se_ws.add_connection(websocket)
+    try:
+        async for _ in websocket.iter_text():
+            pass
+    except WebSocketDisconnect:
+        logger.info("Strategy execution WS client disconnected")
+    finally:
+        await se_ws.remove_connection(websocket)
 
 
 if __name__ == "__main__":
