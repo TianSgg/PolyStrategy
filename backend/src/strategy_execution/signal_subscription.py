@@ -142,17 +142,18 @@ class WeatherSignalClient:
             data = msg.get("signal", {})
             signal = WeatherSweepSignal(
                 event_id=data.get("event_id", ""),
+                event_type=data.get("event_type", "sweep"),
                 token_id=data.get("token_id", ""),
                 outcome=data.get("outcome", ""),
+                city=data.get("city", ""),
+                event_slug=data.get("event_slug", ""),
+                market_slug=data.get("market_slug"),
+                temperature_label=data.get("temperature_label"),
+                direction=data.get("direction"),
+                reason=data.get("reason"),
                 occurred_at_ms=data.get("occurred_at_ms", 0),
                 received_at_ns=data.get("received_at_ns", 0),
-                city=data.get("city", ""),
-                spread_before=Decimal(str(data.get("spread_before", "0"))),
-                spread_after=Decimal(str(data.get("spread_after", "0"))),
-                volume_spike=data.get("volume_spike", False),
-                bid_depth_change=Decimal(str(data["bid_depth_change"])) if data.get("bid_depth_change") else None,
-                ask_depth_change=Decimal(str(data["ask_depth_change"])) if data.get("ask_depth_change") else None,
-                extra=data.get("extra", {}),
+                orderbook_snapshot=data.get("orderbook_snapshot", {}),
             )
 
             if self._dedup.is_duplicate(signal.dedup_key()):

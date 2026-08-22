@@ -54,34 +54,23 @@ async def _event_bus_bridge() -> None:
             payload = await queue.get()
             asset = payload.get("asset", {})
             current_ob = payload.get("current_orderbook", {})
-            previous_ob = payload.get("previous_orderbook")
-
-            spread_before = "0"
-            spread_after = "0"
-            if previous_ob and previous_ob.get("best_ask") and previous_ob.get("best_bid"):
-                spread_before = str(
-                    float(previous_ob["best_ask"]["price"]) - float(previous_ob["best_bid"]["price"])
-                )
-            if current_ob.get("best_ask") and current_ob.get("best_bid"):
-                spread_after = str(
-                    float(current_ob["best_ask"]["price"]) - float(current_ob["best_bid"]["price"])
-                )
+            event_slug = asset.get("event_slug", "")
+            direction = event_slug.split("-temperature-in-", 1)[0] if "-temperature-in-" in event_slug else ""
 
             signal_dict = {
-                "event_id": f"weather:{asset.get('event_slug', '')}:{int(time.time() * 1000)}",
+                "event_id": f"{event_slug}:{asset.get('asset_id', '')}:{int(time.time() * 1000)}",
+                "event_type": payload.get("event_type", "sweep"),
                 "token_id": asset.get("asset_id", ""),
                 "outcome": asset.get("outcome", ""),
+                "city": asset.get("city", ""),
+                "event_slug": event_slug,
+                "market_slug": asset.get("market_slug"),
+                "temperature_label": asset.get("temperature_label"),
+                "direction": direction,
+                "reason": payload.get("reason", ""),
                 "occurred_at_ms": current_ob.get("observed_at_unix_ms", int(time.time() * 1000)),
                 "received_at_ns": time.time_ns(),
-                "city": asset.get("city", ""),
-                "spread_before": spread_before,
-                "spread_after": spread_after,
-                "volume_spike": False,
-                "extra": {
-                    "event_slug": asset.get("event_slug"),
-                    "market_slug": asset.get("market_slug"),
-                    "reason": payload.get("reason", ""),
-                },
+                "orderbook_snapshot": current_ob,
             }
             await signal_hub.broadcast(signal_dict)
         except asyncio.CancelledError:
@@ -95,7 +84,7 @@ async def lifespan(app: FastAPI):
     weather_bootstrap = WeatherBootstrap()
     weather_service = await weather_bootstrap.start()
     app.state.weather_service = weather_service
-    app.state.weather_notification_repository = weather_bootstrap.notification_repository
+    app.state.weather_signal_event_repository = weather_bootstrap.signal_event_repository
 
     bridge_task = asyncio.create_task(_event_bus_bridge(), name="weather-signal-bridge")
     logger.info("Weather signal service started on port %s", os.getenv("WEATHER_SIGNAL_PORT", "8001"))

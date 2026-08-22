@@ -1,4 +1,4 @@
-"""天气信号持久化 DAO — weather_signal_events 表。"""
+"""天气信号查询 DAO — 读取 weather_signal_events 表。"""
 from __future__ import annotations
 
 import json
@@ -12,36 +12,13 @@ logger = logging.getLogger(__name__)
 
 
 class WeatherSignalRepository:
-    """weather_signal_events 表读写。"""
+    """查询 weather_signal_events 表中的信号记录。"""
 
-    def save(self, event: Dict[str, Any]) -> bool:
-        sql = """
-            INSERT INTO weather_signal_events
-                (id, event_type, token_id, outcome,
-                 city, spread_before, spread_after, volume_spike,
-                 bid_depth_change, ask_depth_change,
-                 occurred_at, received_at, received_monotonic_ns, extra_json)
-            VALUES
-                (%(id)s, %(event_type)s, %(token_id)s, %(outcome)s,
-                 %(city)s, %(spread_before)s, %(spread_after)s, %(volume_spike)s,
-                 %(bid_depth_change)s, %(ask_depth_change)s,
-                 %(occurred_at)s, %(received_at)s, %(received_monotonic_ns)s, %(extra_json)s)
-            ON DUPLICATE KEY UPDATE id = id
-        """
+    def find_by_id(self, notification_key: str) -> Optional[Dict[str, Any]]:
+        sql = "SELECT * FROM weather_signal_events WHERE notification_key = %s"
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, {
-                    **event,
-                    "extra_json": json.dumps(event.get("extra_json", {}), ensure_ascii=False),
-                })
-                conn.commit()
-                return cur.rowcount > 0
-
-    def find_by_id(self, signal_id: str) -> Optional[Dict[str, Any]]:
-        sql = "SELECT * FROM weather_signal_events WHERE id = %s"
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (signal_id,))
+                cur.execute(sql, (notification_key,))
                 row = cur.fetchone()
                 return self._row_to_dict(cur, row) if row else None
 
@@ -50,6 +27,7 @@ class WeatherSignalRepository:
         *,
         token_id: Optional[str] = None,
         city: Optional[str] = None,
+        event_type: Optional[str] = None,
         outcome: Optional[str] = None,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
@@ -65,18 +43,21 @@ class WeatherSignalRepository:
         if city:
             conditions.append("city = %s")
             params.append(city)
+        if event_type:
+            conditions.append("event_type = %s")
+            params.append(event_type)
         if outcome:
             conditions.append("outcome = %s")
             params.append(outcome)
         if start_time:
-            conditions.append("received_at >= %s")
+            conditions.append("occurred_at >= %s")
             params.append(start_time)
         if end_time:
-            conditions.append("received_at <= %s")
+            conditions.append("occurred_at <= %s")
             params.append(end_time)
 
         where = " AND ".join(conditions) if conditions else "1=1"
-        sql = f"SELECT * FROM weather_signal_events WHERE {where} ORDER BY received_at DESC LIMIT %s OFFSET %s"
+        sql = f"SELECT * FROM weather_signal_events WHERE {where} ORDER BY occurred_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
 
         with get_db() as conn:
@@ -88,6 +69,6 @@ class WeatherSignalRepository:
     def _row_to_dict(self, cursor, row) -> Dict[str, Any]:
         columns = [desc[0] for desc in cursor.description]
         d = dict(zip(columns, row))
-        if isinstance(d.get("extra_json"), str):
-            d["extra_json"] = json.loads(d["extra_json"])
+        if isinstance(d.get("payload"), str):
+            d["payload"] = json.loads(d["payload"])
         return d

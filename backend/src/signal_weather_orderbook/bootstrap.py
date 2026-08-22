@@ -10,10 +10,10 @@ import asyncmy
 
 from event_bus import get_event_bus
 from shared.db import MYSQL_CONFIG
-from .dao import WeatherCityRepository, WeatherNotificationRepository
+from .dao import WeatherCityRepository, WeatherSignalEventRepository
 from .gateway import PolymarketMarketClient
 from .service import WeatherOrderBookService
-from .types import WeatherEvent, WeatherNotificationRecord
+from .types import WeatherEvent, WeatherSignalRecord
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,9 @@ def _format_orderbook(state: str, orderbook: dict | None) -> str:
 
 
 
-def _build_notification_record(
+def _build_signal_record(
     event: WeatherEvent, city, main_ctx
-) -> WeatherNotificationRecord:
+) -> WeatherSignalRecord:
     occurred_at_ms = event.current_orderbook.get("observed_at_unix_ms")
     try:
         occurred_at = datetime.fromtimestamp(int(occurred_at_ms) / 1000, _tz.utc)
@@ -49,7 +49,7 @@ def _build_notification_record(
     payload = event.payload()
     if main_ctx:
         payload["main_monitor"] = main_ctx
-    return WeatherNotificationRecord(
+    return WeatherSignalRecord(
         notification_key=f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
         occurred_at=occurred_at,
         event_type=event.event_type,
@@ -77,7 +77,7 @@ class WeatherBootstrap:
 
     def __init__(self):
         self.service: WeatherOrderBookService | None = None
-        self.notification_repository: WeatherNotificationRepository | None = None
+        self.signal_event_repository: WeatherSignalEventRepository | None = None
         self._mysql_pool = None
         self._http_session: aiohttp.ClientSession | None = None
         self._city_by_name: dict = {}
@@ -100,8 +100,8 @@ class WeatherBootstrap:
         cities = await city_repository.list_enabled()
         logger.info("Weather: loaded %d cities from database", len(cities))
 
-        self.notification_repository = WeatherNotificationRepository(self._mysql_pool)
-        await self.notification_repository.ping()
+        self.signal_event_repository = WeatherSignalEventRepository(self._mysql_pool)
+        await self.signal_event_repository.ping()
 
         self._http_session = aiohttp.ClientSession()
         market_client = PolymarketMarketClient(self._http_session)
@@ -113,7 +113,7 @@ class WeatherBootstrap:
             cities,
             market_client,
             self._on_weather_event,
-            notification_repository=self.notification_repository,
+            signal_event_repository=self.signal_event_repository,
             event_bus=event_bus,
         )
         await self.service.start()
@@ -137,10 +137,10 @@ class WeatherBootstrap:
             logger.error("Cannot persist weather notification: unknown city=%s", event.asset.city)
             return
         try:
-            record = _build_notification_record(event, city, main_ctx)
-            inserted = await self.notification_repository.insert_if_absent(record)
+            record = _build_signal_record(event, city, main_ctx)
+            inserted = await self.signal_event_repository.insert_if_absent(record)
         except Exception:
             logger.exception("Failed to persist weather notification event=%s", event.asset.event_slug)
             return
         if inserted and self.service:
-            self.service.note_persisted_notification(event.asset.event_slug, record)
+            self.service.note_persisted_signal(event.asset.event_slug, record)

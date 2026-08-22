@@ -264,15 +264,15 @@ async def list_signals(
     return results
 
 
-@router.get("/signals/{signal_id}")
+@router.get("/signals/{notification_key:path}")
 async def get_signal(
-    signal_id: str,
+    notification_key: str,
     current_user: AuthUser = Depends(get_current_user),
 ):
-    """获取单个信号详情。"""
-    result = await asyncio.to_thread(_weather_signal_repo.find_by_id, signal_id)
+    """获取单个信号详情（通过 notification_key 查询）。"""
+    result = await asyncio.to_thread(_weather_signal_repo.find_by_id, notification_key)
     if not result:
-        result = await asyncio.to_thread(_leader_signal_repo.find_by_id, signal_id)
+        result = await asyncio.to_thread(_leader_signal_repo.find_by_id, notification_key)
     if not result:
         raise HTTPException(status_code=404, detail="Signal not found")
     return result

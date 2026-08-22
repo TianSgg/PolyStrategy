@@ -15,7 +15,7 @@ from shared.time_utils import UTC8_DB_NOW_SQL, format_utc8
 
 logger = logging.getLogger(__name__)
 
-AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "weathertaker_auth")
+AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "polystrategy_auth")
 AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "7"))
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "0") == "1"
 APP_ENV = os.getenv("APP_ENV", "development").lower()
@@ -23,7 +23,7 @@ AUTH_JWT_SECRET = os.getenv("AUTH_JWT_SECRET")
 if not AUTH_JWT_SECRET:
     if APP_ENV in ("prod", "production"):
         raise RuntimeError("AUTH_JWT_SECRET is required in production")
-    AUTH_JWT_SECRET = "dev-weathertaker-change-me"
+    AUTH_JWT_SECRET = "dev-polystrategy-change-me"
     logger.warning("[Auth] AUTH_JWT_SECRET not set; using development-only default secret")
 
 

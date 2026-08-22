@@ -9,14 +9,14 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from signal_weather_orderbook.dao import WeatherNotificationRepository
-from signal_weather_orderbook.types import WeatherNotificationRecord
+from signal_weather_orderbook.dao import WeatherSignalEventRepository
+from signal_weather_orderbook.types import WeatherSignalRecord
 from signal_weather_orderbook.service import WeatherOrderBookService
 
 router = APIRouter(prefix="/api/weather", tags=["weather-orderbook"])
 
 
-class WeatherNotificationResponse(BaseModel):
+class WeatherSignalResponse(BaseModel):
     """Frontend contract for one persisted weather Telegram notification."""
 
     model_config = ConfigDict(extra="forbid")
@@ -44,14 +44,14 @@ class WeatherNotificationResponse(BaseModel):
     created_at: datetime | None
 
 
-class WeatherNotificationsResponse(BaseModel):
+class WeatherSignalsResponse(BaseModel):
     event_slug: str
-    notifications: list[WeatherNotificationResponse]
+    signals: list[WeatherSignalResponse]
     next_before_id: int | None
 
 
-class WeatherRecentNotificationsResponse(BaseModel):
-    notifications: list[WeatherNotificationResponse]
+class WeatherRecentSignalsResponse(BaseModel):
+    signals: list[WeatherSignalResponse]
     next_before_id: int | None
 
 
@@ -71,12 +71,12 @@ def _service(request: Request) -> WeatherOrderBookService:
     return request.app.state.weather_service
 
 
-def _notification_repository(request: Request) -> WeatherNotificationRepository:
-    return request.app.state.weather_notification_repository
+def _signal_event_repository(request: Request) -> WeatherSignalEventRepository:
+    return request.app.state.weather_signal_event_repository
 
 
-def notification_response(record: WeatherNotificationRecord) -> WeatherNotificationResponse:
-    return WeatherNotificationResponse(
+def signal_response(record: WeatherSignalRecord) -> WeatherSignalResponse:
+    return WeatherSignalResponse(
         id=record.id or 0,
         notification_key=record.notification_key,
         occurred_at=record.occurred_at,
@@ -115,49 +115,49 @@ async def weather_direction(city_slug: str, direction: str, request: Request) ->
 
 
 @router.get(
-    "/events/{event_slug}/notifications",
-    response_model=WeatherNotificationsResponse,
+    "/events/{event_slug}/signals",
+    response_model=WeatherSignalsResponse,
 )
-async def weather_event_notifications(
+async def weather_event_signals(
     request: Request,
     event_slug: str = Path(..., pattern=r"^[a-z0-9-]{1,255}$"),
     limit: int = Query(default=100, ge=1, le=500),
     before_id: int | None = Query(default=None, ge=1),
-) -> WeatherNotificationsResponse:
+) -> WeatherSignalsResponse:
     if before_id is None:
-        cached = _service(request).cached_notifications_for_event(event_slug)
+        cached = _service(request).cached_signals_for_event(event_slug)
         if cached is not None:
             page = cached[:limit]
             has_more = len(cached) > limit
-            return WeatherNotificationsResponse(
+            return WeatherSignalsResponse(
                 event_slug=event_slug,
-                notifications=[notification_response(r) for r in page],
+                signals=[signal_response(r) for r in page],
                 next_before_id=page[-1].id if has_more and page else None,
             )
-    records = await _notification_repository(request).list_for_event(event_slug, limit + 1, before_id)
+    records = await _signal_event_repository(request).list_for_event(event_slug, limit + 1, before_id)
     has_more = len(records) > limit
     page = records[:limit]
-    return WeatherNotificationsResponse(
+    return WeatherSignalsResponse(
         event_slug=event_slug,
-        notifications=[notification_response(record) for record in page],
+        signals=[signal_response(record) for record in page],
         next_before_id=page[-1].id if has_more and page else None,
     )
 
 
 @router.get(
-    "/notifications/recent",
-    response_model=WeatherRecentNotificationsResponse,
+    "/signals/recent",
+    response_model=WeatherRecentSignalsResponse,
 )
-async def weather_recent_notifications(
+async def weather_recent_signals(
     request: Request,
     limit: int = Query(default=100, ge=1, le=500),
     before_id: int | None = Query(default=None, ge=1),
-) -> WeatherRecentNotificationsResponse:
-    records = await _notification_repository(request).list_recent(limit + 1, before_id)
+) -> WeatherRecentSignalsResponse:
+    records = await _signal_event_repository(request).list_recent(limit + 1, before_id)
     has_more = len(records) > limit
     page = records[:limit]
-    return WeatherRecentNotificationsResponse(
-        notifications=[notification_response(record) for record in page],
+    return WeatherRecentSignalsResponse(
+        signals=[signal_response(record) for record in page],
         next_before_id=page[-1].id if has_more and page else None,
     )
 
@@ -211,15 +211,15 @@ async def weather_live_orderbooks(request: Request) -> StreamingResponse:
     )
 
 
-@router.get("/notification-counts/live")
-async def weather_notification_counts_live(request: Request) -> StreamingResponse:
-    """SSE stream for cached notification totals of active weather events."""
+@router.get("/signal-counts/live")
+async def weather_signal_counts_live(request: Request) -> StreamingResponse:
+    """SSE stream for cached signal count totals of active weather events."""
     service = _service(request)
 
     async def event_stream():
-        queue = service.subscribe_notification_counts()
+        queue = service.subscribe_signal_counts()
         try:
-            yield f"event: snapshot\ndata: {json.dumps(service.notification_count_snapshot(), separators=(',', ':'))}\n\n"
+            yield f"event: snapshot\ndata: {json.dumps(service.signal_count_snapshot(), separators=(',', ':'))}\n\n"
             while True:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=15)
@@ -230,7 +230,7 @@ async def weather_notification_counts_live(request: Request) -> StreamingRespons
         except (asyncio.CancelledError, GeneratorExit):
             pass
         finally:
-            service.unsubscribe_notification_counts(queue)
+            service.unsubscribe_signal_counts(queue)
 
     return StreamingResponse(
         event_stream(),

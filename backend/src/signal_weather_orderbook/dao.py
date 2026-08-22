@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from asyncmy.cursors import DictCursor
 
 from signal_weather_orderbook.types import WeatherCity
-from signal_weather_orderbook.types import WeatherNotificationRecord
+from signal_weather_orderbook.types import WeatherSignalRecord
 
 CITY_TIMEZONE_MAP: dict[str, str] = {
     "taipei": "Asia/Taipei",
@@ -160,7 +160,7 @@ class WeatherCityFileLoader:
         return cities
 
 
-class WeatherNotificationRepository:
+class WeatherSignalEventRepository:
     """MySQL persistence and event-scoped history retrieval for weather alerts."""
 
     def __init__(self, pool) -> None:
@@ -170,16 +170,16 @@ class WeatherNotificationRepository:
         """Validate the notification table exists without changing its schema."""
         try:
             async with self._pool.acquire() as connection, connection.cursor() as cursor:
-                await cursor.execute("SELECT 1 FROM weather_notifications LIMIT 1")
+                await cursor.execute("SELECT 1 FROM weather_signal_events LIMIT 1")
                 await cursor.fetchone()
         except Exception as error:
             raise RuntimeError(
-                "weather_notifications is unavailable; run db/01_schema.sql before starting the service"
+                "weather_signal_events is unavailable; run db/01_schema.sql before starting the service"
             ) from error
 
-    async def insert_if_absent(self, record: WeatherNotificationRecord) -> bool:
+    async def insert_if_absent(self, record: WeatherSignalRecord) -> bool:
         query = """
-            INSERT INTO weather_notifications (
+            INSERT INTO weather_signal_events (
                 notification_key, occurred_at, event_type, event_slug,
                 city, city_slug, direction, local_date,
                 market_slug, temperature_label, outcome,
@@ -219,7 +219,7 @@ class WeatherNotificationRepository:
         event_slug: str,
         limit: int,
         before_id: int | None = None,
-    ) -> list[WeatherNotificationRecord]:
+    ) -> list[WeatherSignalRecord]:
         limit = max(1, min(limit, 501))
         query = """
             SELECT id, notification_key, occurred_at, event_type, event_slug,
@@ -227,7 +227,7 @@ class WeatherNotificationRepository:
                    market_slug, temperature_label, outcome,
                    main_market_slug, main_temperature_label, main_outcome,
                    token_id, status, reason, message, payload, created_at
-            FROM weather_notifications
+            FROM weather_signal_events
             WHERE event_slug = %s
         """
         params: list[object] = [event_slug]
@@ -235,11 +235,11 @@ class WeatherNotificationRepository:
             query += """
                 AND (
                     occurred_at < (
-                        SELECT occurred_at FROM weather_notifications WHERE id = %s
+                        SELECT occurred_at FROM weather_signal_events WHERE id = %s
                     )
                     OR (
                         occurred_at = (
-                            SELECT occurred_at FROM weather_notifications WHERE id = %s
+                            SELECT occurred_at FROM weather_signal_events WHERE id = %s
                         ) AND id < %s
                     )
                 )
@@ -256,7 +256,7 @@ class WeatherNotificationRepository:
         self,
         limit: int,
         before_id: int | None = None,
-    ) -> list[WeatherNotificationRecord]:
+    ) -> list[WeatherSignalRecord]:
         limit = max(1, min(limit, 501))
         query = """
             SELECT id, notification_key, occurred_at, event_type, event_slug,
@@ -264,18 +264,18 @@ class WeatherNotificationRepository:
                    market_slug, temperature_label, outcome,
                    main_market_slug, main_temperature_label, main_outcome,
                    token_id, status, reason, message, payload, created_at
-            FROM weather_notifications
+            FROM weather_signal_events
         """
         params: list[object] = []
         if before_id is not None:
             query += """
                 WHERE (
                     occurred_at < (
-                        SELECT occurred_at FROM weather_notifications WHERE id = %s
+                        SELECT occurred_at FROM weather_signal_events WHERE id = %s
                     )
                     OR (
                         occurred_at = (
-                            SELECT occurred_at FROM weather_notifications WHERE id = %s
+                            SELECT occurred_at FROM weather_signal_events WHERE id = %s
                         ) AND id < %s
                     )
                 )
@@ -295,24 +295,24 @@ class WeatherNotificationRepository:
         slugs = sorted(event_slugs)
         placeholders = ", ".join("%s" for _ in slugs)
         query = f"""
-            SELECT event_slug, COUNT(*) AS notification_count
-            FROM weather_notifications
+            SELECT event_slug, COUNT(*) AS signal_count
+            FROM weather_signal_events
             WHERE event_slug IN ({placeholders})
             GROUP BY event_slug
         """
         async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
             await cursor.execute(query, tuple(slugs))
             rows = await cursor.fetchall()
-        return {str(row["event_slug"]): int(row["notification_count"]) for row in rows}
+        return {str(row["event_slug"]): int(row["signal_count"]) for row in rows}
 
     @staticmethod
-    def _to_record(row: dict[str, Any]) -> WeatherNotificationRecord:
+    def _to_record(row: dict[str, Any]) -> WeatherSignalRecord:
         payload = row.get("payload")
         if isinstance(payload, str):
             payload = json.loads(payload)
         if not isinstance(payload, dict):
             payload = {}
-        return WeatherNotificationRecord(
+        return WeatherSignalRecord(
             id=int(row["id"]),
             notification_key=str(row["notification_key"]),
             occurred_at=_utc_datetime(row["occurred_at"]),

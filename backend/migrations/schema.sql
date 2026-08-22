@@ -2,9 +2,9 @@
 -- 新环境直接执行此文件即可，无需逐个跑增量迁移
 -- ⚠️ 会 DROP 已有表，勿在生产环境直接执行
 
-DROP DATABASE IF EXISTS weathertaker;
-CREATE DATABASE weathertaker DEFAULT CHARACTER SET utf8mb4;
-USE weathertaker;
+DROP DATABASE IF EXISTS polystrategy;
+CREATE DATABASE polystrategy DEFAULT CHARACTER SET utf8mb4;
+USE polystrategy;
 
 -- ============================================================
 -- 登录用户表
@@ -224,7 +224,7 @@ COMMENT='天气城市监听配置';
 -- ============================================================
 -- 天气通知历史 (含 is_from_main 生成列 + 全部索引)
 -- ============================================================
-CREATE TABLE weather_notifications (
+CREATE TABLE weather_signal_events (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '通知历史主键',
   notification_key VARCHAR(512) NOT NULL COMMENT '全局幂等键，防止重复记录',
   occurred_at DATETIME(3) NOT NULL COMMENT '事件发生时间 UTC，毫秒级',
@@ -249,15 +249,15 @@ CREATE TABLE weather_notifications (
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '写入数据库时间 UTC，毫秒级',
 
   PRIMARY KEY (id),
-  UNIQUE KEY uq_weather_notifications_notification_key (notification_key),
-  KEY idx_weather_notifications_event_time (event_slug, occurred_at DESC, id DESC),
-  KEY idx_weather_notifications_city_date (city_slug, direction, local_date),
-  KEY idx_weather_notifications_recent (occurred_at DESC, id DESC),
-  KEY idx_weather_notifications_market (market_slug, event_type, occurred_at DESC),
-  KEY idx_weather_notifications_main_market (main_market_slug, occurred_at DESC),
-  KEY idx_weather_notifications_main_temp (main_temperature_label, occurred_at DESC),
-  KEY idx_weather_notifications_filter_combo (is_from_main, reason, outcome, direction, occurred_at DESC),
-  KEY idx_weather_notifications_reason (reason, occurred_at DESC)
+  UNIQUE KEY uq_weather_signal_events_notification_key (notification_key),
+  KEY idx_weather_signal_events_event_time (event_slug, occurred_at DESC, id DESC),
+  KEY idx_weather_signal_events_city_date (city_slug, direction, local_date),
+  KEY idx_weather_signal_events_recent (occurred_at DESC, id DESC),
+  KEY idx_weather_signal_events_market (market_slug, event_type, occurred_at DESC),
+  KEY idx_weather_signal_events_main_market (main_market_slug, occurred_at DESC),
+  KEY idx_weather_signal_events_main_temp (main_temperature_label, occurred_at DESC),
+  KEY idx_weather_signal_events_filter_combo (is_from_main, reason, outcome, direction, occurred_at DESC),
+  KEY idx_weather_signal_events_reason (reason, occurred_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='天气市场通知历史';
 
@@ -320,31 +320,6 @@ INSERT INTO weather_cities (
   ('Wuhan', 'wuhan', 'Asia/Shanghai', 1, 0, 1, 0, 1, 490),
   ('Zhengzhou', 'zhengzhou', 'Asia/Shanghai', 1, 0, 1, 0, 1, 500);
 
--- ============================================================
--- 天气信号事件表（独立于旧 signal_events）
--- ============================================================
-CREATE TABLE weather_signal_events (
-  id VARCHAR(256) NOT NULL COMMENT '信号幂等键',
-  event_type VARCHAR(64) NOT NULL DEFAULT 'sweep' COMMENT 'sweep / no_longer_possible 等',
-  token_id VARCHAR(128) NOT NULL,
-  outcome VARCHAR(8) DEFAULT NULL COMMENT 'yes / no',
-  city VARCHAR(100) NOT NULL,
-  spread_before DECIMAL(18,8) DEFAULT NULL,
-  spread_after DECIMAL(18,8) DEFAULT NULL,
-  volume_spike TINYINT(1) NOT NULL DEFAULT 0,
-  bid_depth_change DECIMAL(18,8) DEFAULT NULL,
-  ask_depth_change DECIMAL(18,8) DEFAULT NULL,
-  occurred_at DATETIME(3) DEFAULT NULL,
-  received_at DATETIME(3) DEFAULT NULL,
-  received_monotonic_ns BIGINT UNSIGNED DEFAULT NULL,
-  extra_json JSON DEFAULT NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-
-  PRIMARY KEY (id),
-  KEY idx_weather_signal_token_time (token_id, received_at),
-  KEY idx_weather_signal_city_time (city, received_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='天气信号事件';
 
 -- ============================================================
 -- Leader 信号事件表
