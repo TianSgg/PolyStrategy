@@ -25,12 +25,11 @@ _env = os.getenv("ENV", "dev")
 _backend_dir = Path(__file__).resolve().parent.parent.parent
 load_dotenv(_backend_dir / f".env.{_env}", override=True)
 
-logging.basicConfig(
-    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper()),
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-)
-for lib in ["websockets", "httpcore", "httpx", "urllib3"]:
-    logging.getLogger(lib).setLevel(logging.WARNING)
+_strategy_type_raw = os.getenv("STRATEGY_TYPE", "sweep")
+_service_name = f"strategy_{_strategy_type_raw}"
+
+from shared.logging_config import setup_logging
+setup_logging(_service_name)
 
 logger = logging.getLogger(__name__)
 

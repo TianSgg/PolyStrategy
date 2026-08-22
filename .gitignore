@@ -27,6 +27,8 @@ __pycache__/
 
 *.key
 *.log
+logs/
+.pids/
 
 # 机器相关配置
 deploy/backend.service

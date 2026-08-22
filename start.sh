@@ -14,9 +14,8 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 
-LOG_DIR="$ROOT_DIR/logs"
 PID_DIR="$ROOT_DIR/.pids"
-mkdir -p "$LOG_DIR" "$PID_DIR"
+mkdir -p "$PID_DIR"
 
 export ENV="${ENV:-dev}"
 
@@ -42,7 +41,6 @@ BACKEND_SERVICES=(
 start_backend_service() {
     local name="$1" module="$2" port="$3" extra_env="$4"
     local pid_file="$PID_DIR/$name.pid"
-    local log_file="$LOG_DIR/$name.log"
 
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         echo "  [$name] already running (pid=$(cat "$pid_file"), port=$port)"
@@ -56,32 +54,34 @@ start_backend_service() {
         cmd="cd '$BACKEND_DIR/src' && $extra_env PYTHONPATH='$BACKEND_DIR/src' $PYTHON -m $module"
     fi
 
-    bash -c "nohup bash -c \"$cmd\" >> '$log_file' 2>&1 & echo \$! > '$pid_file'"
+    # 服务自行写日志到 logs/<service_name>/，这里只捕获启动失败的 stderr
+    bash -c "nohup bash -c \"$cmd\" > /dev/null 2>&1 & echo \$! > '$pid_file'"
 
     sleep 0.3
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         echo "  [$name] started (pid=$(cat "$pid_file"), port=$port)"
     else
-        echo "  [$name] FAILED — check $log_file"
+        echo "  [$name] FAILED — check logs/$name/"
     fi
 }
 
 start_frontend() {
     local pid_file="$PID_DIR/frontend.pid"
-    local log_file="$LOG_DIR/frontend.log"
+    local log_dir="$ROOT_DIR/logs/frontend"
+    mkdir -p "$log_dir"
 
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         echo "  [frontend] already running (pid=$(cat "$pid_file"), port=5173)"
         return
     fi
 
-    bash -c "cd '$FRONTEND_DIR' && nohup npx vite --port 5173 --host >> '$log_file' 2>&1 & echo \$! > '$pid_file'"
+    bash -c "cd '$FRONTEND_DIR' && nohup npx vite --port 5173 --host >> '$log_dir/app.log' 2>&1 & echo \$! > '$pid_file'"
 
     sleep 0.5
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         echo "  [frontend] started (pid=$(cat "$pid_file"), port=5173)"
     else
-        echo "  [frontend] FAILED — check $log_file"
+        echo "  [frontend] FAILED — check logs/frontend/"
     fi
 }
 
@@ -158,7 +158,7 @@ case "${1:-start}" in
         echo "═══ All services started ═══"
         echo "  Frontend:  http://localhost:5173"
         echo "  Gateway:   http://localhost:8000"
-        echo "  Logs:      $LOG_DIR/"
+        echo "  Logs:      $ROOT_DIR/logs/<service_name>/"
         ;;
     stop)
         echo "═══ PolyStrategy — Stopping all services ═══"

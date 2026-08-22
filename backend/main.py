@@ -1,76 +1,23 @@
 import asyncio
-import gzip
-import glob
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
-from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
 
 # 将 src/ 加入 Python 模块搜索路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from shared.time_utils import UTC8, now_utc8_dt
-
 # 根据 ENV 加载对应配置
 _env = os.getenv("ENV", "dev")
 load_dotenv(f".env.{_env}", override=True)
 
-# 配置日志
-os.makedirs("logs", exist_ok=True)
-log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper())
-log_file = f"logs/app-{now_utc8_dt():%Y-%m-%d-%H-%M-%S}.log"
+from shared.logging_config import setup_logging
+setup_logging("gateway")
 
-rotating_handler = RotatingFileHandler(
-    log_file,
-    maxBytes=100 * 1024 * 1024,
-    backupCount=10,
-    encoding="utf-8",
-)
-stream_handler = logging.StreamHandler(sys.stdout)
-
-
-class UTC8Formatter(logging.Formatter):
-    def formatTime(self, record, datefmt=None):
-        dt = datetime.fromtimestamp(record.created, UTC8)
-        if datefmt:
-            return dt.strftime(datefmt)
-        return f"{dt:%Y-%m-%d %H:%M:%S}.{dt.microsecond // 1000:03d}"
-
-
-log_formatter = UTC8Formatter(
-    fmt="%(asctime)s - %(levelname)s - %(message)s",
-)
-stream_handler.setFormatter(log_formatter)
-rotating_handler.setFormatter(log_formatter)
-
-# 压缩旧的滚动文件（启动时压缩上一次运行遗留的未压缩备份）
-for old in glob.glob(log_file + ".*"):
-    if not old.endswith(".gz"):
-        try:
-            with open(old, "rb") as f_in:
-                with gzip.open(old + ".gz", "wb") as f_out:
-                    f_out.writelines(f_in)
-            os.remove(old)
-        except Exception:
-            pass
-
-logging.basicConfig(
-    level=log_level,
-    handlers=[
-        stream_handler,
-        rotating_handler,
-    ],
-)
 logger = logging.getLogger(__name__)
-logger.info(f"use ENV={_env}")
-
-# 抑制第三方库的 DEBUG 日志（放在 import 之后，因为有些库 import 时会初始化 logger）
-for lib in ["websockets", "httpcore", "httpx", "hpack", "hyperframe", "urllib3", "requests"]:
-    logging.getLogger(lib).setLevel(logging.WARNING)
+logger.info("use ENV=%s", _env)
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
