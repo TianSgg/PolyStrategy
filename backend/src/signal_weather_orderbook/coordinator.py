@@ -304,6 +304,12 @@ class WeatherCoordinator:
             payload = event.payload()
             if main_ctx:
                 payload["main_monitor"] = main_ctx
+            if event.event_type == "no_longer_possible" and state and state.next_monitor:
+                payload["next_candidate_orderbook"] = {
+                    "market_slug": state.next_monitor.candidate.market_slug,
+                    "temperature_label": state.next_monitor.candidate.temperature_label,
+                    **state.next_monitor.bbo_snapshot(),
+                }
             self._event_bus.publish(f"weather.{event.event_type}", payload)
             logger.debug("[Coordinator] EventBus published: weather.%s", event.event_type)
 

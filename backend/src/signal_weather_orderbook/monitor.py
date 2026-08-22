@@ -91,6 +91,22 @@ class WeatherOrderBookMonitor:
             "running": self.running,
         }
 
+    def bbo_snapshot(self) -> dict:
+        """Compact best-bid/best-ask snapshot for YES and NO tokens."""
+        result: dict[str, dict] = {}
+        for asset_id, asset in self._assets.items():
+            book = self._books.get(asset_id)
+            if book is None:
+                continue
+            best_bid = max(book.bids, default=None)
+            best_ask = min(book.asks, default=None)
+            result[asset.outcome] = {
+                "token_id": asset_id,
+                "best_bid": {"price": best_bid, "size": book.bids[best_bid]} if best_bid is not None else None,
+                "best_ask": {"price": best_ask, "size": book.asks[best_ask]} if best_ask is not None else None,
+            }
+        return result
+
     def live_payload(self) -> dict:
         """Complete local L2 books for the dashboard."""
         if not self._books:
