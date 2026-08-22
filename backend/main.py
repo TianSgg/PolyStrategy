@@ -90,6 +90,7 @@ from performance.router import router as performance_router
 from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
+from strategy_execution.api import router as strategy_execution_router
 from weather_orderbook import weather_orderbook_router
 from weather_orderbook.bootstrap import WeatherBootstrap
 
@@ -160,6 +161,7 @@ app.include_router(market_router)
 app.include_router(performance_router)
 app.include_router(pnl_router)
 app.include_router(weather_orderbook_router)
+app.include_router(strategy_execution_router)
 
 # CORS 配置
 app.add_middleware(
