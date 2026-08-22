@@ -9,9 +9,9 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from weather_orderbook.dao import WeatherNotificationRepository
-from weather_orderbook.types import WeatherNotificationRecord
-from weather_orderbook.service import WeatherOrderBookService
+from signal_weather_orderbook.dao import WeatherNotificationRepository
+from signal_weather_orderbook.types import WeatherNotificationRecord
+from signal_weather_orderbook.service import WeatherOrderBookService
 
 router = APIRouter(prefix="/api/weather", tags=["weather-orderbook"])
 

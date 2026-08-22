@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 from time import time
 from typing import Literal
 
-from weather_orderbook.types import MarketCandidate
-from weather_orderbook.types import WeatherEvent
-from weather_orderbook.orderbook import LocalOrderBook
+from signal_weather_orderbook.types import MarketCandidate
+from signal_weather_orderbook.types import WeatherEvent
+from signal_weather_orderbook.orderbook import LocalOrderBook
 
 logger = logging.getLogger(__name__)
 

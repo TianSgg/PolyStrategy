@@ -17,7 +17,7 @@ from .types import CopyTradingConfig, ActivitySignal, PlaceOrderResult
 from market import get_market_service
 from .predexon import get_copy_trading_predexon
 from account.service import get_account_service
-from leader.service import get_leader_service
+from signal_leader_activity.service import get_leader_service
 from event_bus import get_event_bus
 from .models import (
     get_copy_trading_configs,

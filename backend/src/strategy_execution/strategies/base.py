@@ -6,7 +6,8 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from strategy_execution.contracts import Signal
+from signal_leader_activity.types import LeaderBuySignal
+from signal_weather_orderbook.types import WeatherSweepSignal
 from strategy_execution.execution.account_ledger import AccountExecutionLedger
 from strategy_execution.execution.order_executor import OrderExecutor
 from strategy_execution.execution.order_projection import OrderProjection
@@ -42,12 +43,12 @@ class BaseStrategy(ABC):
         self.risk_session: Optional[RiskSession] = None
 
     @abstractmethod
-    async def on_entry_signal(self, signal: Signal) -> None:
-        """信号触发入场。"""
+    async def on_entry_signal(self, signal: Any) -> None:
+        """信号触发入场。WeatherSweepSignal 或 LeaderBuySignal。"""
 
     @abstractmethod
-    async def on_leader_signal(self, signal: Signal) -> None:
-        """Leader 信号（仅策略 3 使用）。"""
+    async def on_leader_signal(self, signal: LeaderBuySignal) -> None:
+        """Leader 确认信号（仅策略 3 使用）。"""
 
     @abstractmethod
     async def on_tick_candidate(self) -> None:

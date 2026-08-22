@@ -1,6 +1,7 @@
-"""StrategyRuntime — 编排信号订阅、策略分发和运行生命周期。
+"""SingleStrategyRuntime — 单策略微服务运行时。
 
-这是策略执行系统的顶层编排器，不承载策略业务判断。
+每个实例只负责一种策略类型，独立进程运行。
+新增策略时只需启动新进程，不影响已运行的策略服务。
 """
 from __future__ import annotations
 
@@ -14,7 +15,6 @@ from typing import Any, Dict, List, Optional
 from shared.time_utils import now_utc8_dt
 from signal_leader_activity.types import LeaderBuySignal
 from signal_weather_orderbook.types import WeatherSweepSignal
-from strategy_execution.config import validate_strategy_params, STRATEGY_PARAMS_MAP
 from strategy_execution.enums import (
     CloseReason,
     RunState,
@@ -36,11 +36,15 @@ from strategy_execution.strategies.sweep_strategy import SweepStrategy
 
 logger = logging.getLogger(__name__)
 
+NEEDS_WEATHER = {StrategyType.SWEEP, StrategyType.SWEEP_LEADER}
+NEEDS_LEADER = {StrategyType.LEADER, StrategyType.SWEEP_LEADER}
 
-class StrategyRuntime:
-    """策略执行系统运行时。"""
 
-    def __init__(self) -> None:
+class SingleStrategyRuntime:
+    """单策略运行时 — 只处理指定的 strategy_type。"""
+
+    def __init__(self, strategy_type: StrategyType) -> None:
+        self._strategy_type = strategy_type
         self._config_repo = StrategyConfigRepository()
         self._run_repo = StrategyRunRepository()
         self._ledger_manager = LedgerManager()
@@ -50,74 +54,67 @@ class StrategyRuntime:
         self._risk_manager = RiskManager()
         self._guard = RunSingleFlightGuard()
 
-        # 活跃策略实例: {run_id: BaseStrategy}
         self._strategies: Dict[str, BaseStrategy] = {}
-
-        # 信号订阅客户端
         self._weather_sub: Optional[WeatherSignalClient] = None
         self._leader_sub: Optional[LeaderSignalClient] = None
-
-        # 配置缓存: {(strategy_type, config_id): config_dict}
-        self._enabled_configs: Dict[tuple, Dict[str, Any]] = {}
+        self._enabled_configs: Dict[int, Dict[str, Any]] = {}
 
     async def start(self) -> None:
-        """启动运行时：加载配置、连接信号服务、恢复活跃运行。"""
         await self._load_enabled_configs()
         await self._start_signal_subscriptions()
         await self._recover_active_runs()
-        logger.info("StrategyRuntime started: %d configs loaded", len(self._enabled_configs))
+        logger.info(
+            "SingleStrategyRuntime [%s] started: %d configs",
+            self._strategy_type.value,
+            len(self._enabled_configs),
+        )
 
     async def stop(self) -> None:
-        """停止运行时。"""
         if self._weather_sub:
             await self._weather_sub.stop()
         if self._leader_sub:
             await self._leader_sub.stop()
-        logger.info("StrategyRuntime stopped")
+        logger.info("SingleStrategyRuntime [%s] stopped", self._strategy_type.value)
 
     async def _load_enabled_configs(self) -> None:
-        """加载所有启用的策略配置。"""
-        for st in StrategyType:
-            configs = self._config_repo.list_all_enabled(st)
-            for cfg in configs:
-                key = (st, cfg["id"])
-                self._enabled_configs[key] = cfg
+        configs = self._config_repo.list_all_enabled(self._strategy_type)
+        for cfg in configs:
+            self._enabled_configs[cfg["id"]] = cfg
 
     async def _start_signal_subscriptions(self) -> None:
-        """连接天气和 Leader 信号服务的 WS。"""
-        weather_url = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://127.0.0.1:8001/ws/signal")
-        leader_url = os.getenv("LEADER_SIGNAL_WS_URL", "ws://127.0.0.1:8002/ws/signal")
+        if self._strategy_type in NEEDS_WEATHER:
+            weather_url = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://127.0.0.1:8001/ws/signal")
+            self._weather_sub = WeatherSignalClient(
+                url=weather_url,
+                client_id=f"strategy_{self._strategy_type.value}_weather",
+                handler=self._on_weather_signal,
+            )
+            await self._weather_sub.start()
 
-        self._weather_sub = WeatherSignalClient(
-            url=weather_url,
-            client_id="strategy_runtime_weather",
-            handler=self._on_weather_signal,
-        )
-        self._leader_sub = LeaderSignalClient(
-            url=leader_url,
-            client_id="strategy_runtime_leader",
-            handler=self._on_leader_signal,
-        )
-
-        await self._weather_sub.start()
-        await self._leader_sub.start()
+        if self._strategy_type in NEEDS_LEADER:
+            leader_url = os.getenv("LEADER_SIGNAL_WS_URL", "ws://127.0.0.1:8002/ws/signal")
+            self._leader_sub = LeaderSignalClient(
+                url=leader_url,
+                client_id=f"strategy_{self._strategy_type.value}_leader",
+                handler=self._on_leader_signal,
+            )
+            await self._leader_sub.start()
 
     async def _recover_active_runs(self) -> None:
-        """启动时恢复非终态运行。"""
         active_runs = self._run_repo.list_active()
         for run_data in active_runs:
+            if run_data.get("strategy_type") != self._strategy_type.value:
+                continue
             try:
                 await self._restore_run(run_data)
             except Exception:
                 logger.exception("Failed to recover run %s", run_data.get("id"))
 
     async def _restore_run(self, run_data: Dict[str, Any]) -> None:
-        """从数据库恢复单个运行的内存状态。"""
         run_id = run_data["id"]
-        strategy_type = StrategyType(run_data["strategy_type"])
         machine = RunStateMachine(
             run_id=run_id,
-            strategy_type=strategy_type,
+            strategy_type=self._strategy_type,
             config_id=run_data["strategy_config_id"],
             token_id=run_data["token_id"],
             initial_state=RunState(run_data["state"]),
@@ -126,85 +123,60 @@ class StrategyRuntime:
         self._guard.register(machine)
         logger.info("Recovered run %s in state %s", run_id, run_data["state"])
 
-    async def _on_weather_signal(self, signal: WeatherSweepSignal) -> None:
-        """处理天气信号 — 分发给 sweep 和 sweep_leader 策略。"""
-        for (st, config_id), cfg in self._enabled_configs.items():
-            if st == StrategyType.SWEEP:
-                outcome_filter = cfg.get("sweep_outcome_filter", "no")
-                if not self._outcome_matches(signal.outcome, outcome_filter):
-                    continue
-                await self._try_create_run(st, config_id, cfg, signal)
+    # ─── 信号处理 ─────────────────────────────────────────────────────────
 
-            elif st == StrategyType.SWEEP_LEADER:
-                outcome_filter = cfg.get("sweep_outcome_filter", "no")
-                if not self._outcome_matches(signal.outcome, outcome_filter):
-                    continue
-                await self._try_create_run(st, config_id, cfg, signal)
+    async def _on_weather_signal(self, signal: WeatherSweepSignal) -> None:
+        for config_id, cfg in self._enabled_configs.items():
+            outcome_filter = cfg.get("sweep_outcome_filter", "no")
+            if not self._outcome_matches(signal.outcome, outcome_filter):
+                continue
+            await self._try_create_run(config_id, cfg, signal)
 
     async def _on_leader_signal(self, signal: LeaderBuySignal) -> None:
-        """处理 Leader 信号 — 分发给 leader 和 sweep_leader 策略。"""
-        for (st, config_id), cfg in self._enabled_configs.items():
-            if st == StrategyType.LEADER:
-                if cfg.get("leader_proxy_wallet", "").lower() != signal.leader_proxy_wallet.lower():
-                    continue
-                outcome_filter = cfg.get("leader_outcome_filter", "all")
-                if not self._outcome_matches(signal.outcome, outcome_filter):
-                    continue
-                await self._try_create_run(st, config_id, cfg, signal)
+        for config_id, cfg in self._enabled_configs.items():
+            if cfg.get("leader_proxy_wallet", "").lower() != signal.leader_proxy_wallet.lower():
+                continue
+            outcome_filter = cfg.get("leader_outcome_filter", "all")
+            if not self._outcome_matches(signal.outcome, outcome_filter):
+                continue
 
-            elif st == StrategyType.SWEEP_LEADER:
-                if cfg.get("leader_proxy_wallet", "").lower() != signal.leader_proxy_wallet.lower():
-                    continue
-                outcome_filter = cfg.get("leader_outcome_filter", "all")
-                if not self._outcome_matches(signal.outcome, outcome_filter):
-                    continue
-                # 对 sweep_leader，leader 信号作为确认而非创建
-                active_key = f"{st.value}:{config_id}:{signal.token_id}"
+            if self._strategy_type == StrategyType.SWEEP_LEADER:
+                active_key = f"{self._strategy_type.value}:{config_id}:{signal.token_id}"
                 active_machine = self._guard.get_active(active_key)
                 if active_machine and active_machine.state == RunState.WAITING_LEADER:
                     strategy = self._strategies.get(active_machine.run_id)
                     if strategy:
                         await strategy.on_leader_signal(signal)
+            else:
+                await self._try_create_run(config_id, cfg, signal)
 
     async def _try_create_run(
-        self,
-        strategy_type: StrategyType,
-        config_id: int,
-        config: Dict[str, Any],
-        signal: Any,
+        self, config_id: int, config: Dict[str, Any], signal: Any
     ) -> None:
-        """尝试创建新运行（单飞保护）。signal 为 WeatherSweepSignal 或 LeaderBuySignal。"""
-        active_key = f"{strategy_type.value}:{config_id}:{signal.token_id}"
+        active_key = f"{self._strategy_type.value}:{config_id}:{signal.token_id}"
 
-        # 检查是否已有活跃运行
         lock = await self._guard.acquire(active_key)
         if lock is None:
-            logger.debug("Active run exists for %s, skipping", active_key)
             return
 
         async with lock:
-            # 双重检查
             if self._guard.get_active(active_key):
                 return
 
             run_id = str(uuid.uuid4())
             account_id = config.get("account_id", 0)
-
-            # 获取或创建账本
             ledger = self._ledger_manager.get_or_create(account_id)
 
-            # 创建状态机
             machine = RunStateMachine(
                 run_id=run_id,
-                strategy_type=strategy_type,
+                strategy_type=self._strategy_type,
                 config_id=config_id,
                 token_id=signal.token_id,
             )
 
-            # 持久化运行记录
             run_data = {
                 "id": run_id,
-                "strategy_type": strategy_type.value,
+                "strategy_type": self._strategy_type.value,
                 "strategy_config_id": config_id,
                 "token_id": signal.token_id,
                 "market_slug": None,
@@ -213,40 +185,37 @@ class StrategyRuntime:
                 "state": RunState.CREATED.value,
                 "status": RunStatus.ACTIVE.value,
                 "active_key": active_key,
-                "params_snapshot_json": {k: str(v) if isinstance(v, Decimal) else v for k, v in config.items() if k not in ("id", "owner_user_id", "account_id", "name", "enabled", "deleted_at", "created_at", "updated_at")},
+                "params_snapshot_json": {
+                    k: str(v) if isinstance(v, Decimal) else v
+                    for k, v in config.items()
+                    if k not in ("id", "owner_user_id", "account_id", "name", "enabled", "deleted_at", "created_at", "updated_at")
+                },
                 "started_by_signal_id": signal.event_id,
                 "started_at": now_utc8_dt(),
             }
             self._run_repo.create(run_data)
             self._guard.register(machine)
 
-            # 获取 proxy_wallet
             from account.service import get_account_service
             account = get_account_service().get_account(account_id)
             proxy_wallet = account.get("proxy_wallet", "") if account else ""
 
-            # 创建策略实例
             strategy = self._create_strategy(
-                strategy_type=strategy_type,
                 run_machine=machine,
                 ledger=ledger,
                 proxy_wallet=proxy_wallet,
                 params=config,
             )
             self._strategies[run_id] = strategy
-
-            # 触发入场
             await strategy.on_entry_signal(signal)
 
     def _create_strategy(
         self,
-        strategy_type: StrategyType,
         run_machine: RunStateMachine,
         ledger: AccountExecutionLedger,
         proxy_wallet: str,
         params: Dict[str, Any],
     ) -> BaseStrategy:
-        """根据策略类型创建对应实例。"""
         kwargs = {
             "run_machine": run_machine,
             "ledger": ledger,
@@ -257,13 +226,13 @@ class StrategyRuntime:
             "proxy_wallet": proxy_wallet,
             "params": params,
         }
-        if strategy_type == StrategyType.SWEEP:
+        if self._strategy_type == StrategyType.SWEEP:
             return SweepStrategy(**kwargs)
-        elif strategy_type == StrategyType.LEADER:
+        elif self._strategy_type == StrategyType.LEADER:
             return LeaderStrategy(**kwargs)
-        elif strategy_type == StrategyType.SWEEP_LEADER:
+        elif self._strategy_type == StrategyType.SWEEP_LEADER:
             return SweepLeaderStrategy(**kwargs)
-        raise ValueError(f"Strategy not implemented: {strategy_type}")
+        raise ValueError(f"Strategy not implemented: {self._strategy_type}")
 
     @staticmethod
     def _outcome_matches(signal_outcome: Optional[str], filter_value: str) -> bool:
@@ -276,7 +245,6 @@ class StrategyRuntime:
     # ─── 公开接口 ─────────────────────────────────────────────────────────
 
     def get_active_runs(self) -> List[Dict[str, Any]]:
-        """返回所有活跃运行的摘要。"""
         return [
             {
                 "run_id": m.run_id,

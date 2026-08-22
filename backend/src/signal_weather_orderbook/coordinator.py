@@ -5,17 +5,18 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from event_bus import EventBus
-from weather_orderbook.discovery import WeatherDiscovery
-from weather_orderbook.types import MarketCandidate, WeatherCity
-from weather_orderbook.types import WeatherEvent
-from weather_orderbook.monitor import WeatherOrderBookMonitor
-from weather_orderbook.gateway import SharedMarketWebSocket
+from signal_weather_orderbook.discovery import WeatherDiscovery
+from signal_weather_orderbook.types import MarketCandidate, WeatherCity
+from signal_weather_orderbook.types import WeatherEvent
+from signal_weather_orderbook.monitor import WeatherOrderBookMonitor
+from signal_weather_orderbook.gateway import SharedMarketWebSocket
 
 logger = logging.getLogger(__name__)
-EventStartedHandler = Callable[[WeatherCity, str, date, str, MarketCandidate | None, bool], Awaitable[None]]
+EventStartedHandler = Callable[[WeatherCity, str, date, str, Optional[MarketCandidate], bool], Awaitable[None]]
 
 
 @dataclass

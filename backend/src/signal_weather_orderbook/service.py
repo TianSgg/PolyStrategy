@@ -7,12 +7,12 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from event_bus import EventBus
-from weather_orderbook.coordinator import EventStartedHandler, WeatherCoordinator
-from weather_orderbook.discovery import WeatherDiscovery
-from weather_orderbook.types import WeatherCity
-from weather_orderbook.gateway import PolymarketMarketClient
-from weather_orderbook.types import WeatherEvent, WeatherNotificationRecord
-from weather_orderbook.dao import WeatherNotificationRepository
+from signal_weather_orderbook.coordinator import EventStartedHandler, WeatherCoordinator
+from signal_weather_orderbook.discovery import WeatherDiscovery
+from signal_weather_orderbook.types import WeatherCity
+from signal_weather_orderbook.gateway import PolymarketMarketClient
+from signal_weather_orderbook.types import WeatherEvent, WeatherNotificationRecord
+from signal_weather_orderbook.dao import WeatherNotificationRepository
 
 logger = logging.getLogger(__name__)
 WeatherEventHandler = Callable[[WeatherEvent], Awaitable[None]]

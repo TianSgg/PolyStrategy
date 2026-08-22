@@ -14,7 +14,9 @@ import logging
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from strategy_execution.contracts import OrderRequest, Signal
+from signal_leader_activity.types import LeaderBuySignal
+from signal_weather_orderbook.types import WeatherSweepSignal
+from strategy_execution.contracts import OrderRequest
 from strategy_execution.enums import (
     CloseReason,
     ExecutionMode,
@@ -45,7 +47,7 @@ class SweepLeaderStrategy(BaseStrategy):
         self._leader_confirmed = False
         self._tick_verified = False
 
-    async def on_entry_signal(self, signal: Signal) -> None:
+    async def on_entry_signal(self, signal: WeatherSweepSignal) -> None:
         """收到 sweep 信号 — 固定试探份额 BUY。"""
         fixed_probe = Decimal(str(self.params.get("fixed_probe_shares", "50")))
         max_shares = self.ledger.max_buy_shares(Decimal("0.99"))
@@ -137,7 +139,7 @@ class SweepLeaderStrategy(BaseStrategy):
             self._confirm_timeout(confirm_window_ms / 1000.0)
         )
 
-    async def on_leader_signal(self, signal: Signal) -> None:
+    async def on_leader_signal(self, signal: LeaderBuySignal) -> None:
         """收到 leader 确认信号 — 追加下单。"""
         if self._leader_confirmed or self.run.is_closed:
             return

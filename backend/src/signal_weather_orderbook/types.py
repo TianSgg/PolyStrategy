@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
-from typing import Any, Literal
+from decimal import Decimal
+from typing import Any, Literal, Mapping, Optional
 
 WeatherEventType = Literal["sweep", "no_longer_possible", "market_resolved"]
 
@@ -79,4 +80,39 @@ class WeatherNotificationRecord:
     payload: dict[str, Any]
     id: int | None = None
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class WeatherSweepSignal:
+    """天气盘口扫单信号 — 检测到天气市场异常盘口活动。"""
+    event_id: str
+    token_id: str
+    outcome: str  # "yes" | "no"
+    occurred_at_ms: int
+    received_at_ns: int
+    city: str
+    spread_before: Decimal
+    spread_after: Decimal
+    volume_spike: bool = False
+    bid_depth_change: Optional[Decimal] = None
+    ask_depth_change: Optional[Decimal] = None
+    extra: Mapping[str, Any] = field(default_factory=dict)
+
+    def dedup_key(self) -> str:
+        return f"weather:{self.event_id}"
+
+
+@dataclass(frozen=True)
+class WeatherMarketContext:
+    """天气信号触发时的盘口快照 — 异步持久化，不阻塞入场。"""
+    signal_event_id: str
+    token_id: str
+    observed_at_ms: int
+    tick_size: Optional[Decimal] = None
+    best_bid: Optional[Decimal] = None
+    best_ask: Optional[Decimal] = None
+    bid_depth: Optional[Decimal] = None
+    ask_depth: Optional[Decimal] = None
+    bid_levels: Optional[int] = None
+    ask_levels: Optional[int] = None
 

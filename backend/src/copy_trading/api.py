@@ -8,7 +8,7 @@ from auth import AuthUser, get_current_user
 from account.service import get_account_service
 from .service import get_copy_trading_service
 from .models import get_strategy_stats
-from leader.service import get_leader_service
+from signal_leader_activity.service import get_leader_service
 
 router = APIRouter(prefix="/api/copy-trading", tags=["copy-trading"])
 

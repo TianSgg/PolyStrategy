@@ -14,7 +14,8 @@ import logging
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from strategy_execution.contracts import OrderRequest, Signal
+from signal_leader_activity.types import LeaderBuySignal
+from strategy_execution.contracts import OrderRequest
 from strategy_execution.enums import (
     CloseReason,
     ExecutionMode,
@@ -41,7 +42,7 @@ class LeaderStrategy(BaseStrategy):
         self._entry_timer: Optional[asyncio.Task] = None
         self._tick_verified = False
 
-    async def on_entry_signal(self, signal: Signal) -> None:
+    async def on_entry_signal(self, signal: LeaderBuySignal) -> None:
         """收到 leader BUY 信号，执行快速 BUY。"""
         # 计算份额
         size_mode = self.params.get("entry_size_mode", "fixed")
@@ -283,6 +284,6 @@ class LeaderStrategy(BaseStrategy):
         await self.run.transition(RunState.CLOSED, close_reason=CloseReason.RISK_EXIT)
         await self.cleanup()
 
-    async def on_leader_signal(self, signal: Signal) -> None:
+    async def on_leader_signal(self, signal: LeaderBuySignal) -> None:
         """策略 2 不处理额外 leader 信号（入场只响应第一个）。"""
         pass

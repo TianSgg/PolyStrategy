@@ -1,7 +1,6 @@
-"""SignalSubscription — 连接信号服务 WS，心跳/重连/去重。
+"""信号订阅客户端 — 两条独立 WS 连接，各自解析强类型信号。
 
-每个策略服务实例维护到天气信号和 Leader 信号的两条 WS 连接。
-信号去重使用内存 TTL 集合（event_id），保证 at-most-once 投递给策略。
+每种信号源拥有独立的消息格式和解析逻辑，不共享通用 Envelope。
 """
 from __future__ import annotations
 
@@ -10,9 +9,11 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Coroutine, Dict, Optional, Set
+from decimal import Decimal
+from typing import Any, Callable, Coroutine, Dict, Optional
 
-from signal_data.contracts import SignalEnvelope
+from signal_leader_activity.types import LeaderBuySignal
+from signal_weather_orderbook.types import WeatherSweepSignal
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class TTLDeduplicator:
     """基于时间的事件去重器。"""
 
     def __init__(self, ttl_sec: float = DEDUP_TTL_SEC, max_size: int = DEDUP_MAX_SIZE) -> None:
-        self._seen: OrderedDict[str, float] = OrderedDict()
+        self._seen: "OrderedDict[str, float]" = OrderedDict()
         self._ttl = ttl_sec
         self._max_size = max_size
 
@@ -49,22 +50,18 @@ class TTLDeduplicator:
                 break
 
 
-SignalHandler = Callable[[SignalEnvelope], Coroutine[Any, Any, None]]
+# ─── 天气信号订阅 ─────────────────────────────────────────────────────────────
 
 
-class SignalSubscriptionClient:
-    """单条到信号服务的 WS 连接。"""
+WeatherSignalHandler = Callable[[WeatherSweepSignal], Coroutine[Any, Any, None]]
 
-    def __init__(
-        self,
-        url: str,
-        client_id: str,
-        subscribe_events: list,
-        handler: SignalHandler,
-    ) -> None:
+
+class WeatherSignalClient:
+    """连接天气信号服务 WS，解析 WeatherSweepSignal。"""
+
+    def __init__(self, url: str, client_id: str, handler: WeatherSignalHandler) -> None:
         self._url = url
         self._client_id = client_id
-        self._subscribe_events = subscribe_events
         self._handler = handler
         self._dedup = TTLDeduplicator()
         self._task: Optional[asyncio.Task] = None
@@ -76,12 +73,10 @@ class SignalSubscriptionClient:
         return self._connected
 
     async def start(self) -> None:
-        """启动连接循环。"""
         self._running = True
-        self._task = asyncio.create_task(self._connection_loop(), name=f"signal-sub-{self._client_id}")
+        self._task = asyncio.create_task(self._connection_loop(), name=f"weather-sub-{self._client_id}")
 
     async def stop(self) -> None:
-        """停止连接。"""
         self._running = False
         if self._task:
             self._task.cancel()
@@ -91,34 +86,26 @@ class SignalSubscriptionClient:
                 pass
 
     async def _connection_loop(self) -> None:
-        """持续尝试连接并接收消息。"""
         try:
             import websockets
         except ImportError:
-            logger.error("websockets package not installed, signal subscription disabled")
+            logger.error("websockets not installed, weather subscription disabled")
             return
 
         while self._running:
             try:
                 async with websockets.connect(self._url) as ws:
                     self._connected = True
-                    logger.info("Signal WS connected: %s", self._url)
+                    logger.info("Weather WS connected: %s", self._url)
 
-                    # 发送 hello
-                    hello = {
-                        "type": "hello",
-                        "client_id": self._client_id,
-                        "subscribe": self._subscribe_events,
-                    }
+                    hello = {"type": "hello", "client_id": self._client_id, "subscribe": ["sweep"]}
                     await ws.send(json.dumps(hello))
 
-                    # 等待 welcome
                     welcome_raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                     welcome = json.loads(welcome_raw)
                     if welcome.get("type") != "welcome":
-                        logger.warning("Unexpected welcome: %s", welcome)
+                        logger.warning("Weather WS unexpected welcome: %s", welcome)
 
-                    # 消息循环
                     ping_task = asyncio.create_task(self._ping_loop(ws))
                     try:
                         async for raw in ws:
@@ -129,7 +116,7 @@ class SignalSubscriptionClient:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning("Signal WS disconnected (%s): %s, reconnecting in %ss", self._url, e, RECONNECT_DELAY_SEC)
+                logger.warning("Weather WS disconnected: %s, reconnecting in %ss", e, RECONNECT_DELAY_SEC)
             finally:
                 self._connected = False
 
@@ -137,50 +124,164 @@ class SignalSubscriptionClient:
                 await asyncio.sleep(RECONNECT_DELAY_SEC)
 
     async def _ping_loop(self, ws) -> None:
-        """周期性发送 ping。"""
         try:
             while True:
                 await asyncio.sleep(PING_INTERVAL_SEC)
                 await ws.send(json.dumps({"type": "ping"}))
-        except asyncio.CancelledError:
-            pass
-        except Exception:
+        except (asyncio.CancelledError, Exception):
             pass
 
     async def _handle_message(self, raw: str) -> None:
-        """解析消息并分发。"""
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return
 
         msg_type = msg.get("type")
-        if msg_type == "signal":
-            envelope_data = msg.get("envelope", {})
-            envelope = SignalEnvelope(
-                event_id=envelope_data.get("event_id", ""),
-                source=envelope_data.get("source", ""),
-                event_type=envelope_data.get("event_type", ""),
-                received_at_ns=envelope_data.get("received_at_ns", 0),
-                occurred_at_ms=envelope_data.get("occurred_at_ms", 0),
-                token_id=envelope_data.get("token_id", ""),
-                outcome=envelope_data.get("outcome"),
-                side=envelope_data.get("side"),
-                leader_proxy_wallet=envelope_data.get("leader_proxy_wallet"),
-                payload=envelope_data.get("payload", {}),
+        if msg_type == "weather_sweep":
+            data = msg.get("signal", {})
+            signal = WeatherSweepSignal(
+                event_id=data.get("event_id", ""),
+                token_id=data.get("token_id", ""),
+                outcome=data.get("outcome", ""),
+                occurred_at_ms=data.get("occurred_at_ms", 0),
+                received_at_ns=data.get("received_at_ns", 0),
+                city=data.get("city", ""),
+                spread_before=Decimal(str(data.get("spread_before", "0"))),
+                spread_after=Decimal(str(data.get("spread_after", "0"))),
+                volume_spike=data.get("volume_spike", False),
+                bid_depth_change=Decimal(str(data["bid_depth_change"])) if data.get("bid_depth_change") else None,
+                ask_depth_change=Decimal(str(data["ask_depth_change"])) if data.get("ask_depth_change") else None,
+                extra=data.get("extra", {}),
             )
 
-            # 去重
-            if self._dedup.is_duplicate(envelope.dedup_key()):
-                logger.debug("Duplicate signal ignored: %s", envelope.dedup_key())
+            if self._dedup.is_duplicate(signal.dedup_key()):
                 return
 
             try:
-                await self._handler(envelope)
+                await self._handler(signal)
             except Exception:
-                logger.exception("Error handling signal: %s", envelope.event_id)
+                logger.exception("Error handling weather signal: %s", signal.event_id)
 
         elif msg_type == "pong":
             pass
         elif msg_type == "error":
-            logger.error("Signal server error: code=%s msg=%s", msg.get("code"), msg.get("message"))
+            logger.error("Weather signal error: code=%s msg=%s", msg.get("code"), msg.get("message"))
+
+
+# ─── Leader 信号订阅 ──────────────────────────────────────────────────────────
+
+
+LeaderSignalHandler = Callable[[LeaderBuySignal], Coroutine[Any, Any, None]]
+
+
+class LeaderSignalClient:
+    """连接 Leader 活动信号服务 WS，解析 LeaderBuySignal。"""
+
+    def __init__(self, url: str, client_id: str, handler: LeaderSignalHandler) -> None:
+        self._url = url
+        self._client_id = client_id
+        self._handler = handler
+        self._dedup = TTLDeduplicator()
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    async def start(self) -> None:
+        self._running = True
+        self._task = asyncio.create_task(self._connection_loop(), name=f"leader-sub-{self._client_id}")
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _connection_loop(self) -> None:
+        try:
+            import websockets
+        except ImportError:
+            logger.error("websockets not installed, leader subscription disabled")
+            return
+
+        while self._running:
+            try:
+                async with websockets.connect(self._url) as ws:
+                    self._connected = True
+                    logger.info("Leader WS connected: %s", self._url)
+
+                    hello = {"type": "hello", "client_id": self._client_id, "subscribe": ["leader_buy"]}
+                    await ws.send(json.dumps(hello))
+
+                    welcome_raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    welcome = json.loads(welcome_raw)
+                    if welcome.get("type") != "welcome":
+                        logger.warning("Leader WS unexpected welcome: %s", welcome)
+
+                    ping_task = asyncio.create_task(self._ping_loop(ws))
+                    try:
+                        async for raw in ws:
+                            await self._handle_message(raw)
+                    finally:
+                        ping_task.cancel()
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Leader WS disconnected: %s, reconnecting in %ss", e, RECONNECT_DELAY_SEC)
+            finally:
+                self._connected = False
+
+            if self._running:
+                await asyncio.sleep(RECONNECT_DELAY_SEC)
+
+    async def _ping_loop(self, ws) -> None:
+        try:
+            while True:
+                await asyncio.sleep(PING_INTERVAL_SEC)
+                await ws.send(json.dumps({"type": "ping"}))
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _handle_message(self, raw: str) -> None:
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+
+        msg_type = msg.get("type")
+        if msg_type == "leader_buy":
+            data = msg.get("signal", {})
+            signal = LeaderBuySignal(
+                event_id=data.get("event_id", ""),
+                token_id=data.get("token_id", ""),
+                outcome=data.get("outcome", ""),
+                occurred_at_ms=data.get("occurred_at_ms", 0),
+                received_at_ns=data.get("received_at_ns", 0),
+                leader_proxy_wallet=data.get("leader_proxy_wallet", ""),
+                leader_name=data.get("leader_name"),
+                order_size=Decimal(str(data["order_size"])) if data.get("order_size") else None,
+                order_price=Decimal(str(data["order_price"])) if data.get("order_price") else None,
+                market_slug=data.get("market_slug"),
+                extra=data.get("extra", {}),
+            )
+
+            if self._dedup.is_duplicate(signal.dedup_key()):
+                return
+
+            try:
+                await self._handler(signal)
+            except Exception:
+                logger.exception("Error handling leader signal: %s", signal.event_id)
+
+        elif msg_type == "pong":
+            pass
+        elif msg_type == "error":
+            logger.error("Leader signal error: code=%s msg=%s", msg.get("code"), msg.get("message"))

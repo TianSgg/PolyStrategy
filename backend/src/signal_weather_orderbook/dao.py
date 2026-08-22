@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from asyncmy.cursors import DictCursor
 
-from weather_orderbook.types import WeatherCity
-from weather_orderbook.types import WeatherNotificationRecord
+from signal_weather_orderbook.types import WeatherCity
+from signal_weather_orderbook.types import WeatherNotificationRecord
 
 CITY_TIMEZONE_MAP: dict[str, str] = {
     "taipei": "Asia/Taipei",

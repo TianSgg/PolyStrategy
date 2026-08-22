@@ -1,4 +1,6 @@
 """Authentication and user-management routes."""
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 

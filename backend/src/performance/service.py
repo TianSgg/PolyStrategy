@@ -328,7 +328,7 @@ class PerformanceService:
         return self._service_block("account", "Account", caches)
 
     def _leader_summary(self) -> dict:
-        from leader.service import get_leader_service
+        from signal_leader_activity.service import get_leader_service
 
         service = get_leader_service()
         caches = [
@@ -428,7 +428,7 @@ class PerformanceService:
             return mapping[cache]()
 
         if service == "leader":
-            from leader.service import get_leader_service
+            from signal_leader_activity.service import get_leader_service
             leader = get_leader_service()
             return {"names": lambda: self._dict_items(leader._cache, "proxy_wallet", "name")}[cache]()
 

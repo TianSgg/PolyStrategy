@@ -16,7 +16,8 @@ from strategy_execution.repository import (
     StrategyRunEventRepository,
     StrategyRunRepository,
 )
-from signal_data.query_service import SignalQueryService
+from signal_weather_orderbook.signal_repository import WeatherSignalRepository
+from signal_leader_activity.signal_repository import LeaderSignalRepository
 
 router = APIRouter(prefix="/api/strategy-execution", tags=["strategy-execution"])
 
@@ -24,7 +25,8 @@ _config_repo = StrategyConfigRepository()
 _run_repo = StrategyRunRepository()
 _order_repo = StrategyOrderRepository()
 _event_repo = StrategyRunEventRepository()
-_signal_query = SignalQueryService()
+_weather_signal_repo = WeatherSignalRepository()
+_leader_signal_repo = LeaderSignalRepository()
 
 
 # ─── 配置 CRUD ────────────────────────────────────────────────────────────────
@@ -231,22 +233,35 @@ async def list_signals(
     source_type: Optional[str] = Query(None),
     token_id: Optional[str] = Query(None),
     leader_proxy_wallet: Optional[str] = Query(None),
-    event_type: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     current_user: AuthUser = Depends(get_current_user),
 ):
-    """查询信号列表。"""
-    signals = await asyncio.to_thread(
-        _signal_query.query_signals,
-        source_type=source_type,
-        token_id=token_id,
-        leader_proxy_wallet=leader_proxy_wallet,
-        event_type=event_type,
-        limit=limit,
-        offset=offset,
-    )
-    return signals
+    """查询信号列表（按 source_type 路由到对应仓库）。"""
+    if source_type == "leader":
+        results = await asyncio.to_thread(
+            _leader_signal_repo.query,
+            token_id=token_id,
+            leader_proxy_wallet=leader_proxy_wallet,
+            limit=limit,
+            offset=offset,
+        )
+    elif source_type == "weather":
+        results = await asyncio.to_thread(
+            _weather_signal_repo.query,
+            token_id=token_id,
+            limit=limit,
+            offset=offset,
+        )
+    else:
+        weather = await asyncio.to_thread(
+            _weather_signal_repo.query, token_id=token_id, limit=limit // 2, offset=offset,
+        )
+        leader = await asyncio.to_thread(
+            _leader_signal_repo.query, token_id=token_id, limit=limit // 2, offset=offset,
+        )
+        results = sorted(weather + leader, key=lambda r: r.get("received_at", ""), reverse=True)[:limit]
+    return results
 
 
 @router.get("/signals/{signal_id}")
@@ -254,8 +269,10 @@ async def get_signal(
     signal_id: str,
     current_user: AuthUser = Depends(get_current_user),
 ):
-    """获取单个信号详情（含盘口上下文和分析特征）。"""
-    result = await asyncio.to_thread(_signal_query.get_signal, signal_id)
+    """获取单个信号详情。"""
+    result = await asyncio.to_thread(_weather_signal_repo.find_by_id, signal_id)
+    if not result:
+        result = await asyncio.to_thread(_leader_signal_repo.find_by_id, signal_id)
     if not result:
         raise HTTPException(status_code=404, detail="Signal not found")
     return result

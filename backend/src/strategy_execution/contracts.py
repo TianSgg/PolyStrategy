@@ -18,22 +18,9 @@ from strategy_execution.enums import (
 )
 
 
-# ─── 信号 ─────────────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class Signal:
-    """策略内核接收到的规范化信号 — 由 signal_subscription 从 WS 消息转换而来。"""
-    event_id: str
-    source: str  # "weather" | "leader"
-    event_type: str
-    received_at_ns: int
-    occurred_at_ms: int
-    token_id: str
-    outcome: Optional[str] = None
-    side: Optional[str] = None
-    leader_proxy_wallet: Optional[str] = None
-    payload: Mapping[str, Any] = field(default_factory=dict)
+# ─── 信号（各信号源的强类型契约定义在 signal/ 包中） ─────────────────────────
+# WeatherSweepSignal: signal.weather_orderbook.contracts
+# LeaderBuySignal: signal.leader_activity.contracts
 
 
 # ─── 订单簿 ───────────────────────────────────────────────────────────────────

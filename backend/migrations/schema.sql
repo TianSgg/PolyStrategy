@@ -1,4 +1,4 @@
--- WeatherTaker 全量建表 (V1 + V2 + V3 + V4 合并)
+-- PolyStrategy 全量建表 (V1~V8 合并 + 信号表拆分)
 -- 新环境直接执行此文件即可，无需逐个跑增量迁移
 -- ⚠️ 会 DROP 已有表，勿在生产环境直接执行
 
@@ -319,3 +319,265 @@ INSERT INTO weather_cities (
   ('Warsaw', 'warsaw', 'Europe/Warsaw', 1, 0, 1, 0, 1, 480),
   ('Wuhan', 'wuhan', 'Asia/Shanghai', 1, 0, 1, 0, 1, 490),
   ('Zhengzhou', 'zhengzhou', 'Asia/Shanghai', 1, 0, 1, 0, 1, 500);
+
+-- ============================================================
+-- 天气信号事件表（独立于旧 signal_events）
+-- ============================================================
+CREATE TABLE weather_signal_events (
+  id VARCHAR(256) NOT NULL COMMENT '信号幂等键',
+  event_type VARCHAR(64) NOT NULL DEFAULT 'sweep' COMMENT 'sweep / no_longer_possible 等',
+  token_id VARCHAR(128) NOT NULL,
+  outcome VARCHAR(8) DEFAULT NULL COMMENT 'yes / no',
+  city VARCHAR(100) NOT NULL,
+  spread_before DECIMAL(18,8) DEFAULT NULL,
+  spread_after DECIMAL(18,8) DEFAULT NULL,
+  volume_spike TINYINT(1) NOT NULL DEFAULT 0,
+  bid_depth_change DECIMAL(18,8) DEFAULT NULL,
+  ask_depth_change DECIMAL(18,8) DEFAULT NULL,
+  occurred_at DATETIME(3) DEFAULT NULL,
+  received_at DATETIME(3) DEFAULT NULL,
+  received_monotonic_ns BIGINT UNSIGNED DEFAULT NULL,
+  extra_json JSON DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+
+  PRIMARY KEY (id),
+  KEY idx_weather_signal_token_time (token_id, received_at),
+  KEY idx_weather_signal_city_time (city, received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='天气信号事件';
+
+-- ============================================================
+-- Leader 信号事件表
+-- ============================================================
+CREATE TABLE leader_signal_events (
+  id VARCHAR(256) NOT NULL COMMENT '信号幂等键',
+  event_type VARCHAR(64) NOT NULL DEFAULT 'leader_buy',
+  token_id VARCHAR(128) NOT NULL,
+  outcome VARCHAR(8) DEFAULT NULL,
+  leader_proxy_wallet VARCHAR(128) NOT NULL,
+  leader_name VARCHAR(128) DEFAULT NULL,
+  order_size DECIMAL(20,4) DEFAULT NULL,
+  order_price DECIMAL(20,8) DEFAULT NULL,
+  market_slug VARCHAR(255) DEFAULT NULL,
+  occurred_at DATETIME(3) DEFAULT NULL,
+  received_at DATETIME(3) DEFAULT NULL,
+  received_monotonic_ns BIGINT UNSIGNED DEFAULT NULL,
+  extra_json JSON DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+
+  PRIMARY KEY (id),
+  KEY idx_leader_signal_token_time (token_id, received_at),
+  KEY idx_leader_signal_wallet_time (leader_proxy_wallet, received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Leader 活动信号事件';
+
+-- ============================================================
+-- 策略 1 配置: Sweep
+-- ============================================================
+CREATE TABLE strategy_sweep_configs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  owner_user_id INT NOT NULL,
+  account_id INT NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+
+  fixed_entry_shares DECIMAL(20,4) NOT NULL DEFAULT 100.0000,
+  entry_wait_ms INT NOT NULL DEFAULT 30000,
+  sweep_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'no',
+  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
+  exit_wait_ms INT NOT NULL DEFAULT 5000,
+  tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,
+  tick_verify_backoff_ms INT NOT NULL DEFAULT 1000,
+
+  params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  deleted_at DATETIME(3) DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+  updated_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_sweep_configs_owner_name (owner_user_id, name),
+  KEY idx_sweep_configs_account (account_id, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='策略 1 (Sweep) 配置';
+
+-- ============================================================
+-- 策略 2 配置: Leader
+-- ============================================================
+CREATE TABLE strategy_leader_configs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  owner_user_id INT NOT NULL,
+  account_id INT NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+
+  entry_size_mode VARCHAR(16) NOT NULL DEFAULT 'fixed',
+  fixed_entry_shares DECIMAL(20,4) NOT NULL DEFAULT 100.0000,
+  entry_wait_ms INT NOT NULL DEFAULT 30000,
+  leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT '要跟踪的 leader 地址',
+  leader_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'all',
+  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
+  exit_wait_ms INT NOT NULL DEFAULT 5000,
+  tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,
+  tick_verify_backoff_ms INT NOT NULL DEFAULT 1000,
+
+  params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  deleted_at DATETIME(3) DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+  updated_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_leader_configs_owner_name (owner_user_id, name),
+  KEY idx_leader_configs_account (account_id, enabled),
+  KEY idx_leader_configs_leader (leader_proxy_wallet, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='策略 2 (Leader) 配置';
+
+-- ============================================================
+-- 策略 3 配置: Sweep + Leader 确认
+-- ============================================================
+CREATE TABLE strategy_sweep_leader_configs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  owner_user_id INT NOT NULL,
+  account_id INT NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+
+  fixed_probe_shares DECIMAL(20,4) NOT NULL DEFAULT 50.0000,
+  entry_wait_ms INT NOT NULL DEFAULT 30000,
+  sweep_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'no',
+  leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT '确认用 leader 地址',
+  leader_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'all',
+  leader_confirm_window_ms INT NOT NULL DEFAULT 60000,
+  post_confirm_wait_ms INT NOT NULL DEFAULT 30000,
+
+  exit_mode VARCHAR(32) NOT NULL DEFAULT 'risk_tick_exit',
+  exit_wait_ms INT NOT NULL DEFAULT 5000,
+
+  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
+  tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,
+  tick_verify_backoff_ms INT NOT NULL DEFAULT 1000,
+
+  params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  deleted_at DATETIME(3) DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+  updated_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_sweep_leader_configs_owner_name (owner_user_id, name),
+  KEY idx_sweep_leader_configs_account (account_id, enabled),
+  KEY idx_sweep_leader_configs_leader (leader_proxy_wallet, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='策略 3 (Sweep+Leader) 配置';
+
+-- ============================================================
+-- 策略运行 (所有策略共用)
+-- ============================================================
+CREATE TABLE strategy_runs (
+  id CHAR(36) NOT NULL COMMENT 'UUID',
+  strategy_type VARCHAR(32) NOT NULL COMMENT 'sweep / leader / sweep_leader',
+  strategy_config_id BIGINT UNSIGNED NOT NULL,
+  token_id VARCHAR(128) NOT NULL,
+  market_slug VARCHAR(255) DEFAULT NULL,
+  question VARCHAR(512) DEFAULT NULL,
+  outcome VARCHAR(8) DEFAULT NULL,
+
+  state VARCHAR(32) NOT NULL DEFAULT 'CREATED',
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  active_key VARCHAR(256) DEFAULT NULL,
+
+  params_snapshot_json JSON NOT NULL,
+  started_by_signal_id VARCHAR(256) DEFAULT NULL,
+
+  avg_entry_price DECIMAL(36,18) DEFAULT NULL,
+  entry_shares DECIMAL(36,18) NOT NULL DEFAULT 0,
+  exited_shares DECIMAL(36,18) NOT NULL DEFAULT 0,
+  risk_state VARCHAR(32) NOT NULL DEFAULT 'OFF',
+  close_reason VARCHAR(64) DEFAULT NULL,
+
+  version INT UNSIGNED NOT NULL DEFAULT 1,
+  started_at DATETIME(3) DEFAULT NULL,
+  ended_at DATETIME(3) DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+  updated_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_strategy_runs_active (active_key),
+  KEY idx_strategy_runs_config_status (strategy_type, strategy_config_id, status, started_at),
+  KEY idx_strategy_runs_token (token_id, status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='策略运行聚合根';
+
+-- ============================================================
+-- 运行时间线事件
+-- ============================================================
+CREATE TABLE strategy_run_events (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  run_id CHAR(36) NOT NULL,
+  sequence_no INT UNSIGNED NOT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
+  monotonic_ns BIGINT UNSIGNED DEFAULT NULL,
+  payload_json JSON NOT NULL,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_run_events_seq (run_id, sequence_no),
+  KEY idx_run_events_type_time (event_type, occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='运行时间线';
+
+-- ============================================================
+-- 策略订单
+-- ============================================================
+CREATE TABLE strategy_orders (
+  id CHAR(36) NOT NULL,
+  run_id CHAR(36) NOT NULL,
+  clob_order_id VARCHAR(128) DEFAULT NULL,
+  client_order_id VARCHAR(128) NOT NULL,
+  purpose VARCHAR(32) NOT NULL,
+  execution_mode VARCHAR(16) NOT NULL DEFAULT 'normal',
+  side VARCHAR(8) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  limit_price DECIMAL(36,18) NOT NULL,
+  requested_size DECIMAL(36,18) NOT NULL,
+  matched_size DECIMAL(36,18) NOT NULL DEFAULT 0,
+  avg_matched_price DECIMAL(36,18) DEFAULT NULL,
+  error_code VARCHAR(64) DEFAULT NULL,
+  error_message VARCHAR(512) DEFAULT NULL,
+  sent_at DATETIME(3) DEFAULT NULL,
+  responded_at DATETIME(3) DEFAULT NULL,
+  closed_at DATETIME(3) DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+  updated_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_strategy_orders_client (client_order_id),
+  KEY idx_strategy_orders_run (run_id, created_at),
+  KEY idx_strategy_orders_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='策略订单';
+
+-- ============================================================
+-- 资金账本
+-- ============================================================
+CREATE TABLE strategy_account_ledger (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  account_id INT NOT NULL,
+  run_id CHAR(36) DEFAULT NULL,
+  order_id CHAR(36) DEFAULT NULL,
+  token_id VARCHAR(128) DEFAULT NULL,
+  entry_type VARCHAR(32) NOT NULL,
+  cash_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
+  shares_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
+  reserved_cash_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
+  reserved_shares_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
+  dedupe_key VARCHAR(256) NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+  metadata_json JSON DEFAULT NULL,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_ledger_dedupe (dedupe_key),
+  KEY idx_ledger_account_time (account_id, occurred_at),
+  KEY idx_ledger_run (run_id, occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='策略资金账本';

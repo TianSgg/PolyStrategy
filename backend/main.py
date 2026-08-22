@@ -84,17 +84,12 @@ from copy_trading.api import router as copy_trading_router
 from copy_trading.predexon import get_copy_trading_predexon
 from copy_trading.service import get_copy_trading_service
 from copy_trading.ws import CopyTradingWS, add_copy_trading_ws, stop_all_copy_trading_ws
-from leader.api import router as leader_router
 from market.api import router as market_router
 from performance.router import router as performance_router
 from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
 from strategy_execution.api import router as strategy_execution_router
-from strategy_execution.runtime import StrategyRuntime
-from strategy_execution.ws import get_strategy_ws_manager
-from weather_orderbook import weather_orderbook_router
-from weather_orderbook.bootstrap import WeatherBootstrap
 
 
 @asynccontextmanager
@@ -133,26 +128,9 @@ async def lifespan(app: FastAPI):
         pnl_svc = get_pnl_service()
         pnl_svc.start()
 
-    # --- Weather OrderBook 模块初始化 ---
-    weather_bootstrap = WeatherBootstrap()
-    weather_service = await weather_bootstrap.start()
-    app.state.weather_service = weather_service
-    app.state.weather_notification_repository = weather_bootstrap.notification_repository
-
-    # --- 策略执行系统初始化 ---
-    strategy_ws = get_strategy_ws_manager()
-    await strategy_ws.start()
-    strategy_runtime = StrategyRuntime()
-    if _env != "dev":
-        await strategy_runtime.start()
-    app.state.strategy_runtime = strategy_runtime
-
     try:
         yield
     finally:
-        await strategy_runtime.stop()
-        await strategy_ws.stop()
-        await weather_bootstrap.stop()
         if _env != "dev":
             copy_trading_predexon.stop()
             copy_trading_predexon_task.cancel()
@@ -164,15 +142,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# 注册业务路由
+# 注册业务路由（信号服务已独立部署，见 signal_weather_orderbook/app.py 和 signal_leader_activity/app.py）
 app.include_router(auth_router)
 app.include_router(copy_trading_router)
-app.include_router(leader_router)
 app.include_router(account_router)
 app.include_router(market_router)
 app.include_router(performance_router)
 app.include_router(pnl_router)
-app.include_router(weather_orderbook_router)
 app.include_router(strategy_execution_router)
 
 # CORS 配置
@@ -257,25 +233,6 @@ async def pnl_websocket_endpoint(websocket: WebSocket):
         pass
     finally:
         pnl_svc.remove_ws_queue(queue)
-
-
-@app.websocket("/ws/strategy-execution")
-async def strategy_execution_websocket_endpoint(websocket: WebSocket):
-    """策略执行事件实时推送 WebSocket 端点。"""
-    user = _get_ws_user(websocket)
-    if not user or not user.enabled:
-        await websocket.close(code=1008)
-        return
-
-    se_ws = get_strategy_ws_manager()
-    await se_ws.add_connection(websocket)
-    try:
-        async for _ in websocket.iter_text():
-            pass
-    except WebSocketDisconnect:
-        logger.info("Strategy execution WS client disconnected")
-    finally:
-        await se_ws.remove_connection(websocket)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,8 @@ import uuid
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from strategy_execution.contracts import OrderRequest, Signal
+from signal_weather_orderbook.types import WeatherSweepSignal
+from strategy_execution.contracts import OrderRequest
 from strategy_execution.enums import (
     CloseReason,
     ExecutionMode,
@@ -42,7 +43,7 @@ class SweepStrategy(BaseStrategy):
         self._entry_timer: Optional[asyncio.Task] = None
         self._tick_verified = False
 
-    async def on_entry_signal(self, signal: Signal) -> None:
+    async def on_entry_signal(self, signal: WeatherSweepSignal) -> None:
         """收到 sweep 信号，执行快速 BUY。"""
         # 计算实际可买份额
         fixed_shares = Decimal(str(self.params.get("fixed_entry_shares", "100")))
@@ -302,6 +303,6 @@ class SweepStrategy(BaseStrategy):
         await self.run.transition(RunState.CLOSED, close_reason=CloseReason.RISK_EXIT)
         await self.cleanup()
 
-    async def on_leader_signal(self, signal: Signal) -> None:
+    async def on_leader_signal(self, signal: "LeaderBuySignal") -> None:
         """策略 1 不处理 leader 信号。"""
         pass

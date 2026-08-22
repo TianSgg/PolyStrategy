@@ -1,4 +1,6 @@
 """天气模块启动引导：封装初始化、事件处理、通知持久化逻辑"""
+from __future__ import annotations
+
 import logging
 from datetime import datetime, timezone as _tz
 from zoneinfo import ZoneInfo
