@@ -244,7 +244,6 @@ CREATE TABLE weather_signal_events (
   token_id VARCHAR(100) NULL COMMENT 'Polymarket CLOB token ID',
   status ENUM('monitoring', 'resolved', 'exhausted') NULL COMMENT '该 Event 当时的监听状态',
   reason VARCHAR(255) NULL COMMENT '触发原因，例如 ask_level_removed_0.98',
-  message TEXT NOT NULL COMMENT '完整通知正文',
   payload JSON NOT NULL COMMENT '订单簿快照及其他结构化详情',
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '写入数据库时间 UTC，毫秒级',
 

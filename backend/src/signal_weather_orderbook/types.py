@@ -56,7 +56,7 @@ class WeatherEvent:
 
 @dataclass(frozen=True)
 class WeatherSignalRecord:
-    """One durable weather Telegram notification and its structured context."""
+    """One persisted weather signal event record."""
 
     notification_key: str
     occurred_at: datetime
@@ -75,7 +75,6 @@ class WeatherSignalRecord:
     token_id: str | None
     status: str | None
     reason: str | None
-    message: str
     payload: dict[str, Any]
     id: int | None = None
     created_at: datetime | None = None

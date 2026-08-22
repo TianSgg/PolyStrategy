@@ -18,23 +18,6 @@ from .types import WeatherEvent, WeatherSignalRecord
 logger = logging.getLogger(__name__)
 
 
-def _format_orderbook(state: str, orderbook: dict | None) -> str:
-    if orderbook is None:
-        return f"**Order Book ({state})** [N/A | initial snapshot]"
-
-    def level(label: str) -> str:
-        item = orderbook.get(label)
-        return "-" if item is None else f"{item['price']} (size: {item['size']})"
-
-    return (
-        f"**Order Book ({state})** [{orderbook.get('observed_at', '?')}]\n"
-        f"Best Ask: {level('best_ask')}\n"
-        f"Best Bid: {level('best_bid')}\n"
-        f"Ask Levels: {orderbook.get('ask_levels', '?')}\n"
-        f"Bid Levels: {orderbook.get('bid_levels', '?')}"
-    )
-
-
 
 def _build_signal_record(
     event: WeatherEvent, city, main_ctx
@@ -67,7 +50,6 @@ def _build_signal_record(
         token_id=event.asset.asset_id,
         status=None,
         reason=event.reason,
-        message=f"[{event.event_type}] {event.asset.city} {direction} {event.asset.temperature_label} ({event.reason})",
         payload=payload,
     )
 

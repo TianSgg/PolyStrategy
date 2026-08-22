@@ -39,7 +39,6 @@ class WeatherSignalResponse(BaseModel):
     token_id: str | None
     status: str | None
     reason: str | None
-    message: str
     payload: dict[str, Any]
     created_at: datetime | None
 
@@ -95,7 +94,6 @@ def signal_response(record: WeatherSignalRecord) -> WeatherSignalResponse:
         token_id=record.token_id,
         status=record.status,
         reason=record.reason,
-        message=record.message,
         payload=record.payload,
         created_at=record.created_at,
     )

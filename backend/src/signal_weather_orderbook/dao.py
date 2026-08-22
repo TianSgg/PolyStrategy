@@ -184,9 +184,9 @@ class WeatherSignalEventRepository:
                 city, city_slug, direction, local_date,
                 market_slug, temperature_label, outcome,
                 main_market_slug, main_temperature_label, main_outcome,
-                token_id, status, reason, message, payload
+                token_id, status, reason, payload
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             ) ON DUPLICATE KEY UPDATE notification_key = notification_key
         """
         values = (
@@ -207,7 +207,6 @@ class WeatherSignalEventRepository:
             record.token_id,
             record.status,
             record.reason,
-            record.message,
             json.dumps(record.payload, ensure_ascii=False, separators=(",", ":")),
         )
         async with self._pool.acquire() as connection, connection.cursor() as cursor:
@@ -226,7 +225,7 @@ class WeatherSignalEventRepository:
                    city, city_slug, direction, local_date,
                    market_slug, temperature_label, outcome,
                    main_market_slug, main_temperature_label, main_outcome,
-                   token_id, status, reason, message, payload, created_at
+                   token_id, status, reason, payload, created_at
             FROM weather_signal_events
             WHERE event_slug = %s
         """
@@ -263,7 +262,7 @@ class WeatherSignalEventRepository:
                    city, city_slug, direction, local_date,
                    market_slug, temperature_label, outcome,
                    main_market_slug, main_temperature_label, main_outcome,
-                   token_id, status, reason, message, payload, created_at
+                   token_id, status, reason, payload, created_at
             FROM weather_signal_events
         """
         params: list[object] = []
@@ -331,7 +330,6 @@ class WeatherSignalEventRepository:
             token_id=row.get("token_id"),
             status=row.get("status"),
             reason=row.get("reason"),
-            message=str(row["message"]),
             payload=payload,
             created_at=_utc_datetime(row["created_at"]),
         )
