@@ -18,7 +18,8 @@ from market import get_market_service
 from .predexon import get_copy_trading_predexon
 from account.service import get_account_service
 from signal_leader_activity.service import get_leader_service
-from event_bus import get_event_bus
+from strategy_execution.signal_subscription import WeatherSignalClient
+from signal_weather_orderbook.types import WeatherSweepSignal
 from .models import (
     get_copy_trading_configs,
     delete_follower_positions,
@@ -142,9 +143,8 @@ class CopyTradingService:
         # 已超时退出但可能有延迟成交的 sweep order: {order_id: (config_id, asset_id)}
         self._sweep_exited_orders: Dict[str, tuple] = {}
 
-        # 天气 EventBus 订阅
-        self._weather_sweep_queue: Optional[asyncio.Queue] = None
-        self._weather_sweep_task: Optional[asyncio.Task] = None
+        # 天气信号 WS 订阅
+        self._weather_signal_client: Optional[WeatherSignalClient] = None
 
         # 启动时执行一次仓位同步，运行期间仅依赖下单返回和 WS 增量维护。
         self._initial_position_sync_complete = False
@@ -246,12 +246,9 @@ class CopyTradingService:
         if self._pending_poller_task:
             self._pending_poller_task.cancel()
             self._pending_poller_task = None
-        if self._weather_sweep_task:
-            self._weather_sweep_task.cancel()
-            self._weather_sweep_task = None
-        if self._weather_sweep_queue:
-            get_event_bus().unsubscribe("weather.sweep", self._weather_sweep_queue)
-            self._weather_sweep_queue = None
+        if self._weather_signal_client:
+            asyncio.create_task(self._weather_signal_client.stop())
+            self._weather_signal_client = None
         for entry in self._weather_states.values():
             if entry.timer_task:
                 entry.timer_task.cancel()
@@ -267,9 +264,14 @@ class CopyTradingService:
         await self._sync_follower_positions_on_startup()
         self._start_pending_poller(interval=120)
 
-        event_bus = get_event_bus()
-        self._weather_sweep_queue = event_bus.subscribe("weather.sweep")
-        self._weather_sweep_task = asyncio.create_task(self._consume_weather_sweep())
+        import os
+        weather_url = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://127.0.0.1:8001/ws/signal")
+        self._weather_signal_client = WeatherSignalClient(
+            url=weather_url,
+            client_id="copy_trading",
+            handler=self._on_weather_signal,
+        )
+        await self._weather_signal_client.start()
 
     def _on_market_exit(self, no_asset_id: str):
         """MarketService 窗口到期确认 tick_size=0.001，触发卖出"""
@@ -636,28 +638,15 @@ class CopyTradingService:
 
     # ==================== 天气扫单入场 ====================
 
-    async def _consume_weather_sweep(self):
-        """从 EventBus 消费 weather.sweep 事件，筛选 outcome=no 后触发入场
-
-        payload schema (from coordinator event.payload()):
-            {"event_type": "sweep", "asset": {"asset_id": str, "outcome": "yes"|"no", ...}, ...}
-        """
-        while True:
-            try:
-                payload = await self._weather_sweep_queue.get()
-                asset = payload.get("asset", {})
-                asset_id = asset.get("asset_id")
-                reason = payload.get("reason", "")
-                outcome = asset.get("outcome")
-                if outcome == "no" and asset_id:
-                    logger.info(f"[WeatherSweep] Received: asset={asset_id[:8]} reason={reason}")
-                    await self._execute_weather_sweep(asset_id)
-                else:
-                    logger.debug(f"[WeatherSweep] Skipped: asset={asset_id[:8] if asset_id else '?'} outcome={outcome}")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"[WeatherSweep] Consumer error: {e}")
+    async def _on_weather_signal(self, signal: WeatherSweepSignal) -> None:
+        """WS 收到天气扫单信号，筛选 outcome=no 的 sweep 后触发入场。"""
+        if signal.event_type != "sweep":
+            return
+        if signal.outcome == "no" and signal.token_id:
+            logger.info(f"[WeatherSweep] Received: asset={signal.token_id[:8]} reason={signal.reason}")
+            await self._execute_weather_sweep(signal.token_id)
+        else:
+            logger.debug(f"[WeatherSweep] Skipped: asset={signal.token_id[:8] if signal.token_id else '?'} outcome={signal.outcome}")
 
     async def _execute_weather_sweep(self, asset_id: str):
         """天气模块检测到 NO token 被扫，触发入场 + 确认窗口"""

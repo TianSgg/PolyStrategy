@@ -8,7 +8,6 @@ from datetime import date, datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from event_bus import EventBus
 from signal_weather_orderbook.discovery import WeatherDiscovery
 from signal_weather_orderbook.types import MarketCandidate, WeatherCity
 from signal_weather_orderbook.types import WeatherEvent
@@ -17,6 +16,7 @@ from signal_weather_orderbook.gateway import SharedMarketWebSocket
 
 logger = logging.getLogger(__name__)
 EventStartedHandler = Callable[[WeatherCity, str, date, str, Optional[MarketCandidate], bool], Awaitable[None]]
+BroadcastHandler = Callable[[str, dict], Awaitable[None]]
 
 
 @dataclass
@@ -36,11 +36,11 @@ class WeatherCoordinator:
         discovery: WeatherDiscovery,
         on_event,
         on_event_started: EventStartedHandler | None = None,
-        event_bus: EventBus | None = None,
+        on_broadcast: BroadcastHandler | None = None,
     ):
         self.cities, self.discovery, self._on_event = cities, discovery, on_event
         self._on_event_started = on_event_started
-        self._event_bus = event_bus
+        self._on_broadcast = on_broadcast
         self._states: dict[tuple[str, str], DirectionState] = {}
         self._city_dates: dict[str, date] = {}
         self._maintenance_lock = asyncio.Lock()
@@ -300,7 +300,7 @@ class WeatherCoordinator:
         )
 
         asyncio.create_task(self._on_event(event, main_ctx), name=f"notify-{event.event_type}")
-        if self._event_bus:
+        if self._on_broadcast:
             payload = event.payload()
             if main_ctx:
                 payload["main_monitor"] = main_ctx
@@ -310,8 +310,7 @@ class WeatherCoordinator:
                     "temperature_label": state.next_monitor.candidate.temperature_label,
                     **state.next_monitor.bbo_snapshot(),
                 }
-            self._event_bus.publish(f"weather.{event.event_type}", payload)
-            logger.debug("[Coordinator] EventBus published: weather.%s", event.event_type)
+            asyncio.create_task(self._on_broadcast(event.event_type, payload))
 
         if not state_key:
             return
@@ -362,10 +361,9 @@ class WeatherCoordinator:
                 state.next_monitor.start()
                 await self._register_monitor(state.next_monitor)
 
-            # Schema: see event_bus.py module docstring "weather.next_candidate"
-            if self._event_bus:
+            if self._on_broadcast:
                 candidate = state.candidates[new_index]
-                self._event_bus.publish("weather.next_candidate", {
+                asyncio.create_task(self._on_broadcast("next_candidate", {
                     "city": state_key[0],
                     "direction": state_key[1],
                     "event_slug": candidate.event_slug,
@@ -373,7 +371,7 @@ class WeatherCoordinator:
                     "temperature_label": candidate.temperature_label,
                     "yes_token_id": candidate.yes_asset.asset_id,
                     "no_token_id": candidate.no_asset.asset_id,
-                })
+                }))
         else:
             # No next_monitor — fall back to standard advancement
             if new_index >= len(state.candidates):

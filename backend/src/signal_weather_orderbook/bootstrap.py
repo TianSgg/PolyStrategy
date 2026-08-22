@@ -5,10 +5,11 @@ import logging
 from datetime import datetime, timezone as _tz
 from zoneinfo import ZoneInfo
 
+from collections.abc import Awaitable, Callable
+
 import aiohttp
 import asyncmy
 
-from event_bus import get_event_bus
 from shared.db import MYSQL_CONFIG
 from .dao import WeatherCityRepository, WeatherSignalEventRepository
 from .gateway import PolymarketMarketClient
@@ -64,7 +65,7 @@ class WeatherBootstrap:
         self._http_session: aiohttp.ClientSession | None = None
         self._city_by_name: dict = {}
 
-    async def start(self) -> WeatherOrderBookService:
+    async def start(self, on_broadcast: Callable[[str, dict], Awaitable[None]] | None = None) -> WeatherOrderBookService:
         self._mysql_pool = await asyncmy.create_pool(
             host=MYSQL_CONFIG["host"],
             port=MYSQL_CONFIG["port"],
@@ -87,7 +88,6 @@ class WeatherBootstrap:
 
         self._http_session = aiohttp.ClientSession()
         market_client = PolymarketMarketClient(self._http_session)
-        event_bus = get_event_bus()
 
         self._city_by_name = {city.name: city for city in cities}
 
@@ -96,7 +96,7 @@ class WeatherBootstrap:
             market_client,
             self._on_weather_event,
             signal_event_repository=self.signal_event_repository,
-            event_bus=event_bus,
+            on_broadcast=on_broadcast,
         )
         await self.service.start()
         logger.info("Weather OrderBook service started")

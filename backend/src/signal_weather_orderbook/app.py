@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, WebSocket
 
-from event_bus import get_event_bus
 from signal_weather_orderbook.api import router as weather_router
 from signal_weather_orderbook.bootstrap import WeatherBootstrap
 from signal_weather_orderbook.ws_hub import WeatherSignalHub
@@ -40,59 +39,45 @@ from signal_weather_orderbook.ws_hub import WeatherSignalHub
 signal_hub = WeatherSignalHub()
 
 
-async def _event_bus_bridge() -> None:
-    """从 EventBus 订阅 weather.sweep 事件，转发到 WS hub 广播。"""
-    bus = get_event_bus()
-    queue = bus.subscribe("weather.sweep")
-    logger.info("Weather signal bridge started: weather.sweep → WS hub")
-    while True:
-        try:
-            payload = await queue.get()
-            asset = payload.get("asset", {})
-            current_ob = payload.get("current_orderbook", {})
-            event_slug = asset.get("event_slug", "")
-            direction = event_slug.split("-temperature-in-", 1)[0] if "-temperature-in-" in event_slug else ""
+async def _broadcast_weather_signal(event_type: str, payload: dict) -> None:
+    """Coordinator 回调 — 将事件转为 WS 信号格式并广播到策略服务。"""
+    asset = payload.get("asset", {})
+    current_ob = payload.get("current_orderbook", {})
+    event_slug = asset.get("event_slug", "")
+    direction = event_slug.split("-temperature-in-", 1)[0] if "-temperature-in-" in event_slug else ""
 
-            signal_dict = {
-                "event_id": f"{event_slug}:{asset.get('asset_id', '')}:{int(time.time() * 1000)}",
-                "event_type": payload.get("event_type", "sweep"),
-                "token_id": asset.get("asset_id", ""),
-                "outcome": asset.get("outcome", ""),
-                "city": asset.get("city", ""),
-                "event_slug": event_slug,
-                "market_slug": asset.get("market_slug"),
-                "temperature_label": asset.get("temperature_label"),
-                "direction": direction,
-                "reason": payload.get("reason", ""),
-                "occurred_at_ms": current_ob.get("observed_at_unix_ms", int(time.time() * 1000)),
-                "received_at_ns": time.time_ns(),
-                "orderbook_snapshot": current_ob,
-            }
-            await signal_hub.broadcast(signal_dict)
-        except asyncio.CancelledError:
-            break
-        except Exception:
-            logger.exception("Error in weather signal bridge")
+    signal_dict = {
+        "event_id": f"{event_slug}:{asset.get('asset_id', '')}:{int(time.time() * 1000)}",
+        "event_type": event_type,
+        "token_id": asset.get("asset_id", ""),
+        "outcome": asset.get("outcome", ""),
+        "city": asset.get("city", ""),
+        "event_slug": event_slug,
+        "market_slug": asset.get("market_slug"),
+        "temperature_label": asset.get("temperature_label"),
+        "direction": direction,
+        "reason": payload.get("reason", ""),
+        "occurred_at_ms": current_ob.get("observed_at_unix_ms", int(time.time() * 1000)),
+        "received_at_ns": time.time_ns(),
+        "orderbook_snapshot": current_ob,
+    }
+    if payload.get("next_candidate_orderbook"):
+        signal_dict["next_candidate_orderbook"] = payload["next_candidate_orderbook"]
+    await signal_hub.broadcast(signal_dict)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     weather_bootstrap = WeatherBootstrap()
-    weather_service = await weather_bootstrap.start()
+    weather_service = await weather_bootstrap.start(on_broadcast=_broadcast_weather_signal)
     app.state.weather_service = weather_service
     app.state.weather_signal_event_repository = weather_bootstrap.signal_event_repository
 
-    bridge_task = asyncio.create_task(_event_bus_bridge(), name="weather-signal-bridge")
     logger.info("Weather signal service started on port %s", os.getenv("WEATHER_SIGNAL_PORT", "8001"))
 
     try:
         yield
     finally:
-        bridge_task.cancel()
-        try:
-            await bridge_task
-        except asyncio.CancelledError:
-            pass
         await weather_bootstrap.stop()
 
 

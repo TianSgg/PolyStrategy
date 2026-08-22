@@ -6,8 +6,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from event_bus import EventBus
-from signal_weather_orderbook.coordinator import EventStartedHandler, WeatherCoordinator
+from signal_weather_orderbook.coordinator import BroadcastHandler, EventStartedHandler, WeatherCoordinator
 from signal_weather_orderbook.discovery import WeatherDiscovery
 from signal_weather_orderbook.types import WeatherCity
 from signal_weather_orderbook.gateway import PolymarketMarketClient
@@ -34,7 +33,7 @@ class WeatherOrderBookService:
         on_weather_event: WeatherEventHandler,
         on_event_started: EventStartedHandler | None = None,
         signal_event_repository: WeatherSignalEventRepository | None = None,
-        event_bus: EventBus | None = None,
+        on_broadcast: BroadcastHandler | None = None,
     ) -> None:
         self.cities = cities
         self.market_client = market_client
@@ -44,7 +43,7 @@ class WeatherOrderBookService:
             self.discovery,
             on_weather_event,
             on_event_started,
-            event_bus=event_bus,
+            on_broadcast=on_broadcast,
         )
         self.signal_event_repository = signal_event_repository
         self._signal_counts: dict[str, int] = {}
