@@ -30,6 +30,8 @@ from strategy_execution.risk.manager import RiskManager
 from strategy_execution.run_state import RunSingleFlightGuard, RunStateMachine
 from strategy_execution.signal_subscription import SignalSubscriptionClient
 from strategy_execution.strategies.base import BaseStrategy
+from strategy_execution.strategies.leader_strategy import LeaderStrategy
+from strategy_execution.strategies.sweep_leader_strategy import SweepLeaderStrategy
 from strategy_execution.strategies.sweep_strategy import SweepStrategy
 
 logger = logging.getLogger(__name__)
@@ -265,11 +267,10 @@ class StrategyRuntime:
         }
         if strategy_type == StrategyType.SWEEP:
             return SweepStrategy(**kwargs)
-        # TODO: Phase 6/7 实现
-        # elif strategy_type == StrategyType.LEADER:
-        #     return LeaderStrategy(**kwargs)
-        # elif strategy_type == StrategyType.SWEEP_LEADER:
-        #     return SweepLeaderStrategy(**kwargs)
+        elif strategy_type == StrategyType.LEADER:
+            return LeaderStrategy(**kwargs)
+        elif strategy_type == StrategyType.SWEEP_LEADER:
+            return SweepLeaderStrategy(**kwargs)
         raise ValueError(f"Strategy not implemented: {strategy_type}")
 
     def _envelope_to_signal(self, envelope: SignalEnvelope) -> Signal:

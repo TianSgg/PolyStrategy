@@ -91,6 +91,7 @@ from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
 from strategy_execution.api import router as strategy_execution_router
+from strategy_execution.runtime import StrategyRuntime
 from weather_orderbook import weather_orderbook_router
 from weather_orderbook.bootstrap import WeatherBootstrap
 
@@ -137,9 +138,16 @@ async def lifespan(app: FastAPI):
     app.state.weather_service = weather_service
     app.state.weather_notification_repository = weather_bootstrap.notification_repository
 
+    # --- 策略执行系统初始化 ---
+    strategy_runtime = StrategyRuntime()
+    if _env != "dev":
+        await strategy_runtime.start()
+    app.state.strategy_runtime = strategy_runtime
+
     try:
         yield
     finally:
+        await strategy_runtime.stop()
         await weather_bootstrap.stop()
         if _env != "dev":
             copy_trading_predexon.stop()
