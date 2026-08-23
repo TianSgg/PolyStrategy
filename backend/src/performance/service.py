@@ -25,8 +25,6 @@ class PerformanceService:
     def __init__(self):
         self.ws_latencies: Dict[str, str] = {
             "ws_market": "--",
-            "ws_user": "--",
-            "predexon": "--",
         }
         self.http_latency: Dict[str, str] = {
             "data_api": "--",
@@ -62,7 +60,7 @@ class PerformanceService:
         await self.check_http_latencies()
 
     async def check_ws_latencies(self):
-        # 1. Polymarket Market WS - CopyTrading MarketService
+        # 1. Polymarket Market WS
         try:
             from market import get_market_service
             latency = await get_market_service().check_latency()
@@ -70,29 +68,6 @@ class PerformanceService:
         except Exception as e:
             logger.debug(f"[Performance] ws_market error: {e}")
             self.ws_latencies["ws_market"] = "--"
-
-        # 2. ws_user - CopyTradingWS（只测一个实例）
-        try:
-            from copy_trading.ws import get_all_copy_trading_ws
-            ws_instances = get_all_copy_trading_ws()
-            if ws_instances:
-                latency = await next(iter(ws_instances.values())).check_latency()
-                self.ws_latencies["ws_user"] = str(latency)
-            else:
-                self.ws_latencies["ws_user"] = "--"
-        except Exception as e:
-            logger.debug(f"[Performance] ws_user error: {e}")
-            self.ws_latencies["ws_user"] = "--"
-
-        # 3. predexon - CopyTradingPredexon
-        try:
-            from copy_trading.predexon import get_copy_trading_predexon
-            predexon = get_copy_trading_predexon()
-            latency = await predexon.check_latency()
-            self.ws_latencies["predexon"] = str(latency)
-        except Exception as e:
-            logger.debug(f"[Performance] predexon error: {e}")
-            self.ws_latencies["predexon"] = "--"
 
     async def check_http_latencies(self):
         # 1. Polymarket HTTP APIs（主动探测）
@@ -128,11 +103,9 @@ class PerformanceService:
         """Return a safe, compact snapshot of in-memory caches."""
         generated_at = now_utc8_str()
         services = [
-            self._copy_trading_summary(),
             self._market_summary(),
             self._account_summary(),
             self._leader_summary(),
-            self._copy_trading_ws_summary(),
             self._frontend_ws_summary(),
             self._performance_summary(),
         ]
@@ -219,71 +192,6 @@ class PerformanceService:
                 items.append({owner_name: owner, "asset_id": asset_id, value_name: value})
         return items
 
-    def _copy_trading_summary(self) -> dict:
-        from copy_trading.service import get_copy_trading_service
-
-        service = get_copy_trading_service()
-        configs = [self._config_item(config) for config in service._config_id_to_config.values()]
-        caches = [
-            self._cache_block("copy_trading", "configs", "Configs", configs, {
-                "enabled": sum(1 for item in configs if item["enabled"]),
-                "disabled": sum(1 for item in configs if not item["enabled"]),
-            }),
-            self._cache_block("copy_trading", "follower_positions", "Follower Positions",
-                              self._nested_amount_items(service._follower_positions, "follower", "size")),
-            self._cache_block("copy_trading", "pending_buy_orders", "Pending BUY",
-                              self._nested_amount_items(service._pending_buy_orders, "follower", "pending")),
-            self._cache_block("copy_trading", "pending_sell_orders", "Pending SELL",
-                              self._nested_amount_items(service._pending_sell_orders, "follower", "pending")),
-            self._cache_block("copy_trading", "processed_txs", "Processed TXs", self._set_items(service._processed_txs)),
-            self._cache_block("copy_trading", "processed_orders", "Processed Orders", self._processed_order_items(service)),
-            self._cache_block("copy_trading", "asset_to_configs", "Asset→Configs", self._asset_to_configs_items(service)),
-            self._cache_block("copy_trading", "runtime", "Runtime", self._copy_trading_runtime_items(service)),
-        ]
-        return self._service_block("copy_trading", "Copy Trading", caches)
-
-    def _config_item(self, config) -> dict:
-        return {
-            "id": config.id,
-            "leader_proxy_wallet": config.leader_proxy_wallet,
-            "follower_proxy_wallet": config.follower_proxy_wallet,
-            "enabled": config.enabled,
-            "owner_user_id": config.owner_user_id,
-            "gtd_expiration_sec": config.gtd_expiration_sec,
-            "buy_size": config.buy_size,
-        }
-
-    def _processed_order_items(self, service) -> List[dict]:
-        groups = {
-            "live_on_post": service._order_live_on_post_ids,
-            "delayed_on_post": service._order_delayed_on_post_ids,
-            "matched_on_post": set(service._order_post_filled.keys()),
-            "canceled": service._processed_canceled_order_ids,
-        }
-        items = []
-        for group, values in groups.items():
-            for order_id in sorted(values):
-                items.append({"group": group, "order_id": order_id})
-        return items
-
-    def _asset_to_configs_items(self, service) -> List[dict]:
-        items = []
-        for asset_id, config_ids in sorted(service._asset_to_configs.items()):
-            items.append({"asset_id": asset_id, "config_ids": sorted(config_ids)})
-        return items
-
-    def _copy_trading_runtime_items(self, service) -> List[dict]:
-        return [
-            {"name": "leaders", "value": len(service._leader_addr_to_configs)},
-            {"name": "followers", "value": len(service._followers)},
-            {"name": "tx_locks", "value": len(service._tx_locks)},
-            {"name": "addr_locks", "value": len(service._addr_locks)},
-            {"name": "asset_fetch_events", "value": len(service._asset_fetch_events)},
-            {"name": "asset_to_configs", "value": len(service._asset_to_configs)},
-            {"name": "initial_position_sync_complete", "value": service._initial_position_sync_complete},
-            {"name": "pending_poller_running", "value": self._task_alive(service._pending_poller_task)},
-        ]
-
     def _market_summary(self) -> dict:
         from market import get_market_service
 
@@ -338,26 +246,6 @@ class PerformanceService:
         return self._service_block("leader", "Leader", caches)
 
 
-    def _copy_trading_ws_summary(self) -> dict:
-        from copy_trading.ws import get_all_copy_trading_ws
-
-        items = self._copy_trading_ws_items(get_all_copy_trading_ws())
-        return self._service_block("copy_trading_ws", "Follower User WS", [
-            self._cache_block("copy_trading_ws", "instances", "Instances", items)
-        ])
-
-    def _copy_trading_ws_items(self, ws_instances: dict) -> List[dict]:
-        items = []
-        for follower, ws in sorted(ws_instances.items()):
-            items.append({
-                "follower": follower,
-                "running": ws._running,
-                "connected": ws._ws is not None,
-                "task_running": self._task_alive(ws._task),
-                "processed_trades": len(getattr(ws, "_processed_trades", set())),
-            })
-        return items
-
     def _frontend_ws_summary(self) -> dict:
         manager = get_frontend_ws_manager()
         return self._service_block("frontend_ws", "Frontend WS", [
@@ -387,21 +275,6 @@ class PerformanceService:
         return task is not None and not task.done()
 
     def _cache_items(self, service: str, cache: str, asset_id: Optional[str] = None) -> List[dict]:
-        if service == "copy_trading":
-            from copy_trading.service import get_copy_trading_service
-            ct = get_copy_trading_service()
-            mapping = {
-                "configs": lambda: [self._config_item(config) for config in ct._config_id_to_config.values()],
-                "follower_positions": lambda: self._nested_amount_items(ct._follower_positions, "follower", "size"),
-                "pending_buy_orders": lambda: self._nested_amount_items(ct._pending_buy_orders, "follower", "pending"),
-                "pending_sell_orders": lambda: self._nested_amount_items(ct._pending_sell_orders, "follower", "pending"),
-                "processed_txs": lambda: self._set_items(ct._processed_txs),
-                "processed_orders": lambda: self._processed_order_items(ct),
-                "asset_to_configs": lambda: self._asset_to_configs_items(ct),
-                "runtime": lambda: self._copy_trading_runtime_items(ct),
-            }
-            return mapping[cache]()
-
         if service == "market":
             from market import get_market_service
             market = get_market_service()
@@ -431,10 +304,6 @@ class PerformanceService:
             from signal_leader_activity.service import get_leader_service
             leader = get_leader_service()
             return {"names": lambda: self._dict_items(leader._cache, "proxy_wallet", "name")}[cache]()
-
-        if service == "copy_trading_ws":
-            from copy_trading.ws import get_all_copy_trading_ws
-            return {"instances": lambda: self._copy_trading_ws_items(get_all_copy_trading_ws())}[cache]()
 
         if service == "frontend_ws":
             return {
