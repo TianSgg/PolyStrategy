@@ -25,14 +25,11 @@ from strategy_execution.execution.account_ledger import AccountExecutionLedger, 
 from strategy_execution.execution.order_executor import OrderExecutor
 from strategy_execution.execution.order_projection import OrderProjection
 from strategy_execution.execution.tick_verifier import TickVerifier
+from strategy_execution.base import BaseStrategy
 from strategy_execution.repository import StrategyConfigRepository, StrategyRunRepository
 from strategy_execution.risk.manager import RiskManager
 from strategy_execution.run_state import RunSingleFlightGuard, RunStateMachine
 from strategy_execution.signal_subscription import WeatherSignalClient, LeaderSignalClient
-from strategy_execution.strategies.base import BaseStrategy
-from strategy_execution.strategies.leader_strategy import LeaderStrategy
-from strategy_execution.strategies.sweep_leader_strategy import SweepLeaderStrategy
-from strategy_execution.strategies.sweep_strategy import SweepStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +40,9 @@ NEEDS_LEADER = {StrategyType.LEADER, StrategyType.SWEEP_LEADER}
 class SingleStrategyRuntime:
     """单策略运行时 — 只处理指定的 strategy_type。"""
 
-    def __init__(self, strategy_type: StrategyType) -> None:
+    def __init__(self, strategy_type: StrategyType, strategy_class: type[BaseStrategy] | None = None) -> None:
         self._strategy_type = strategy_type
+        self._strategy_class = strategy_class
         self._config_repo = StrategyConfigRepository()
         self._run_repo = StrategyRunRepository()
         self._ledger_manager = LedgerManager()
@@ -216,6 +214,8 @@ class SingleStrategyRuntime:
         proxy_wallet: str,
         params: Dict[str, Any],
     ) -> BaseStrategy:
+        if self._strategy_class is None:
+            raise ValueError(f"No strategy_class provided for {self._strategy_type}")
         kwargs = {
             "run_machine": run_machine,
             "ledger": ledger,
@@ -226,13 +226,7 @@ class SingleStrategyRuntime:
             "proxy_wallet": proxy_wallet,
             "params": params,
         }
-        if self._strategy_type == StrategyType.SWEEP:
-            return SweepStrategy(**kwargs)
-        elif self._strategy_type == StrategyType.LEADER:
-            return LeaderStrategy(**kwargs)
-        elif self._strategy_type == StrategyType.SWEEP_LEADER:
-            return SweepLeaderStrategy(**kwargs)
-        raise ValueError(f"Strategy not implemented: {self._strategy_type}")
+        return self._strategy_class(**kwargs)
 
     @staticmethod
     def _outcome_matches(signal_outcome: Optional[str], filter_value: str) -> bool:

@@ -1,12 +1,4 @@
-"""策略执行通用入口（兼容旧部署方式）。
-
-推荐使用各策略独立入口：
-  - strategy_sweep/app.py     → port 8003
-  - strategy_leader/app.py    → port 8004
-  - strategy_sweep_leader/app.py → port 8005
-
-此文件仍可通过 STRATEGY_TYPE 环境变量选择策略运行。
-"""
+"""跟单策略微服务入口 — port 8004。"""
 import asyncio
 import logging
 import os
@@ -14,21 +6,18 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 _src_dir = str(Path(__file__).resolve().parent.parent)
 if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
+
+from dotenv import load_dotenv
 
 _env = os.getenv("ENV", "dev")
 _backend_dir = Path(__file__).resolve().parent.parent.parent
 load_dotenv(_backend_dir / f".env.{_env}", override=True)
 
-_strategy_type_raw = os.getenv("STRATEGY_TYPE", "sweep")
-_service_name = f"strategy_{_strategy_type_raw}"
-
 from shared.logging_config import setup_logging
-setup_logging(_service_name)
+setup_logging("strategy_leader")
 
 logger = logging.getLogger(__name__)
 
@@ -37,41 +26,24 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from strategy_execution.enums import StrategyType
 from strategy_execution.runtime_single import SingleStrategyRuntime
 from strategy_execution.ws import get_strategy_ws_manager
+from strategy_leader.strategy import LeaderStrategy
 
-STRATEGY_TYPE = os.getenv("STRATEGY_TYPE", "sweep")
-DEFAULT_PORTS = {"sweep": "8003", "leader": "8004", "sweep_leader": "8005"}
-PORT = int(os.getenv("STRATEGY_PORT", DEFAULT_PORTS.get(STRATEGY_TYPE, "8003")))
-
-
-def _resolve_strategy_class():
-    """根据 STRATEGY_TYPE 动态导入策略类。"""
-    st = StrategyType(STRATEGY_TYPE)
-    if st == StrategyType.SWEEP:
-        from strategy_sweep.strategy import SweepStrategy
-        return SweepStrategy
-    elif st == StrategyType.LEADER:
-        from strategy_leader.strategy import LeaderStrategy
-        return LeaderStrategy
-    elif st == StrategyType.SWEEP_LEADER:
-        from strategy_sweep_leader.strategy import SweepLeaderStrategy
-        return SweepLeaderStrategy
-    raise ValueError(f"Unknown strategy type: {STRATEGY_TYPE}")
+PORT = int(os.getenv("STRATEGY_LEADER_PORT", "8004"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    st = StrategyType(STRATEGY_TYPE)
     strategy_ws = get_strategy_ws_manager()
     await strategy_ws.start()
 
     runtime = SingleStrategyRuntime(
-        strategy_type=st,
-        strategy_class=_resolve_strategy_class(),
+        strategy_type=StrategyType.LEADER,
+        strategy_class=LeaderStrategy,
     )
     await runtime.start()
     app.state.runtime = runtime
 
-    logger.info("Strategy service [%s] started on port %d", STRATEGY_TYPE, PORT)
+    logger.info("Strategy Leader service started on port %d", PORT)
 
     try:
         yield
@@ -80,7 +52,7 @@ async def lifespan(app: FastAPI):
         await strategy_ws.stop()
 
 
-app = FastAPI(title=f"Strategy Service ({STRATEGY_TYPE})", lifespan=lifespan)
+app = FastAPI(title="Strategy Service (leader)", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -88,7 +60,7 @@ async def health():
     runtime: SingleStrategyRuntime = app.state.runtime
     return {
         "status": "ok",
-        "service": f"strategy_{STRATEGY_TYPE}",
+        "service": "strategy_leader",
         "active_runs": len(runtime.get_active_runs()),
         "signal_status": runtime.signal_subscription_status(),
     }
