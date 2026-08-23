@@ -1,9 +1,6 @@
 """跟单策略微服务入口 — port 8004。"""
-import asyncio
-import logging
 import os
 import sys
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 _src_dir = str(Path(__file__).resolve().parent.parent)
@@ -19,79 +16,34 @@ load_dotenv(_backend_dir / f".env.{_env}", override=True)
 from shared.logging_config import setup_logging
 setup_logging("strategy_leader")
 
-logger = logging.getLogger(__name__)
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
-from strategy_execution.enums import StrategyType
-from strategy_execution.runtime_single import SingleStrategyRuntime
-from strategy_execution.ws import get_strategy_ws_manager
+from strategy_runtime.app_factory import create_app
+from strategy_runtime.container import SignalSourceConfig
 from strategy_leader.strategy import LeaderStrategy
+from toolkit.signals.adapters.leader_adapter import LeaderBuyAdapter
 
 PORT = int(os.getenv("STRATEGY_LEADER_PORT", "8004"))
+LEADER_SIGNAL_URL = os.getenv("LEADER_SIGNAL_WS_URL", "ws://localhost:8002/ws/signals")
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    strategy_ws = get_strategy_ws_manager()
-    await strategy_ws.start()
-
-    runtime = SingleStrategyRuntime(
-        strategy_type=StrategyType.LEADER,
-        strategy_class=LeaderStrategy,
-    )
-    await runtime.start()
-    app.state.runtime = runtime
-
-    logger.info("Strategy Leader service started on port %d", PORT)
-
-    try:
-        yield
-    finally:
-        await runtime.stop()
-        await strategy_ws.stop()
-
-
-app = FastAPI(title="Strategy Service (leader)", lifespan=lifespan)
-
-
-@app.get("/health")
-async def health():
-    runtime: SingleStrategyRuntime = app.state.runtime
-    return {
-        "status": "ok",
-        "service": "strategy_leader",
-        "active_runs": len(runtime.get_active_runs()),
-        "signal_status": runtime.signal_subscription_status(),
-    }
-
-
-@app.get("/api/runs")
-async def list_runs():
-    runtime: SingleStrategyRuntime = app.state.runtime
-    return {"runs": runtime.get_active_runs()}
-
-
-@app.get("/api/ledgers")
-async def list_ledgers():
-    runtime: SingleStrategyRuntime = app.state.runtime
-    return {"ledgers": runtime.get_ledger_snapshots()}
-
-
-@app.websocket("/ws/events")
-async def strategy_events_ws(ws: WebSocket):
-    se_ws = get_strategy_ws_manager()
-    await se_ws.add_connection(ws)
-    try:
-        async for _ in ws.iter_text():
-            pass
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await se_ws.remove_connection(ws)
-
+app = create_app(
+    strategy_class=LeaderStrategy,
+    config={
+        "initial_cash": os.getenv("STRATEGY_INITIAL_CASH", "1000"),
+        "fixed_entry_shares": os.getenv("LEADER_FIXED_SHARES", "100"),
+        "entry_size_mode": os.getenv("LEADER_SIZE_MODE", "fixed"),
+        "entry_wait_ms": int(os.getenv("LEADER_ENTRY_WAIT_MS", "30000")),
+        "stop_loss_ratio": os.getenv("LEADER_STOP_LOSS_RATIO", "0.60"),
+    },
+    signal_sources=[
+        SignalSourceConfig(
+            url=LEADER_SIGNAL_URL,
+            adapter=LeaderBuyAdapter(),
+            name="leader_activity",
+        ),
+    ],
+    service_name="strategy_leader",
+    proxy_wallet=os.getenv("PROXY_WALLET", ""),
+)
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=PORT)

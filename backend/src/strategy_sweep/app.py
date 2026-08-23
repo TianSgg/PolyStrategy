@@ -1,9 +1,6 @@
 """扫单策略微服务入口 — port 8003。"""
-import asyncio
-import logging
 import os
 import sys
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 _src_dir = str(Path(__file__).resolve().parent.parent)
@@ -19,79 +16,33 @@ load_dotenv(_backend_dir / f".env.{_env}", override=True)
 from shared.logging_config import setup_logging
 setup_logging("strategy_sweep")
 
-logger = logging.getLogger(__name__)
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
-from strategy_execution.enums import StrategyType
-from strategy_execution.runtime_single import SingleStrategyRuntime
-from strategy_execution.ws import get_strategy_ws_manager
+from strategy_runtime.app_factory import create_app
+from strategy_runtime.container import SignalSourceConfig
 from strategy_sweep.strategy import SweepStrategy
+from toolkit.signals.adapters.weather_adapter import WeatherSweepAdapter
 
 PORT = int(os.getenv("STRATEGY_SWEEP_PORT", "8003"))
+WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    strategy_ws = get_strategy_ws_manager()
-    await strategy_ws.start()
-
-    runtime = SingleStrategyRuntime(
-        strategy_type=StrategyType.SWEEP,
-        strategy_class=SweepStrategy,
-    )
-    await runtime.start()
-    app.state.runtime = runtime
-
-    logger.info("Strategy Sweep service started on port %d", PORT)
-
-    try:
-        yield
-    finally:
-        await runtime.stop()
-        await strategy_ws.stop()
-
-
-app = FastAPI(title="Strategy Service (sweep)", lifespan=lifespan)
-
-
-@app.get("/health")
-async def health():
-    runtime: SingleStrategyRuntime = app.state.runtime
-    return {
-        "status": "ok",
-        "service": "strategy_sweep",
-        "active_runs": len(runtime.get_active_runs()),
-        "signal_status": runtime.signal_subscription_status(),
-    }
-
-
-@app.get("/api/runs")
-async def list_runs():
-    runtime: SingleStrategyRuntime = app.state.runtime
-    return {"runs": runtime.get_active_runs()}
-
-
-@app.get("/api/ledgers")
-async def list_ledgers():
-    runtime: SingleStrategyRuntime = app.state.runtime
-    return {"ledgers": runtime.get_ledger_snapshots()}
-
-
-@app.websocket("/ws/events")
-async def strategy_events_ws(ws: WebSocket):
-    se_ws = get_strategy_ws_manager()
-    await se_ws.add_connection(ws)
-    try:
-        async for _ in ws.iter_text():
-            pass
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await se_ws.remove_connection(ws)
-
+app = create_app(
+    strategy_class=SweepStrategy,
+    config={
+        "initial_cash": os.getenv("STRATEGY_INITIAL_CASH", "1000"),
+        "fixed_entry_shares": os.getenv("SWEEP_FIXED_SHARES", "100"),
+        "entry_wait_ms": int(os.getenv("SWEEP_ENTRY_WAIT_MS", "30000")),
+        "stop_loss_ratio": os.getenv("SWEEP_STOP_LOSS_RATIO", "0.60"),
+    },
+    signal_sources=[
+        SignalSourceConfig(
+            url=WEATHER_SIGNAL_URL,
+            adapter=WeatherSweepAdapter(),
+            name="weather_orderbook",
+        ),
+    ],
+    service_name="strategy_sweep",
+    proxy_wallet=os.getenv("PROXY_WALLET", ""),
+)
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=PORT)

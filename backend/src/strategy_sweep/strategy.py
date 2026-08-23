@@ -1,4 +1,4 @@
-"""策略 1: Sweep 信号下单 — 完整生命周期实现。
+"""策略 1: Sweep 信号下单 — BUY@0.99 → tick exit SELL@0.999。
 
 流程:
   1. 收到合格 sweep → 快速 BUY@0.99 固定份额
@@ -12,21 +12,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Optional
 
-from signal_weather_orderbook.types import WeatherSweepSignal
-from strategy_execution.contracts import OrderRequest
-from strategy_execution.enums import (
-    CloseReason,
-    ExecutionMode,
-    OrderPurpose,
-    OrderSide,
-    OrderStatus,
-    RunEventType,
-    RunState,
-)
-from strategy_execution.execution.order_executor import generate_client_order_id
-from strategy_execution.base import BaseStrategy
+from strategy_runtime.interfaces import BaseStrategy, Signal, StrategyContext
+from toolkit.execution.account_ledger import AccountLedger
+from toolkit.market.tick_verifier import TickVerifier
+from toolkit.risk.stop_loss import StopLossMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -34,274 +25,153 @@ logger = logging.getLogger(__name__)
 class SweepStrategy(BaseStrategy):
     """策略 1: 扫单信号 → BUY@0.99 → tick exit SELL@0.999。"""
 
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._entry_order_id: Optional[str] = None
-        self._entry_clob_id: Optional[str] = None
-        self._exit_order_id: Optional[str] = None
+    SUBSCRIBED_SIGNALS = {"sweep"}
+
+    async def start(self, ctx: StrategyContext) -> None:
+        self.ctx = ctx
+        self.state = "idle"
+        self.token_id: Optional[str] = None
+        self.position_shares = Decimal("0")
+        self.entry_order_id: Optional[str] = None
         self._entry_timer: Optional[asyncio.Task] = None
         self._tick_verified = False
 
-    async def on_entry_signal(self, signal: WeatherSweepSignal) -> None:
-        """收到 sweep 信号，执行快速 BUY。"""
-        # 计算实际可买份额
-        fixed_shares = Decimal(str(self.params.get("fixed_entry_shares", "100")))
+        self.ledger = AccountLedger(
+            initial_cash=Decimal(ctx.config.get("initial_cash", "1000")),
+        )
+        self.risk = StopLossMonitor(
+            ratio=Decimal(ctx.config.get("stop_loss_ratio", "0.60")),
+            on_trigger=self._risk_exit,
+        )
+        self.tick_verifier = TickVerifier()
+
+    async def on_signal(self, signal: Signal) -> None:
+        if signal.signal_type == "sweep" and self.state == "idle":
+            await self._enter(signal)
+        elif signal.signal_type == "bbo_update":
+            await self.risk.check(signal.payload)
+            await self._check_tick_from_bbo(signal)
+
+    async def stop(self) -> None:
+        if self._entry_timer and not self._entry_timer.done():
+            self._entry_timer.cancel()
+        if self.entry_order_id:
+            await self.ctx.executor.cancel_order(self.entry_order_id)
+
+    async def _enter(self, signal: Signal) -> None:
+        self.token_id = signal.token_id
+        fixed_shares = Decimal(self.ctx.config.get("fixed_entry_shares", "100"))
         max_shares = self.ledger.max_buy_shares(Decimal("0.99"))
         actual_shares = min(fixed_shares, max_shares)
 
         if actual_shares <= 0:
-            logger.warning("No available cash for run %s, closing", self.run.run_id)
-            await self.run.transition(RunState.CLOSED, close_reason=CloseReason.ENTRY_CANCELED_NO_POSITION)
+            logger.warning("No available cash, closing")
+            self.state = "closed"
             return
 
-        # 保留资金
-        client_order_id = generate_client_order_id()
-        reserved = await self.ledger.reserve_buy(
-            run_id=self.run.run_id,
-            order_id=client_order_id,
-            token_id=self.run.token_id,
-            price=Decimal("0.99"),
-            shares=actual_shares,
-        )
+        reserved = await self.ledger.reserve_buy(Decimal("0.99"), actual_shares)
         if not reserved:
-            await self.run.transition(RunState.CLOSED, close_reason=CloseReason.ENTRY_CANCELED_NO_POSITION)
+            self.state = "closed"
             return
 
-        # 状态转换
-        await self.run.transition(RunState.ENTRY_WORKING)
+        self.state = "entry_working"
 
-        # 启动风控
-        stop_loss = Decimal(str(self.params.get("stop_loss_ratio", "0.60")))
-        self.risk_session = await self.risk_manager.create_session(
-            run_machine=self.run,
-            stop_loss_ratio=stop_loss,
-            on_risk_triggered=self.on_risk_triggered,
-            on_tick_candidate=self.on_tick_candidate,
+        result = await self.ctx.executor.place_order(
+            token_id=signal.token_id,
+            side="BUY",
+            price="0.99",
+            size=str(actual_shares),
         )
+        self.entry_order_id = result.order_id
 
-        # 快速下单
-        request = OrderRequest(
-            run_id=self.run.run_id,
-            client_order_id=client_order_id,
-            token_id=self.run.token_id,
-            side=OrderSide.BUY,
-            limit_price=Decimal("0.99"),
-            size=actual_shares,
-            purpose=OrderPurpose.ENTRY,
-            execution_mode=ExecutionMode.FAST,
-        )
-        self._entry_order_id = client_order_id
-
-        report = await self.executor.place_fast_buy(
-            proxy_wallet=self.proxy_wallet,
-            request=request,
-        )
-
-        await self.run.emit_event(RunEventType.ORDER_SENT, {
-            "client_order_id": client_order_id,
-            "side": "BUY",
-            "price": "0.99",
-            "size": str(actual_shares),
-            "purpose": "entry",
-        })
-
-        # 处理即时成交
-        if report.status == OrderStatus.FAILED:
-            await self.ledger.release_buy(
-                run_id=self.run.run_id,
-                order_id=client_order_id,
-                token_id=self.run.token_id,
-                price=Decimal("0.99"),
-                unrealized_shares=actual_shares,
-            )
-            await self.run.transition(RunState.CLOSED, close_reason=CloseReason.ENTRY_CANCELED_NO_POSITION)
+        if result.status == "failed":
+            await self.ledger.release_buy(Decimal("0.99"), actual_shares)
+            self.state = "closed"
             return
 
-        self._entry_clob_id = report.clob_order_id
+        if result.status == "filled":
+            filled = Decimal(result.filled_size)
+            await self.ledger.confirm_buy_fill(signal.token_id, Decimal("0.99"), filled)
+            self.position_shares += filled
+            self.risk.start(entry_price=Decimal("0.99"))
 
-        if report.status == OrderStatus.MATCHED and report.matched_size > 0:
-            await self.ledger.confirm_buy_fill(
-                run_id=self.run.run_id,
-                order_id=client_order_id,
-                token_id=self.run.token_id,
-                price=Decimal("0.99"),
-                filled_shares=report.matched_size,
-                trade_id=f"immediate:{client_order_id}",
-            )
-            await self.run.record_fill(Decimal("0.99"), report.matched_size, is_buy=True)
-
-        # 启动入场等待定时器
-        entry_wait_ms = self.params.get("entry_wait_ms", 30000)
-        self._entry_timer = asyncio.create_task(self._entry_timeout(entry_wait_ms / 1000.0))
+        entry_wait_ms = int(self.ctx.config.get("entry_wait_ms", 30000))
+        self._entry_timer = asyncio.create_task(
+            self._entry_timeout(entry_wait_ms / 1000.0)
+        )
 
     async def _entry_timeout(self, wait_sec: float) -> None:
-        """入场等待超时后撤单。"""
         await asyncio.sleep(wait_sec)
-
-        if self.run.is_closed:
+        if self.state == "closed":
             return
 
-        # 撤销未成交 BUY
-        if self._entry_clob_id:
-            cancelled = await self.executor.cancel_order(
-                self.proxy_wallet,
-                self._entry_clob_id,
-                self._entry_order_id,
-            )
-            if cancelled:
-                await self.run.emit_event(RunEventType.CANCEL_SENT, {
-                    "client_order_id": self._entry_order_id,
-                    "clob_order_id": self._entry_clob_id,
-                })
+        if self.entry_order_id:
+            await self.ctx.executor.cancel_order(self.entry_order_id)
 
-        # 检查是否有持仓
-        position = self.run.entry_shares - self.run.exited_shares
-        if position <= 0:
-            await self.run.transition(
-                RunState.CLOSED,
-                close_reason=CloseReason.ENTRY_CANCELED_NO_POSITION,
-            )
-            await self.cleanup()
+        if self.position_shares <= 0:
+            self.state = "closed"
         else:
-            await self.run.transition(RunState.EXIT_WORKING)
+            self.state = "exit_working"
 
-    async def on_tick_candidate(self) -> None:
-        """WS 检测到 tick=0.001 — 执行 HTTP 校验后 SELL。"""
-        if self._tick_verified or self.run.is_closed:
+    async def _check_tick_from_bbo(self, signal: Signal) -> None:
+        if self._tick_verified or self.state not in ("entry_working", "exit_working"):
             return
-        if self.run.state not in (RunState.EXIT_WORKING, RunState.ENTRY_WORKING):
-            return
-
-        result = await self.tick_verifier.verify(
-            self.run.token_id,
-            run_machine=self.run,
-        )
-
-        if not result.confirmed:
+        if not self.token_id:
             return
 
-        self._tick_verified = True
-        await self._execute_tick_exit()
+        tick_size = signal.payload.get("tick_size")
+        if tick_size and Decimal(str(tick_size)) == Decimal("0.001"):
+            result = await self.tick_verifier.verify(self.token_id)
+            if result.confirmed:
+                self._tick_verified = True
+                await self._tick_exit()
 
-    async def _execute_tick_exit(self) -> None:
-        """执行 0.999 SELL 全部可卖份额。"""
-        position = self.run.entry_shares - self.run.exited_shares
-        if position <= 0:
-            await self.run.transition(RunState.CLOSED, close_reason=CloseReason.TICK_EXIT)
-            await self.cleanup()
+    async def _tick_exit(self) -> None:
+        if self.position_shares <= 0 or not self.token_id:
+            self.state = "closed"
             return
 
-        # 保留 SELL 份额
-        client_order_id = generate_client_order_id()
-        reserved = await self.ledger.reserve_sell(
-            run_id=self.run.run_id,
-            order_id=client_order_id,
-            token_id=self.run.token_id,
-            shares=position,
-        )
+        reserved = await self.ledger.reserve_sell(self.token_id, self.position_shares)
         if not reserved:
-            logger.error("Cannot reserve sell shares for run %s", self.run.run_id)
             return
 
-        self._exit_order_id = client_order_id
-        request = OrderRequest(
-            run_id=self.run.run_id,
-            client_order_id=client_order_id,
-            token_id=self.run.token_id,
-            side=OrderSide.SELL,
-            limit_price=Decimal("0.999"),
-            size=position,
-            purpose=OrderPurpose.EXIT_TICK,
-            execution_mode=ExecutionMode.NORMAL,
+        result = await self.ctx.executor.place_order(
+            token_id=self.token_id,
+            side="SELL",
+            price="0.999",
+            size=str(self.position_shares),
         )
 
-        report = await self.executor.place_normal_order(
-            proxy_wallet=self.proxy_wallet,
-            request=request,
-        )
-
-        await self.run.emit_event(RunEventType.ORDER_SENT, {
-            "client_order_id": client_order_id,
-            "side": "SELL",
-            "price": "0.999",
-            "size": str(position),
-            "purpose": "exit_tick",
-        })
-
-        # 即时全部成交 → 关闭
-        if report.status == OrderStatus.MATCHED and report.matched_size >= position:
+        if result.status == "filled":
+            filled = Decimal(result.filled_size)
             await self.ledger.confirm_sell_fill(
-                run_id=self.run.run_id,
-                order_id=client_order_id,
-                token_id=self.run.token_id,
-                price=Decimal("0.999"),
-                filled_shares=report.matched_size,
-                trade_id=f"immediate:{client_order_id}",
+                self.token_id, Decimal("0.999"), filled
             )
-            await self.run.record_fill(Decimal("0.999"), report.matched_size, is_buy=False)
-            await self.run.transition(RunState.CLOSED, close_reason=CloseReason.TICK_EXIT)
-            await self.cleanup()
+            self.position_shares -= filled
 
-    async def on_risk_triggered(self) -> None:
-        """风控触发 — 状态迁移到 RISK_EXITING 并执行市价退出。"""
-        if self.run.is_closed:
+        self.state = "closed"
+
+    async def _risk_exit(self) -> None:
+        if self.state == "closed" or not self.token_id:
             return
 
-        transitioned = await self.run.transition(
-            RunState.RISK_EXITING,
-            reason="stop_loss_triggered",
-        )
-        if not transitioned:
+        self.state = "risk_exiting"
+
+        if self.position_shares <= 0:
+            self.state = "closed"
             return
 
-        # 以当前 best_bid 市价退出（用 0.01 作为激进价保证成交）
-        position = self.run.entry_shares - self.run.exited_shares
-        if position <= 0:
-            await self.run.transition(RunState.CLOSED, close_reason=CloseReason.RISK_EXIT)
-            await self.cleanup()
-            return
-
-        client_order_id = generate_client_order_id()
-        reserved = await self.ledger.reserve_sell(
-            run_id=self.run.run_id,
-            order_id=client_order_id,
-            token_id=self.run.token_id,
-            shares=position,
-        )
-        if not reserved:
-            logger.error("Cannot reserve sell for risk exit run %s", self.run.run_id)
-            return
-
-        request = OrderRequest(
-            run_id=self.run.run_id,
-            client_order_id=client_order_id,
-            token_id=self.run.token_id,
-            side=OrderSide.SELL,
-            limit_price=Decimal("0.01"),
-            size=position,
-            purpose=OrderPurpose.RISK_EXIT,
-            execution_mode=ExecutionMode.NORMAL,
+        await self.ledger.reserve_sell(self.token_id, self.position_shares)
+        result = await self.ctx.executor.place_order(
+            token_id=self.token_id,
+            side="SELL",
+            price="0.01",
+            size=str(self.position_shares),
         )
 
-        report = await self.executor.place_normal_order(
-            proxy_wallet=self.proxy_wallet,
-            request=request,
-        )
+        if result.status == "filled":
+            filled = Decimal(result.filled_size)
+            await self.ledger.confirm_sell_fill(self.token_id, Decimal("0.01"), filled)
+            self.position_shares -= filled
 
-        if report.status == OrderStatus.MATCHED:
-            await self.ledger.confirm_sell_fill(
-                run_id=self.run.run_id,
-                order_id=client_order_id,
-                token_id=self.run.token_id,
-                price=Decimal("0.01"),
-                filled_shares=report.matched_size,
-                trade_id=f"immediate:{client_order_id}",
-            )
-            await self.run.record_fill(Decimal("0.01"), report.matched_size, is_buy=False)
-
-        await self.run.transition(RunState.CLOSED, close_reason=CloseReason.RISK_EXIT)
-        await self.cleanup()
-
-    async def on_leader_signal(self, signal: "LeaderBuySignal") -> None:
-        """策略 1 不处理 leader 信号。"""
-        pass
+        self.state = "closed"
