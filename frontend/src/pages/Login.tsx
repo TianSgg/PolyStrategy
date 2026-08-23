@@ -58,7 +58,7 @@ export default function Login({ onLogin }: Props) {
   return (
     <div style={styles.page}>
       <div style={styles.panel}>
-        <h1 style={styles.title}>WeatherTaker</h1>
+        <h1 style={styles.title}>PolyStrategy</h1>
         <div style={styles.subtitle}>登录后继续</div>
         <label style={styles.label}>用户名</label>
         <input

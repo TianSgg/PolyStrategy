@@ -224,7 +224,7 @@ COMMENT='天气城市监听配置';
 -- ============================================================
 -- 天气通知历史 (含 is_from_main 生成列 + 全部索引)
 -- ============================================================
-CREATE TABLE weather_signal_events (
+CREATE TABLE signal_weather_events (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '通知历史主键',
   notification_key VARCHAR(512) NOT NULL COMMENT '全局幂等键，防止重复记录',
   occurred_at DATETIME(3) NOT NULL COMMENT '事件发生时间 UTC，毫秒级',
@@ -248,15 +248,15 @@ CREATE TABLE weather_signal_events (
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '写入数据库时间 UTC，毫秒级',
 
   PRIMARY KEY (id),
-  UNIQUE KEY uq_weather_signal_events_notification_key (notification_key),
-  KEY idx_weather_signal_events_event_time (event_slug, occurred_at DESC, id DESC),
-  KEY idx_weather_signal_events_city_date (city_slug, direction, local_date),
-  KEY idx_weather_signal_events_recent (occurred_at DESC, id DESC),
-  KEY idx_weather_signal_events_market (market_slug, event_type, occurred_at DESC),
-  KEY idx_weather_signal_events_main_market (main_market_slug, occurred_at DESC),
-  KEY idx_weather_signal_events_main_temp (main_temperature_label, occurred_at DESC),
-  KEY idx_weather_signal_events_filter_combo (is_from_main, reason, outcome, direction, occurred_at DESC),
-  KEY idx_weather_signal_events_reason (reason, occurred_at DESC)
+  UNIQUE KEY uq_signal_weather_events_notification_key (notification_key),
+  KEY idx_signal_weather_events_event_time (event_slug, occurred_at DESC, id DESC),
+  KEY idx_signal_weather_events_city_date (city_slug, direction, local_date),
+  KEY idx_signal_weather_events_recent (occurred_at DESC, id DESC),
+  KEY idx_signal_weather_events_market (market_slug, event_type, occurred_at DESC),
+  KEY idx_signal_weather_events_main_market (main_market_slug, occurred_at DESC),
+  KEY idx_signal_weather_events_main_temp (main_temperature_label, occurred_at DESC),
+  KEY idx_signal_weather_events_filter_combo (is_from_main, reason, outcome, direction, occurred_at DESC),
+  KEY idx_signal_weather_events_reason (reason, occurred_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='天气市场通知历史';
 

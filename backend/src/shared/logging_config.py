@@ -5,9 +5,9 @@
     setup_logging("signal_weather_orderbook")
 
 日志输出:
-    logs/signal_weather_orderbook/app.log      — 全量日志（RotatingFileHandler）
-    logs/signal_weather_orderbook/error.log    — ERROR 及以上
-    console                                    — 同步输出到 stdout
+    logs/signal_weather_orderbook/app.2026-08-22.log  — 全量日志（按天轮转，保留30天）
+    logs/signal_weather_orderbook/error.log           — ERROR 及以上（按大小轮转）
+    console                                           — 同步输出到 stdout
 """
 from __future__ import annotations
 
@@ -15,13 +15,12 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone, timedelta
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 
-MAX_BYTES = 50 * 1024 * 1024  # 50MB per file
-BACKUP_COUNT = 5
+KEEP_DAYS = 30
 
 QUIET_LIBS = ["websockets", "httpcore", "httpx", "urllib3", "asyncio",
               "hpack", "hyperframe", "requests"]
@@ -37,6 +36,15 @@ class _UTC8Formatter(logging.Formatter):
         if datefmt:
             return dt.strftime(datefmt)
         return f"{dt:%Y-%m-%d %H:%M:%S}.{dt.microsecond // 1000:03d}"
+
+
+class _UTC8TimedRotatingFileHandler(TimedRotatingFileHandler):
+    """TimedRotatingFileHandler that rolls over at UTC+8 midnight."""
+
+    def computeRollover(self, currentTime):
+        dt = datetime.fromtimestamp(currentTime, _UTC8)
+        next_midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        return int(next_midnight.timestamp())
 
 
 def setup_logging(service_name: str) -> None:
@@ -55,22 +63,24 @@ def setup_logging(service_name: str) -> None:
 
     formatter = _UTC8Formatter(LOG_FORMAT)
 
-    app_handler = RotatingFileHandler(
+    app_handler = _UTC8TimedRotatingFileHandler(
         log_dir / "app.log",
-        maxBytes=MAX_BYTES,
-        backupCount=BACKUP_COUNT,
+        when="midnight",
+        backupCount=KEEP_DAYS,
         encoding="utf-8",
     )
+    app_handler.suffix = "%Y-%m-%d"
     app_handler.setLevel(log_level)
     app_handler.setFormatter(formatter)
     root.addHandler(app_handler)
 
-    error_handler = RotatingFileHandler(
+    error_handler = _UTC8TimedRotatingFileHandler(
         log_dir / "error.log",
-        maxBytes=MAX_BYTES,
-        backupCount=BACKUP_COUNT,
+        when="midnight",
+        backupCount=KEEP_DAYS,
         encoding="utf-8",
     )
+    error_handler.suffix = "%Y-%m-%d"
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(formatter)
     root.addHandler(error_handler)

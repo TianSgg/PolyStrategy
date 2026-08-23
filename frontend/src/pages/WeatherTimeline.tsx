@@ -11,7 +11,6 @@ type Notification = {
   outcome: string | null
   status: string | null
   reason: string | null
-  message: string
   payload: Record<string, unknown>
 }
 
@@ -20,10 +19,10 @@ interface Props {
 }
 
 const TYPE_LABEL: Record<string, string> = {
-  sweep: 'Sweep',
-  no_longer_possible: 'Impossible',
-  market_resolved: 'Resolved',
-  event_started: 'Event Started',
+  sweep: '扫单',
+  no_longer_possible: '不再可能',
+  market_resolved: '已结算',
+  event_started: '事件开始',
 }
 
 const TYPE_STYLE: Record<string, string> = {
@@ -67,10 +66,10 @@ export default function WeatherTimeline({ eventSlug }: Props) {
     try {
       const params = new URLSearchParams({ limit: '100' })
       if (append && nextBeforeId) params.set('before_id', String(nextBeforeId))
-      const res = await apiFetch(`/api/weather/events/${encodeURIComponent(eventSlug)}/notifications?${params}`)
+      const res = await apiFetch(`/api/weather/events/${encodeURIComponent(eventSlug)}/signals?${params}`)
       if (!res.ok) throw new Error('Failed to load')
       const data = await res.json()
-      const items: Notification[] = data.notifications || []
+      const items: Notification[] = data.signals || []
       const next = append ? [...notifications, ...items] : items
       const bounded = next.slice(0, MAX_LOADED)
       setNotifications(bounded)
@@ -98,21 +97,21 @@ export default function WeatherTimeline({ eventSlug }: Props) {
     })
   }
 
-  if (loading) return <div className="wm-loading">Loading...</div>
+  if (loading) return <div className="wm-loading">加载中...</div>
 
   return (
     <div className="wm-timeline">
       <div className="wm-timeline-heading">
-        <strong>Notification History</strong>
-        <button className="wm-btn-link" onClick={() => load()} disabled={loading}>Refresh</button>
+        <strong>信号历史</strong>
+        <button className="wm-btn-link" onClick={() => load()} disabled={loading}>刷新</button>
       </div>
       {error && (
         <>
           <div className="wm-error">{error}</div>
-          <button className="wm-btn" onClick={() => load()}>Retry</button>
+          <button className="wm-btn" onClick={() => load()}>重试</button>
         </>
       )}
-      {!error && notifications.length === 0 && <div className="wm-empty">No notifications</div>}
+      {!error && notifications.length === 0 && <div className="wm-empty">暂无信号记录</div>}
       {notifications.length > 0 && (
         <ul className="wm-notification-list">
           {notifications.map(item => (
@@ -122,19 +121,19 @@ export default function WeatherTimeline({ eventSlug }: Props) {
                   <span className={`wm-tag wm-tag-${TYPE_STYLE[item.event_type] || 'info'}`}>
                     {TYPE_LABEL[item.event_type] || item.event_type}
                   </span>
-                  <strong>{item.temperature_label || 'Event'}</strong>
-                  {item.outcome && <span>{item.outcome.toUpperCase()} token</span>}
+                  <strong>{item.temperature_label || '事件'}</strong>
+                  {item.outcome && <span>{item.outcome.toUpperCase()}</span>}
                   {item.status && <span>{item.status}</span>}
                 </div>
-                {item.market_slug && <p>Market: {item.market_slug}</p>}
-                {item.reason && <p>Reason: {item.reason}</p>}
+                {item.market_slug && <p>市场: {item.market_slug}</p>}
+                {item.reason && <p>原因: {item.reason}</p>}
                 <div className="wm-notification-ts">{formatTimestamp(item.occurred_at)}</div>
                 <button className="wm-btn-link" onClick={() => toggleMessage(item.id)} style={{ marginTop: 4, padding: '2px 0' }}>
-                  {expandedMessages.has(item.id) ? 'Hide message' : 'Show message'}
+                  {expandedMessages.has(item.id) ? '收起消息' : '展开消息'}
                 </button>
                 {expandedMessages.has(item.id) && (
                   <div className="wm-notification-message">
-                    <pre>{item.message}</pre>
+                    <pre>{JSON.stringify(item.payload, null, 2)}</pre>
                   </div>
                 )}
               </div>
@@ -143,12 +142,12 @@ export default function WeatherTimeline({ eventSlug }: Props) {
         </ul>
       )}
       {!nextBeforeId && notifications.length >= MAX_LOADED && (
-        <p className="wm-timeline-limit">Showing latest {MAX_LOADED} entries.</p>
+        <p className="wm-timeline-limit">显示最近 {MAX_LOADED} 条记录</p>
       )}
       {nextBeforeId && (
         <div className="wm-timeline-more">
           <button className="wm-btn" onClick={() => load(true)} disabled={loadingMore}>
-            {loadingMore ? 'Loading...' : 'Load more'}
+            {loadingMore ? '加载中...' : '加载更多'}
           </button>
         </div>
       )}

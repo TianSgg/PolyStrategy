@@ -1,4 +1,8 @@
+from __future__ import annotations
+
 import logging
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import AuthUser, get_current_user, require_admin
@@ -28,7 +32,7 @@ async def get_cache_detail(
     cache_name: str,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    asset_id: str | None = None,
+    asset_id: Optional[str] = None,
     _: AuthUser = Depends(require_admin),
 ):
     """获取指定缓存的分页详情。"""

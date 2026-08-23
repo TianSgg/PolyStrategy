@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _build_signal_record(
-    event: WeatherEvent, city, main_ctx
+    event: WeatherEvent, city, main_ctx, next_candidate_orderbook=None
 ) -> WeatherSignalRecord:
     occurred_at_ms = event.current_orderbook.get("observed_at_unix_ms")
     try:
@@ -33,6 +33,8 @@ def _build_signal_record(
     payload = event.payload()
     if main_ctx:
         payload["main_monitor"] = main_ctx
+    if next_candidate_orderbook:
+        payload["next_candidate_orderbook"] = next_candidate_orderbook
     return WeatherSignalRecord(
         notification_key=f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
         occurred_at=occurred_at,
@@ -111,7 +113,7 @@ class WeatherBootstrap:
             self._mysql_pool.close()
             await self._mysql_pool.wait_closed()
 
-    async def _on_weather_event(self, event: WeatherEvent, main_ctx=None):
+    async def _on_weather_event(self, event: WeatherEvent, main_ctx=None, next_candidate_orderbook=None):
         logger.debug("Weather event: %s %s", event.event_type, event.asset.event_slug)
 
         city = self._city_by_name.get(event.asset.city)
@@ -119,7 +121,7 @@ class WeatherBootstrap:
             logger.error("Cannot persist weather notification: unknown city=%s", event.asset.city)
             return
         try:
-            record = _build_signal_record(event, city, main_ctx)
+            record = _build_signal_record(event, city, main_ctx, next_candidate_orderbook)
             inserted = await self.signal_event_repository.insert_if_absent(record)
         except Exception:
             logger.exception("Failed to persist weather notification event=%s", event.asset.event_slug)

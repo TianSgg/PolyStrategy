@@ -605,7 +605,7 @@ def get_strategy_stats(days: int = 7) -> dict:
     try:
         # sweep 信号数
         cursor.execute("""
-            SELECT COUNT(*) FROM weather_signal_events
+            SELECT COUNT(*) FROM signal_weather_events
             WHERE event_type = 'sweep' AND outcome = 'no'
               AND occurred_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
         """, (days,))

@@ -141,7 +141,7 @@ function App() {
   }
 
   if (authLoading) {
-    return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading...</div>
+    return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>加载中...</div>
   }
 
   if (!authUser) {
@@ -158,7 +158,7 @@ function App() {
       />
       {/* 左侧导航栏 */}
       <div style={theme.sidebar}>
-        <h1 style={theme.title}>WeatherTaker</h1>
+        <h1 style={theme.title}>PolyStrategy</h1>
         <nav style={styles.nav}>
           <button
             onClick={() => setCurrentPage('account')}
@@ -186,14 +186,14 @@ function App() {
             style={currentPage === 'weather' ? theme.navItemActive : theme.navItem}
           >
             <span style={styles.navIcon}>🌤</span>
-            Weather
+            天气监控
           </button>
           <button
             onClick={() => setCurrentPage('dashboard')}
             style={currentPage === 'dashboard' ? theme.navItemActive : theme.navItem}
           >
             <span style={styles.navIcon}>🎯</span>
-            Dashboard
+            策略面板
           </button>
           {(authUser.role === 'admin' || authUser.role === 'root') && (
             <>

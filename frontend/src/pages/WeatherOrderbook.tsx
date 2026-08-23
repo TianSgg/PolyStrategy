@@ -76,19 +76,19 @@ function BookView({ book, tickSize }: { book: Book | null; tickSize: string | nu
     <>
       <div className="wm-book-meta">
         <span>UTC: {book.observed_at}</span>
-        <span>Tick: {tickSize || '-'}</span>
-        <span>Ask {book.ask_levels} / Bid {book.bid_levels}</span>
+        <span>最小单位: {tickSize || '-'}</span>
+        <span>卖 {book.ask_levels} / 买 {book.bid_levels}</span>
       </div>
       <section className="wm-depth-book">
         <div className="wm-depth-header">
-          <span>PRICE</span>
-          <span>SHARES</span>
-          <span>TOTAL</span>
+          <span>价格</span>
+          <span>数量</span>
+          <span>总额</span>
           <span></span>
         </div>
         <div className="wm-depth-side wm-asks">
-          <span className="wm-side-label">Asks</span>
-          {askLevels.length === 0 && <div className="wm-empty-levels">No Asks</div>}
+          <span className="wm-side-label">卖单</span>
+          {askLevels.length === 0 && <div className="wm-empty-levels">无卖单</div>}
           {askLevels.map(level => (
             <div className="wm-depth-row wm-ask-row" key={`ask-${level.price}`}>
               <div className="wm-depth-bar" style={{ width: depthWidth(level, book) }} />
@@ -98,10 +98,10 @@ function BookView({ book, tickSize }: { book: Book | null; tickSize: string | nu
             </div>
           ))}
         </div>
-        <div className="wm-spread-row">Spread: {spread(book)}</div>
+        <div className="wm-spread-row">价差: {spread(book)}</div>
         <div className="wm-depth-side wm-bids">
-          <span className="wm-side-label">Bids</span>
-          {bidLevels.length === 0 && <div className="wm-empty-levels">No Bids</div>}
+          <span className="wm-side-label">买单</span>
+          {bidLevels.length === 0 && <div className="wm-empty-levels">无买单</div>}
           {bidLevels.map(level => (
             <div className="wm-depth-row wm-bid-row" key={`bid-${level.price}`}>
               <div className="wm-depth-bar" style={{ width: depthWidth(level, book) }} />
@@ -158,7 +158,7 @@ export default function WeatherOrderbook({ market, liveBooks }: Props) {
           <span>{market.market_slug}</span>
         </div>
         <button className="wm-btn" onClick={refresh} disabled={loading}>
-          {loading ? '...' : 'Refresh'}
+          {loading ? '...' : '刷新'}
         </button>
       </div>
       {error && <div className="wm-error">{error}</div>}

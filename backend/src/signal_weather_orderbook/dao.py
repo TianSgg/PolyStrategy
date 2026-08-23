@@ -170,16 +170,16 @@ class WeatherSignalEventRepository:
         """Validate the notification table exists without changing its schema."""
         try:
             async with self._pool.acquire() as connection, connection.cursor() as cursor:
-                await cursor.execute("SELECT 1 FROM weather_signal_events LIMIT 1")
+                await cursor.execute("SELECT 1 FROM signal_weather_events LIMIT 1")
                 await cursor.fetchone()
         except Exception as error:
             raise RuntimeError(
-                "weather_signal_events is unavailable; run db/01_schema.sql before starting the service"
+                "signal_weather_events is unavailable; run db/01_schema.sql before starting the service"
             ) from error
 
     async def insert_if_absent(self, record: WeatherSignalRecord) -> bool:
         query = """
-            INSERT INTO weather_signal_events (
+            INSERT INTO signal_weather_events (
                 notification_key, occurred_at, event_type, event_slug,
                 city, city_slug, direction, local_date,
                 market_slug, temperature_label, outcome,
@@ -226,7 +226,7 @@ class WeatherSignalEventRepository:
                    market_slug, temperature_label, outcome,
                    main_market_slug, main_temperature_label, main_outcome,
                    token_id, status, reason, payload, created_at
-            FROM weather_signal_events
+            FROM signal_weather_events
             WHERE event_slug = %s
         """
         params: list[object] = [event_slug]
@@ -234,11 +234,11 @@ class WeatherSignalEventRepository:
             query += """
                 AND (
                     occurred_at < (
-                        SELECT occurred_at FROM weather_signal_events WHERE id = %s
+                        SELECT occurred_at FROM signal_weather_events WHERE id = %s
                     )
                     OR (
                         occurred_at = (
-                            SELECT occurred_at FROM weather_signal_events WHERE id = %s
+                            SELECT occurred_at FROM signal_weather_events WHERE id = %s
                         ) AND id < %s
                     )
                 )
@@ -263,18 +263,18 @@ class WeatherSignalEventRepository:
                    market_slug, temperature_label, outcome,
                    main_market_slug, main_temperature_label, main_outcome,
                    token_id, status, reason, payload, created_at
-            FROM weather_signal_events
+            FROM signal_weather_events
         """
         params: list[object] = []
         if before_id is not None:
             query += """
                 WHERE (
                     occurred_at < (
-                        SELECT occurred_at FROM weather_signal_events WHERE id = %s
+                        SELECT occurred_at FROM signal_weather_events WHERE id = %s
                     )
                     OR (
                         occurred_at = (
-                            SELECT occurred_at FROM weather_signal_events WHERE id = %s
+                            SELECT occurred_at FROM signal_weather_events WHERE id = %s
                         ) AND id < %s
                     )
                 )
@@ -295,7 +295,7 @@ class WeatherSignalEventRepository:
         placeholders = ", ".join("%s" for _ in slugs)
         query = f"""
             SELECT event_slug, COUNT(*) AS signal_count
-            FROM weather_signal_events
+            FROM signal_weather_events
             WHERE event_slug IN ({placeholders})
             GROUP BY event_slug
         """

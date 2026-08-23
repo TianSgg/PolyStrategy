@@ -1,4 +1,4 @@
-"""天气信号查询 DAO — 读取 weather_signal_events 表。"""
+"""天气信号查询 DAO — 读取 signal_weather_events 表。"""
 from __future__ import annotations
 
 import json
@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class WeatherSignalRepository:
-    """查询 weather_signal_events 表中的信号记录。"""
+    """查询 signal_weather_events 表中的信号记录。"""
 
     def find_by_id(self, notification_key: str) -> Optional[Dict[str, Any]]:
-        sql = "SELECT * FROM weather_signal_events WHERE notification_key = %s"
+        sql = "SELECT * FROM signal_weather_events WHERE notification_key = %s"
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (notification_key,))
@@ -57,7 +57,7 @@ class WeatherSignalRepository:
             params.append(end_time)
 
         where = " AND ".join(conditions) if conditions else "1=1"
-        sql = f"SELECT * FROM weather_signal_events WHERE {where} ORDER BY occurred_at DESC LIMIT %s OFFSET %s"
+        sql = f"SELECT * FROM signal_weather_events WHERE {where} ORDER BY occurred_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
 
         with get_db() as conn:

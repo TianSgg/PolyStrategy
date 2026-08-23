@@ -2,7 +2,7 @@
 
 职责：
   - 监听 Polymarket 订单簿变化（WeatherBootstrap）
-  - 持久化事件到 weather_signal_events
+  - 持久化事件到 signal_weather_events
   - 通过 WS /ws/signal 向策略执行服务广播 weather_sweep 信号
   - 提供天气相关 REST API
 """

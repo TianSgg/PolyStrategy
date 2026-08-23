@@ -10,7 +10,7 @@ type Notification = {
   temperature_label: string | null
   outcome: string | null
   reason: string | null
-  message: string
+  payload: Record<string, unknown>
 }
 
 interface Props {
@@ -18,10 +18,10 @@ interface Props {
 }
 
 const TYPE_LABEL: Record<string, string> = {
-  sweep: 'Sweep',
-  no_longer_possible: 'Impossible',
-  market_resolved: 'Resolved',
-  event_started: 'Event Started',
+  sweep: '扫单',
+  no_longer_possible: '不再可能',
+  market_resolved: '已结算',
+  event_started: '事件开始',
 }
 
 const TYPE_STYLE: Record<string, string> = {
@@ -62,10 +62,10 @@ export default function WeatherNotifications({ limit }: Props) {
     try {
       const params = new URLSearchParams({ limit: String(limit) })
       if (append && nextBeforeId) params.set('before_id', String(nextBeforeId))
-      const res = await apiFetch(`/api/weather/notifications/recent?${params}`)
+      const res = await apiFetch(`/api/weather/signals/recent?${params}`)
       if (!res.ok) throw new Error('Failed to load')
       const data = await res.json()
-      const items: Notification[] = data.notifications || []
+      const items: Notification[] = data.signals || []
       const next = append ? [...notifications, ...items] : items
       const bounded = next.slice(0, limit)
       setNotifications(bounded)
@@ -93,17 +93,17 @@ export default function WeatherNotifications({ limit }: Props) {
     })
   }
 
-  if (loading) return <div className="wm-loading">Loading...</div>
+  if (loading) return <div className="wm-loading">加载中...</div>
 
   return (
     <div>
       {error && (
         <>
           <div className="wm-error">{error}</div>
-          <button className="wm-btn" onClick={() => load()}>Retry</button>
+          <button className="wm-btn" onClick={() => load()}>重试</button>
         </>
       )}
-      {!error && notifications.length === 0 && <div className="wm-empty">No notifications</div>}
+      {!error && notifications.length === 0 && <div className="wm-empty">暂无信号记录</div>}
       {notifications.length > 0 && (
         <ul className="wm-notification-list">
           {notifications.map(item => (
@@ -118,14 +118,14 @@ export default function WeatherNotifications({ limit }: Props) {
                   {item.outcome && <span>{item.outcome.toUpperCase()}</span>}
                 </div>
                 {item.event_slug && <p className="wm-cell-sub">{item.event_slug}</p>}
-                {item.reason && <p>Reason: {item.reason}</p>}
+                {item.reason && <p>原因: {item.reason}</p>}
                 <div className="wm-notification-ts">{formatTimestamp(item.occurred_at)}</div>
                 <button className="wm-btn-link" onClick={() => toggleMessage(item.id)} style={{ marginTop: 4, padding: '2px 0' }}>
-                  {expandedMessages.has(item.id) ? 'Hide message' : 'Show message'}
+                  {expandedMessages.has(item.id) ? '收起消息' : '展开消息'}
                 </button>
                 {expandedMessages.has(item.id) && (
                   <div className="wm-notification-message">
-                    <pre>{item.message}</pre>
+                    <pre>{JSON.stringify(item.payload, null, 2)}</pre>
                   </div>
                 )}
               </div>
@@ -136,7 +136,7 @@ export default function WeatherNotifications({ limit }: Props) {
       {nextBeforeId && (
         <div className="wm-timeline-more">
           <button className="wm-btn" onClick={() => load(true)} disabled={loadingMore}>
-            {loadingMore ? 'Loading...' : 'Load more'}
+            {loadingMore ? '加载中...' : '加载更多'}
           </button>
         </div>
       )}

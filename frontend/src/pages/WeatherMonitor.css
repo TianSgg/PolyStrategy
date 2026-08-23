@@ -149,13 +149,17 @@
   border: 1px solid var(--wm-card-border);
   border-radius: 10px;
   box-shadow: var(--wm-shadow);
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .wm-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.wm-table-resizable {
+  table-layout: fixed;
 }
 
 .wm-table th {
@@ -167,12 +171,36 @@
   padding: 12px 14px;
   text-align: left;
   white-space: nowrap;
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wm-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 25%;
+  bottom: 25%;
+  width: 3px;
+  cursor: col-resize;
+  background: var(--wm-card-border);
+  border-radius: 2px;
+  z-index: 1;
+}
+
+.wm-resize-handle:hover,
+.wm-resize-handle:active {
+  background: var(--wm-btn-primary);
+  top: 15%;
+  bottom: 15%;
 }
 
 .wm-table td {
   border-bottom: 1px solid var(--wm-card-border);
   padding: 12px 14px;
   vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .wm-table tr:last-child td { border-bottom: none; }

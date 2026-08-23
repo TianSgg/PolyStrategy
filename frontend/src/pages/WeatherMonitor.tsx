@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, apiFetch } from '../api'
 import WeatherOrderbook from './WeatherOrderbook'
 import WeatherTimeline from './WeatherTimeline'
@@ -45,11 +45,11 @@ interface Props {
 }
 
 function directionLabel(direction: string) {
-  return direction === 'highest' ? 'Highest' : 'Lowest'
+  return direction === 'highest' ? '最高温' : '最低温'
 }
 
 function statusLabel(status: string) {
-  return ({ monitoring: 'Monitoring', resolved: 'Resolved', exhausted: 'Exhausted', discovering: 'Discovering' } as Record<string, string>)[status] || status
+  return ({ monitoring: '监控中', resolved: '已结算', exhausted: '已耗尽', discovering: '发现中' } as Record<string, string>)[status] || status
 }
 
 function statusType(status: string) {
@@ -151,7 +151,7 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
 
   function connectNotificationCounts() {
     if (notifRef.current) { notifRef.current.close(); notifRef.current = null }
-    const es = new EventSource(`${API_BASE}/api/weather/notification-counts/live`)
+    const es = new EventSource(`${API_BASE}/api/weather/signal-counts/live`)
     notifRef.current = es
     es.onerror = () => {
       es.close()
@@ -225,19 +225,48 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
     return notificationCounts[row.event_slug!] ?? row.notification_count ?? 0
   }
 
+  const DEFAULT_COL_WIDTHS = [50, 160, 80, 130, 150, 60, 70, 160, 90, 60]
+  const [colWidths, setColWidths] = useState<number[]>(DEFAULT_COL_WIDTHS)
+  const resizingRef = useRef<{ colIdx: number; startX: number; startW: number } | null>(null)
+
+  const onResizeStart = useCallback((colIdx: number, e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = colWidths[colIdx]
+    resizingRef.current = { colIdx, startX, startW }
+
+    const onMove = (ev: MouseEvent) => {
+      if (!resizingRef.current) return
+      const diff = ev.clientX - resizingRef.current.startX
+      const newW = Math.max(40, resizingRef.current.startW + diff)
+      setColWidths(prev => {
+        const next = [...prev]
+        next[resizingRef.current!.colIdx] = newW
+        return next
+      })
+    }
+    const onUp = () => {
+      resizingRef.current = null
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [colWidths])
+
   return (
     <div className="wm-page" data-theme={darkMode ? 'dark' : 'light'}>
       <div className="wm-header">
         <div>
-          <h2 className="wm-title">Weather Monitor</h2>
-          <div className="wm-subtitle">{updatedAt ? `Updated: ${updatedAt}` : ''}</div>
+          <h2 className="wm-title">天气监控</h2>
+          <div className="wm-subtitle">{updatedAt ? `更新于: ${updatedAt}` : ''}</div>
         </div>
         <div className="wm-header-actions">
           <span className={`wm-conn ${liveConnected ? 'connected' : 'disconnected'}`}>
-            {liveConnected ? 'Live' : 'Disconnected'}
+            {liveConnected ? '实时' : '已断开'}
           </span>
           <button className="wm-btn" onClick={refresh} disabled={loading}>
-            {loading ? '...' : 'Refresh'}
+            {loading ? '...' : '刷新'}
           </button>
         </div>
       </div>
@@ -245,13 +274,13 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
       {/* Recent notifications collapsible */}
       <div className="wm-recent-section">
         <button className="wm-collapse-header" onClick={() => setShowRecent(!showRecent)} style={{ border: 'none', background: 'none', padding: 0 }}>
-          <strong>Recent Notifications</strong>
-          <span>Top {recentLimit} notifications {showRecent ? '(collapse)' : '(expand)'}</span>
+          <strong>最近信号</strong>
+          <span>最近 {recentLimit} 条 {showRecent ? '(收起)' : '(展开)'}</span>
         </button>
         {showRecent && (
           <div style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, fontSize: 13, color: 'var(--wm-text-secondary)' }}>
-              <span>Limit:</span>
+              <span>数量:</span>
               <input
                 type="number"
                 min={10}
@@ -270,27 +299,27 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
       {/* Toolbar */}
       <div className="wm-toolbar">
         <input
-          placeholder="Search city, event slug, market or timezone..."
+          placeholder="搜索城市、事件、市场或时区..."
           value={keyword}
           onChange={e => setKeyword(e.target.value)}
         />
         <span className="wm-toolbar-info">{visibleRows.length} / {directionRows.length}</span>
         <input
-          placeholder="Enter event slug for history..."
+          placeholder="输入事件 slug 查询历史..."
           value={historySlug}
           onChange={e => setHistorySlug(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') setQuerySlug(historySlug.trim()) }}
           style={{ width: 'min(320px, 100%)' }}
         />
-        <button className="wm-btn" onClick={() => setQuerySlug(historySlug.trim())}>Query</button>
+        <button className="wm-btn" onClick={() => setQuerySlug(historySlug.trim())}>查询</button>
       </div>
 
       {/* History query section */}
       {querySlug && (
         <div className="wm-history-section">
           <div className="wm-history-header">
-            <strong>History: {querySlug}</strong>
-            <button className="wm-btn-link" onClick={() => { setQuerySlug(''); setHistorySlug('') }}>Close</button>
+            <strong>历史记录: {querySlug}</strong>
+            <button className="wm-btn-link" onClick={() => { setQuerySlug(''); setHistorySlug('') }}>关闭</button>
           </div>
           <WeatherTimeline eventSlug={querySlug} />
         </div>
@@ -299,22 +328,21 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
       {error && <div className="wm-error">{error}</div>}
 
       {/* Main table */}
-      {!loading && visibleRows.length === 0 && <div className="wm-empty">No matching results</div>}
+      {!loading && visibleRows.length === 0 && <div className="wm-empty">无匹配结果</div>}
       {visibleRows.length > 0 && (
         <div className="wm-table-wrap">
-          <table className="wm-table">
+          <table className="wm-table wm-table-resizable">
+            <colgroup>
+              {colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}
+            </colgroup>
             <thead>
               <tr>
-                <th style={{ width: 60 }}></th>
-                <th>Event Slug</th>
-                <th>City</th>
-                <th>Timezone</th>
-                <th>Local Time</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th>Current Market</th>
-                <th>Probability</th>
-                <th>Notifications</th>
+                {['', '事件', '城市', '时区', '当地时间', '类型', '状态', '当前市场', '概率', '信号数'].map((label, i) => (
+                  <th key={i}>
+                    {label}
+                    {i > 0 && <span className="wm-resize-handle" onMouseDown={e => onResizeStart(i, e)} />}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -323,7 +351,7 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
                   <tr key={row.rowKey}>
                     <td>
                       <button className="wm-btn-link" onClick={() => toggleRow(row.rowKey)}>
-                        {expandedRows.has(row.rowKey) ? 'Collapse' : 'Detail'}
+                        {expandedRows.has(row.rowKey) ? '收起' : '详情'}
                       </button>
                     </td>
                     <td>
@@ -350,7 +378,7 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
                     </td>
                     <td>
                       <span className="wm-cell-main">{row.main_temperature_label || '-'}</span>
-                      <span className="wm-cell-sub">{row.main_market_slug || 'Not selected'}</span>
+                      <span className="wm-cell-sub">{row.main_market_slug || '未选定'}</span>
                     </td>
                     <td>
                       {row.status === 'monitoring' ? (
@@ -373,14 +401,14 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
                               <strong>{row.city} - {directionLabel(row.direction)}</strong>
                               <span>{row.timezone || '-'} - {localTime(row.timezone)}</span>
                             </div>
-                            <span style={{ color: 'var(--wm-text-secondary)', fontSize: 12 }}>{row.markets.length} ranges</span>
+                            <span style={{ color: 'var(--wm-text-secondary)', fontSize: 12 }}>{row.markets.length} 个区间</span>
                           </div>
 
                           {/* Markets / Orderbooks */}
                           <div className="wm-collapse">
                             <button className="wm-collapse-header" onClick={() => toggleMarket(`${row.rowKey}:ranges`)}>
-                              <strong>Temperature Ranges & Orderbooks</strong>
-                              <span>{row.markets.length} ranges</span>
+                              <strong>温度区间 & 订单簿</strong>
+                              <span>{row.markets.length} 个区间</span>
                             </button>
                             {expandedMarkets.has(`${row.rowKey}:ranges`) && (
                               <div className="wm-collapse-body">
@@ -411,8 +439,8 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
                           {/* Notification history for this direction */}
                           <div className="wm-collapse" style={{ marginTop: 12 }}>
                             <button className="wm-collapse-header" onClick={() => toggleNotifRow(row.rowKey)}>
-                              <strong>Notification History</strong>
-                              <span>{notificationCount(row)} notifications</span>
+                              <strong>信号历史</strong>
+                              <span>{notificationCount(row)} 条信号</span>
                             </button>
                             {expandedNotifRows.has(row.rowKey) && row.event_slug && (
                               <div className="wm-collapse-body">
