@@ -337,9 +337,14 @@ class WeatherCoordinator:
                 **state.next_monitor.bbo_snapshot(),
             }
 
+        is_from_main = bool(
+            main_ctx and main_ctx.get("main_market_slug") == event.asset.market_slug
+        )
+
         asyncio.create_task(self._on_event(event, main_ctx, next_ob), name=f"notify-{event.event_type}")
         if self._on_broadcast:
             payload = event.payload()
+            payload["is_from_main"] = is_from_main
             if main_ctx:
                 payload["main_monitor"] = main_ctx
             if next_ob:

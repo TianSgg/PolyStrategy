@@ -57,6 +57,7 @@ async def _broadcast_weather_signal(event_type: str, payload: dict) -> None:
         "temperature_label": asset.get("temperature_label"),
         "direction": direction,
         "reason": payload.get("reason", ""),
+        "is_from_main": payload.get("is_from_main", True),
         "occurred_at_ms": current_ob.get("observed_at_unix_ms", int(time.time() * 1000)),
         "received_at_ns": time.time_ns(),
         "orderbook_snapshot": current_ob,
