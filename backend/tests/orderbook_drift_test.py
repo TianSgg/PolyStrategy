@@ -35,7 +35,7 @@ GAMMA_API_URL = "https://gamma-api.polymarket.com"
 
 PING_INTERVAL = 10        # 应用层心跳间隔（秒）
 AUDIT_INTERVAL = 60       # 对账间隔（秒）
-MAX_RUN_HOURS = 24        # 最大运行时长（小时）
+MAX_RUN_HOURS = 7         # 最大运行时长（小时）
 
 # --------------- 日志设置 ---------------
 
@@ -46,11 +46,16 @@ timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
 LOG_FILE = LOG_DIR / f"drift_test_{timestamp_str}.log"
 DRIFT_FILE = LOG_DIR / f"drift_results_{timestamp_str}.jsonl"
 
+class _FlushFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        _FlushFileHandler(LOG_FILE, encoding="utf-8"),
         logging.StreamHandler(),
     ],
 )
@@ -393,16 +398,14 @@ class ABDriftTester:
             logger.info("等待两组都连接...")
             return
 
-        # 抽样
+        # 全量对比
         active_tokens = [t for t in self.tokens
                          if self.group_fixed.books[t].last_update > 0
                          and self.group_original.books[t].last_update > 0]
         if not active_tokens:
             return
 
-        sample = random.sample(active_tokens, min(10, len(active_tokens)))
-
-        for token_id in sample:
+        for token_id in active_tokens:
             try:
                 await self._audit_one_token(token_id)
             except Exception as e:
