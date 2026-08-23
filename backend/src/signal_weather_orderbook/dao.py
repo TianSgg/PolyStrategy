@@ -255,6 +255,7 @@ class WeatherSignalEventRepository:
         self,
         limit: int,
         before_id: int | None = None,
+        main_only: bool = True,
     ) -> list[WeatherSignalRecord]:
         limit = max(1, min(limit, 501))
         query = """
@@ -265,10 +266,12 @@ class WeatherSignalEventRepository:
                    token_id, status, reason, payload, created_at
             FROM signal_weather_events
         """
+        conditions: list[str] = []
         params: list[object] = []
+        if main_only:
+            conditions.append("is_from_main = 1")
         if before_id is not None:
-            query += """
-                WHERE (
+            conditions.append("""(
                     occurred_at < (
                         SELECT occurred_at FROM signal_weather_events WHERE id = %s
                     )
@@ -277,9 +280,10 @@ class WeatherSignalEventRepository:
                             SELECT occurred_at FROM signal_weather_events WHERE id = %s
                         ) AND id < %s
                     )
-                )
-            """
+                )""")
             params.extend([before_id, before_id, before_id])
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY occurred_at DESC, id DESC LIMIT %s"
         params.append(limit)
         async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
