@@ -160,14 +160,33 @@ class SharedMarketWebSocket:
             "routed_assets": len(self._routing),
         }
 
+    async def resync_token(self, token_id: str) -> None:
+        """Correct drift for a single token: unsubscribe then re-subscribe with initial_dump."""
+        async with self._lock:
+            if not self._ws or not self.connected:
+                return
+            await self._ws.send(json.dumps({
+                "assets_ids": [token_id],
+                "type": "market",
+                "operation": "unsubscribe",
+            }))
+            await asyncio.sleep(0.1)
+            await self._ws.send(json.dumps({
+                "assets_ids": [token_id],
+                "type": "market",
+                "operation": "subscribe",
+                "level": 2,
+                "initial_dump": True,
+            }))
+
     async def _run(self) -> None:
         delay = 1
         while True:
             try:
                 async with websockets.connect(
                     MARKET_WS_URL,
-                    ping_interval=20,
-                    ping_timeout=20,
+                    ping_interval=None,
+                    ping_timeout=None,
                     max_size=2 * 1024 * 1024,
                 ) as ws:
                     self._ws = ws
@@ -187,8 +206,14 @@ class SharedMarketWebSocket:
                         }))
                     if self._on_reconnect:
                         asyncio.create_task(self._on_reconnect())
-                    async for raw in ws:
-                        self._dispatch(raw)
+                    heartbeat_task = asyncio.create_task(self._heartbeat(ws))
+                    try:
+                        async for raw in ws:
+                            if raw == "PONG":
+                                continue
+                            self._dispatch(raw)
+                    finally:
+                        heartbeat_task.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -202,6 +227,15 @@ class SharedMarketWebSocket:
             finally:
                 self._ws = None
                 self.connected = False
+
+    async def _heartbeat(self, ws) -> None:
+        """Send application-level PING text frame every 10 seconds."""
+        while True:
+            await asyncio.sleep(10)
+            try:
+                await ws.send("PING")
+            except Exception:
+                return
 
     def _dispatch(self, raw: str) -> None:
         from datetime import datetime, timezone

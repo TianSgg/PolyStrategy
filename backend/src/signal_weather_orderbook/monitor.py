@@ -24,6 +24,9 @@ EventHandler = Callable[[WeatherEvent], Awaitable[None]]
 BookUpdateHandler = Callable[[dict], None]
 
 
+DriftCallback = Callable[[str], Awaitable[None]]
+
+
 class WeatherOrderBookMonitor:
     """Evaluation engine for one candidate market (YES + NO).
 
@@ -36,17 +39,20 @@ class WeatherOrderBookMonitor:
         candidate: MarketCandidate,
         on_event: EventHandler,
         on_book_update: BookUpdateHandler | None = None,
+        on_drift: DriftCallback | None = None,
         mode: Literal["full", "sweep_only"] = "full",
     ):
         self.candidate = candidate
         self.mode = mode
         self._on_event = on_event
         self._on_book_update = on_book_update
+        self._on_drift = on_drift
         self._assets = {candidate.yes_asset.asset_id: candidate.yes_asset, candidate.no_asset.asset_id: candidate.no_asset}
         self._books: dict[str, LocalOrderBook] = {asset_id: LocalOrderBook() for asset_id in self._assets}
         self._last: dict[str, dict] = {}
         self._ticks: dict[str, float | None] = {asset_id: None for asset_id in self._assets}
         self._confirmations: dict[str, asyncio.Task] = {}
+        self._drift_cooldown: dict[str, float] = {}
         self.running = False
 
     def favored_outcome(self) -> str | None:
@@ -191,11 +197,44 @@ class WeatherOrderBookMonitor:
                         previous_ticks[asset_id] = self._ticks[asset_id]
                     self._books[asset_id].apply_change(change["price"], change["size"], change["side"])
                     affected_assets.add(asset_id)
+                    self._check_bbo_drift(asset_id, change)
             high_probability_asset = self._higher_probability_asset(previous_books)
             for asset_id in affected_assets:
                 self._evaluate(asset_id, previous_asks[asset_id], high_probability_asset, previous_ticks[asset_id])
             if affected_assets:
                 self._publish_book_update()
+
+    def _check_bbo_drift(self, asset_id: str, change: dict) -> None:
+        """Compare local BBO with server-reported bestBid/bestAsk after applying change."""
+        if not self._on_drift:
+            return
+        now = time()
+        if now - self._drift_cooldown.get(asset_id, 0) < 60:
+            return
+        book = self._books[asset_id]
+        server_bid = change.get("bestBid") or change.get("best_bid")
+        server_ask = change.get("bestAsk") or change.get("best_ask")
+        if server_bid is None and server_ask is None:
+            return
+        drifted = False
+        if server_bid is not None:
+            local_bid = max(book.bids, default=None)
+            if local_bid is not None and abs(local_bid - float(server_bid)) > 1e-9:
+                drifted = True
+        if server_ask is not None:
+            local_ask = min(book.asks, default=None)
+            if local_ask is not None and abs(local_ask - float(server_ask)) > 1e-9:
+                drifted = True
+        if drifted:
+            self._drift_cooldown[asset_id] = now
+            asset = self._assets[asset_id]
+            logger.warning(
+                "[Monitor] BBO drift detected: %s %s %s outcome=%s local=%s/%s server=%s/%s",
+                asset.city, asset.temperature_label, asset_id[:8], asset.outcome,
+                max(book.bids, default=None), min(book.asks, default=None),
+                server_bid, server_ask,
+            )
+            asyncio.create_task(self._on_drift(asset_id))
 
     def _evaluate(
         self,

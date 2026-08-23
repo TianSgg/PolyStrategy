@@ -57,12 +57,15 @@ class WeatherCoordinator:
             self._city_dates[city.name] = target_date
             installations.append(self._install_city_plan(city, plan))
         await asyncio.gather(*installations, return_exceptions=True)
+        self._resync_task = asyncio.create_task(self._periodic_resync(), name="periodic-resync")
 
     async def _discover_city_plan(self, city: WeatherCity) -> tuple[date, dict[str, list[MarketCandidate]]]:
         target_date = await self.discovery.local_date(city)
         return target_date, await self.discovery.plans_for_city(city, target_date)
 
     async def stop(self) -> None:
+        if hasattr(self, '_resync_task') and self._resync_task:
+            self._resync_task.cancel()
         for state in self._states.values():
             if state.main_monitor:
                 await state.main_monitor.stop()
@@ -212,7 +215,8 @@ class WeatherCoordinator:
         if status == "monitoring" and candidate:
             # Create current monitor (full mode)
             state.main_monitor = WeatherOrderBookMonitor(
-                candidate, self._handle_event, self._publish_live_orderbook, mode="full",
+                candidate, self._handle_event, self._publish_live_orderbook,
+                on_drift=self._on_drift, mode="full",
             )
             state.main_monitor.start()
             await self._register_monitor(state.main_monitor)
@@ -222,7 +226,8 @@ class WeatherCoordinator:
             if next_index < len(candidates):
                 next_candidate = candidates[next_index]
                 state.next_monitor = WeatherOrderBookMonitor(
-                    next_candidate, self._handle_event, mode="sweep_only",
+                    next_candidate, self._handle_event,
+                    on_drift=self._on_drift, mode="sweep_only",
                 )
                 state.next_monitor.start()
                 await self._register_monitor(state.next_monitor)
@@ -251,6 +256,31 @@ class WeatherCoordinator:
                 if monitor and monitor.running:
                     yes_id = monitor.candidate.yes_asset.asset_id
                     await self._shared_ws.subscribe_for_initial_dump(yes_id)
+
+    async def _on_drift(self, token_id: str) -> None:
+        """Called when a monitor detects BBO drift; resync that token."""
+        await self._shared_ws.resync_token(token_id)
+
+    async def _periodic_resync(self) -> None:
+        """Every 10 minutes, resync all subscribed tokens with staggered timing."""
+        RESYNC_INTERVAL = 600  # 10 minutes
+        await asyncio.sleep(RESYNC_INTERVAL)
+        while True:
+            try:
+                tokens = list(self._shared_ws._subscribed_tokens)
+                if tokens and self._shared_ws.connected:
+                    interval = RESYNC_INTERVAL / len(tokens)
+                    logger.info("Periodic resync: %d tokens, %.1fs apart", len(tokens), interval)
+                    for token_id in tokens:
+                        if not self._shared_ws.connected:
+                            break
+                        await self._shared_ws.resync_token(token_id)
+                        await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Periodic resync error")
+            await asyncio.sleep(RESYNC_INTERVAL)
 
     def live_snapshot(self) -> list[dict]:
         """The current in-memory L2 state of every active monitor."""
@@ -299,17 +329,21 @@ class WeatherCoordinator:
             event.event_type, event.asset.city, event.asset.asset_id[:8], event.asset.outcome, event.reason,
         )
 
-        asyncio.create_task(self._on_event(event, main_ctx), name=f"notify-{event.event_type}")
+        next_ob = None
+        if event.event_type == "no_longer_possible" and state and state.next_monitor:
+            next_ob = {
+                "market_slug": state.next_monitor.candidate.market_slug,
+                "temperature_label": state.next_monitor.candidate.temperature_label,
+                **state.next_monitor.bbo_snapshot(),
+            }
+
+        asyncio.create_task(self._on_event(event, main_ctx, next_ob), name=f"notify-{event.event_type}")
         if self._on_broadcast:
             payload = event.payload()
             if main_ctx:
                 payload["main_monitor"] = main_ctx
-            if event.event_type == "no_longer_possible" and state and state.next_monitor:
-                payload["next_candidate_orderbook"] = {
-                    "market_slug": state.next_monitor.candidate.market_slug,
-                    "temperature_label": state.next_monitor.candidate.temperature_label,
-                    **state.next_monitor.bbo_snapshot(),
-                }
+            if next_ob:
+                payload["next_candidate_orderbook"] = next_ob
             asyncio.create_task(self._on_broadcast(event.event_type, payload))
 
         if not state_key:
@@ -356,7 +390,8 @@ class WeatherCoordinator:
             if lookahead < len(state.candidates):
                 next_candidate = state.candidates[lookahead]
                 state.next_monitor = WeatherOrderBookMonitor(
-                    next_candidate, self._handle_event, mode="sweep_only",
+                    next_candidate, self._handle_event,
+                    on_drift=self._on_drift, mode="sweep_only",
                 )
                 state.next_monitor.start()
                 await self._register_monitor(state.next_monitor)
