@@ -23,48 +23,20 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from account.api import router as account_router
-from account.service import get_account_service
 from auth.api import router as auth_router
 from auth.migrations import run_auth_migrations
 from auth.service import AUTH_COOKIE_NAME, get_auth_service
-from copy_trading.api import router as copy_trading_router
-from copy_trading.predexon import get_copy_trading_predexon
-from copy_trading.service import get_copy_trading_service
-from copy_trading.ws import CopyTradingWS, add_copy_trading_ws, stop_all_copy_trading_ws
 from market.api import router as market_router
 from performance.router import router as performance_router
 from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
-from strategy_execution.api import router as strategy_execution_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """管理应用生命周期"""
     run_auth_migrations()
-
-    if _env != "dev":
-        copy_trading_predexon = get_copy_trading_predexon()
-        ct_service = get_copy_trading_service()
-        await ct_service.initialize()
-        copy_trading_predexon_task = asyncio.create_task(copy_trading_predexon.start())
-
-        account_svc = get_account_service()
-
-        started_followers: set = set()
-        for config in ct_service._config_id_to_config.values():
-            f_addr = config.follower_proxy_wallet
-            if f_addr in started_followers:
-                continue
-            creds = account_svc.get_account_credentials_by_proxy_wallet(f_addr)
-            if creds:
-                ws = CopyTradingWS(f_addr, creds)
-                add_copy_trading_ws(ws)
-                asyncio.create_task(ws.start())
-                started_followers.add(f_addr)
-    else:
-        logger.info("dev 环境，跳过跟单服务启动")
 
     from performance import get_performance_service
 
@@ -79,24 +51,17 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         if _env != "dev":
-            copy_trading_predexon.stop()
-            copy_trading_predexon_task.cancel()
-            await stop_all_copy_trading_ws()
-            ct_service.stop()
             pnl_svc.stop()
         perf_svc.stop()
 
 
 app = FastAPI(lifespan=lifespan)
 
-# 注册业务路由（信号服务已独立部署，见 signal_weather_orderbook/app.py 和 signal_leader_activity/app.py）
 app.include_router(auth_router)
-app.include_router(copy_trading_router)
 app.include_router(account_router)
 app.include_router(market_router)
 app.include_router(performance_router)
 app.include_router(pnl_router)
-app.include_router(strategy_execution_router)
 
 # CORS 配置
 app.add_middleware(
