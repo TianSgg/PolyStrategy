@@ -45,6 +45,7 @@ class StrategyContext:
     config: dict[str, Any]
     proxy_wallet: str
     run_id: str
+    event_logger: Any = None
 
 
 class OrderExecutorProtocol(Protocol):

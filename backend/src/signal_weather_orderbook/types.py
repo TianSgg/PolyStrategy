@@ -56,11 +56,11 @@ class WeatherEvent:
 
 @dataclass(frozen=True)
 class WeatherSignalRecord:
-    """One persisted weather signal event record."""
+    """One persisted weather signal record."""
 
-    notification_key: str
+    signal_id: str
     occurred_at: datetime
-    event_type: str
+    signal_type: str
     event_slug: str
     city: str
     city_slug: str

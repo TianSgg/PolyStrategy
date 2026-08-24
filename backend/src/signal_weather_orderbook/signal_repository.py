@@ -1,4 +1,4 @@
-"""天气信号查询 DAO — 读取 signal_weather_events 表。"""
+"""天气信号查询 DAO — 读取 weather_orderbook_signals 表。"""
 from __future__ import annotations
 
 import json
@@ -12,13 +12,13 @@ logger = logging.getLogger(__name__)
 
 
 class WeatherSignalRepository:
-    """查询 signal_weather_events 表中的信号记录。"""
+    """查询 weather_orderbook_signals 表中的信号记录。"""
 
-    def find_by_id(self, notification_key: str) -> Optional[Dict[str, Any]]:
-        sql = "SELECT * FROM signal_weather_events WHERE notification_key = %s"
+    def find_by_id(self, signal_id: str) -> Optional[Dict[str, Any]]:
+        sql = "SELECT * FROM weather_orderbook_signals WHERE signal_id = %s"
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (notification_key,))
+                cur.execute(sql, (signal_id,))
                 row = cur.fetchone()
                 return self._row_to_dict(cur, row) if row else None
 
@@ -27,7 +27,7 @@ class WeatherSignalRepository:
         *,
         token_id: Optional[str] = None,
         city: Optional[str] = None,
-        event_type: Optional[str] = None,
+        signal_type: Optional[str] = None,
         outcome: Optional[str] = None,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
@@ -43,9 +43,9 @@ class WeatherSignalRepository:
         if city:
             conditions.append("city = %s")
             params.append(city)
-        if event_type:
-            conditions.append("event_type = %s")
-            params.append(event_type)
+        if signal_type:
+            conditions.append("signal_type = %s")
+            params.append(signal_type)
         if outcome:
             conditions.append("outcome = %s")
             params.append(outcome)
@@ -57,7 +57,7 @@ class WeatherSignalRepository:
             params.append(end_time)
 
         where = " AND ".join(conditions) if conditions else "1=1"
-        sql = f"SELECT * FROM signal_weather_events WHERE {where} ORDER BY occurred_at DESC LIMIT %s OFFSET %s"
+        sql = f"SELECT * FROM weather_orderbook_signals WHERE {where} ORDER BY occurred_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
 
         with get_db() as conn:

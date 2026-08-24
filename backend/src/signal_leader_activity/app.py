@@ -2,7 +2,7 @@
 
 职责：
   - 监听 leader 链上活动（通过 copy_trading WS 检测 BUY）
-  - 持久化事件到 leader_signal_events
+  - 持久化信号到 leader_signals
   - 通过 WS /ws/signal 向策略执行服务广播 leader_buy 信号
   - 提供 leader 管理 REST API
 """

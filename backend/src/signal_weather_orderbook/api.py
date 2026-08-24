@@ -17,14 +17,14 @@ router = APIRouter(prefix="/api/weather", tags=["weather-orderbook"])
 
 
 class WeatherSignalResponse(BaseModel):
-    """Frontend contract for one persisted weather Telegram notification."""
+    """Frontend contract for one persisted weather signal."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: int
-    notification_key: str
+    signal_id: str
     occurred_at: datetime
-    event_type: str
+    signal_type: str
     event_slug: str
     market_slug: str | None
     main_market_slug: str | None
@@ -77,9 +77,9 @@ def _signal_event_repository(request: Request) -> WeatherSignalEventRepository:
 def signal_response(record: WeatherSignalRecord) -> WeatherSignalResponse:
     return WeatherSignalResponse(
         id=record.id or 0,
-        notification_key=record.notification_key,
+        signal_id=record.signal_id,
         occurred_at=record.occurred_at,
-        event_type=record.event_type,
+        signal_type=record.signal_type,
         event_slug=record.event_slug,
         market_slug=record.market_slug,
         main_market_slug=record.main_market_slug,

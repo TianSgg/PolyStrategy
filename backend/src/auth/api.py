@@ -140,3 +140,9 @@ async def delete_user(user_id: int, current_user: AuthUser = Depends(require_adm
     if not get_auth_service().delete_user_and_transfer(user_id, current_user.id):
         raise HTTPException(status_code=404, detail="User not found")
     return {"status": "ok"}
+
+
+@router.get("/verify")
+async def verify(current_user: AuthUser = Depends(get_current_user)):
+    """Nginx auth_request 端点。返回 200 表示鉴权通过，401 表示未认证。"""
+    return {"status": "ok", "user_id": current_user.id, "role": current_user.role}

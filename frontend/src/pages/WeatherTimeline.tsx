@@ -4,7 +4,7 @@ import { apiFetch } from '../api'
 type Notification = {
   id: number
   occurred_at: string
-  event_type: string
+  signal_type: string
   event_slug: string
   market_slug: string | null
   temperature_label: string | null
@@ -115,11 +115,11 @@ export default function WeatherTimeline({ eventSlug }: Props) {
       {notifications.length > 0 && (
         <ul className="wm-notification-list">
           {notifications.map(item => (
-            <li key={item.id} className={`wm-notification-item type-${TYPE_STYLE[item.event_type] || 'info'}`}>
+            <li key={item.id} className={`wm-notification-item type-${TYPE_STYLE[item.signal_type] || 'info'}`}>
               <div className="wm-notification-card">
                 <div className="wm-notification-title">
-                  <span className={`wm-tag wm-tag-${TYPE_STYLE[item.event_type] || 'info'}`}>
-                    {TYPE_LABEL[item.event_type] || item.event_type}
+                  <span className={`wm-tag wm-tag-${TYPE_STYLE[item.signal_type] || 'info'}`}>
+                    {TYPE_LABEL[item.signal_type] || item.signal_type}
                   </span>
                   <strong>{item.temperature_label || '事件'}</strong>
                   {item.outcome && <span>{item.outcome.toUpperCase()}</span>}

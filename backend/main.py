@@ -31,6 +31,7 @@ from performance.router import router as performance_router
 from pnl.router import router as pnl_router
 from pnl.service import get_pnl_service
 from shared.frontend_ws import get_frontend_ws_manager
+from strategy.api import router as strategy_router
 
 
 @asynccontextmanager
@@ -62,6 +63,7 @@ app.include_router(account_router)
 app.include_router(market_router)
 app.include_router(performance_router)
 app.include_router(pnl_router)
+app.include_router(strategy_router)
 
 # CORS 配置
 app.add_middleware(

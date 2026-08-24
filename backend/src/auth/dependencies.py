@@ -50,8 +50,15 @@ class AuthUser:
         return {"id": self.id, "username": self.username, "role": self.role, "enabled": self.enabled}
 
 
+def _extract_token(request: Request) -> str | None:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    return request.cookies.get(AUTH_COOKIE_NAME)
+
+
 def get_current_user(request: Request) -> AuthUser:
-    token = request.cookies.get(AUTH_COOKIE_NAME)
+    token = _extract_token(request)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     payload = get_auth_service().decode_token(token)

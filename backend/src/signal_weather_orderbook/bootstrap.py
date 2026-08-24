@@ -36,9 +36,9 @@ def _build_signal_record(
     if next_candidate_orderbook:
         payload["next_candidate_orderbook"] = next_candidate_orderbook
     return WeatherSignalRecord(
-        notification_key=f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
+        signal_id=f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
         occurred_at=occurred_at,
-        event_type=event.event_type,
+        signal_type=event.event_type,
         event_slug=event.asset.event_slug,
         city=event.asset.city,
         city_slug=city.slug,

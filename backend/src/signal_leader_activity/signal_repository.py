@@ -1,4 +1,4 @@
-"""Leader 活动信号持久化 DAO — leader_signal_events 表。"""
+"""Leader 活动信号持久化 DAO — leader_signals 表。"""
 from __future__ import annotations
 
 import json
@@ -12,33 +12,36 @@ logger = logging.getLogger(__name__)
 
 
 class LeaderSignalRepository:
-    """leader_signal_events 表读写。"""
+    """leader_signals 表读写。"""
 
     def save(self, event: Dict[str, Any]) -> bool:
         sql = """
-            INSERT INTO leader_signal_events
-                (id, event_type, token_id, outcome,
+            INSERT INTO leader_signals
+                (signal_id, signal_type, token_id, outcome,
                  leader_proxy_wallet, leader_name,
                  order_size, order_price, market_slug,
                  occurred_at, received_at, received_monotonic_ns, extra_json)
             VALUES
-                (%(id)s, %(event_type)s, %(token_id)s, %(outcome)s,
+                (%(signal_id)s, %(signal_type)s, %(token_id)s, %(outcome)s,
                  %(leader_proxy_wallet)s, %(leader_name)s,
                  %(order_size)s, %(order_price)s, %(market_slug)s,
                  %(occurred_at)s, %(received_at)s, %(received_monotonic_ns)s, %(extra_json)s)
-            ON DUPLICATE KEY UPDATE id = id
+            ON DUPLICATE KEY UPDATE signal_id = signal_id
         """
+        data = {**event}
+        if "id" in data and "signal_id" not in data:
+            data["signal_id"] = data.pop("id")
+        if "event_type" in data and "signal_type" not in data:
+            data["signal_type"] = data.pop("event_type")
+        data["extra_json"] = json.dumps(data.get("extra_json", {}), ensure_ascii=False)
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, {
-                    **event,
-                    "extra_json": json.dumps(event.get("extra_json", {}), ensure_ascii=False),
-                })
+                cur.execute(sql, data)
                 conn.commit()
                 return cur.rowcount > 0
 
-    def find_by_id(self, signal_id: str) -> Optional[Dict[str, Any]]:
-        sql = "SELECT * FROM leader_signal_events WHERE id = %s"
+    def find_by_signal_id(self, signal_id: str) -> Optional[Dict[str, Any]]:
+        sql = "SELECT * FROM leader_signals WHERE signal_id = %s"
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (signal_id,))
@@ -76,7 +79,7 @@ class LeaderSignalRepository:
             params.append(end_time)
 
         where = " AND ".join(conditions) if conditions else "1=1"
-        sql = f"SELECT * FROM leader_signal_events WHERE {where} ORDER BY received_at DESC LIMIT %s OFFSET %s"
+        sql = f"SELECT * FROM leader_signals WHERE {where} ORDER BY received_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
 
         with get_db() as conn:

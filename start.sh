@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+的哥#!/usr/bin/env bash
 #
 # PolyStrategy 全栈启动脚本
 #

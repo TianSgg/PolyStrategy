@@ -167,32 +167,32 @@ class WeatherSignalEventRepository:
         self._pool = pool
 
     async def ping(self) -> None:
-        """Validate the notification table exists without changing its schema."""
+        """Validate the signal table exists without changing its schema."""
         try:
             async with self._pool.acquire() as connection, connection.cursor() as cursor:
-                await cursor.execute("SELECT 1 FROM signal_weather_events LIMIT 1")
+                await cursor.execute("SELECT 1 FROM weather_orderbook_signals LIMIT 1")
                 await cursor.fetchone()
         except Exception as error:
             raise RuntimeError(
-                "signal_weather_events is unavailable; run db/01_schema.sql before starting the service"
+                "weather_orderbook_signals is unavailable; run migrations before starting the service"
             ) from error
 
     async def insert_if_absent(self, record: WeatherSignalRecord) -> bool:
         query = """
-            INSERT INTO signal_weather_events (
-                notification_key, occurred_at, event_type, event_slug,
+            INSERT INTO weather_orderbook_signals (
+                signal_id, occurred_at, signal_type, event_slug,
                 city, city_slug, direction, local_date,
                 market_slug, temperature_label, outcome,
                 main_market_slug, main_temperature_label, main_outcome,
                 token_id, status, reason, payload
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-            ) ON DUPLICATE KEY UPDATE notification_key = notification_key
+            ) ON DUPLICATE KEY UPDATE signal_id = signal_id
         """
         values = (
-            record.notification_key,
+            record.signal_id,
             _mysql_datetime(record.occurred_at),
-            record.event_type,
+            record.signal_type,
             record.event_slug,
             record.city,
             record.city_slug,
@@ -221,12 +221,12 @@ class WeatherSignalEventRepository:
     ) -> list[WeatherSignalRecord]:
         limit = max(1, min(limit, 501))
         query = """
-            SELECT id, notification_key, occurred_at, event_type, event_slug,
+            SELECT id, signal_id, occurred_at, signal_type, event_slug,
                    city, city_slug, direction, local_date,
                    market_slug, temperature_label, outcome,
                    main_market_slug, main_temperature_label, main_outcome,
                    token_id, status, reason, payload, created_at
-            FROM signal_weather_events
+            FROM weather_orderbook_signals
             WHERE event_slug = %s
         """
         params: list[object] = [event_slug]
@@ -234,11 +234,11 @@ class WeatherSignalEventRepository:
             query += """
                 AND (
                     occurred_at < (
-                        SELECT occurred_at FROM signal_weather_events WHERE id = %s
+                        SELECT occurred_at FROM weather_orderbook_signals WHERE id = %s
                     )
                     OR (
                         occurred_at = (
-                            SELECT occurred_at FROM signal_weather_events WHERE id = %s
+                            SELECT occurred_at FROM weather_orderbook_signals WHERE id = %s
                         ) AND id < %s
                     )
                 )
@@ -259,12 +259,12 @@ class WeatherSignalEventRepository:
     ) -> list[WeatherSignalRecord]:
         limit = max(1, min(limit, 501))
         query = """
-            SELECT id, notification_key, occurred_at, event_type, event_slug,
+            SELECT id, signal_id, occurred_at, signal_type, event_slug,
                    city, city_slug, direction, local_date,
                    market_slug, temperature_label, outcome,
                    main_market_slug, main_temperature_label, main_outcome,
                    token_id, status, reason, payload, created_at
-            FROM signal_weather_events
+            FROM weather_orderbook_signals
         """
         conditions: list[str] = []
         params: list[object] = []
@@ -273,11 +273,11 @@ class WeatherSignalEventRepository:
         if before_id is not None:
             conditions.append("""(
                     occurred_at < (
-                        SELECT occurred_at FROM signal_weather_events WHERE id = %s
+                        SELECT occurred_at FROM weather_orderbook_signals WHERE id = %s
                     )
                     OR (
                         occurred_at = (
-                            SELECT occurred_at FROM signal_weather_events WHERE id = %s
+                            SELECT occurred_at FROM weather_orderbook_signals WHERE id = %s
                         ) AND id < %s
                     )
                 )""")
@@ -292,14 +292,14 @@ class WeatherSignalEventRepository:
         return [self._to_record(row) for row in rows]
 
     async def count_for_events(self, event_slugs: set[str]) -> dict[str, int]:
-        """Return durable notification counts for the active event set in one query."""
+        """Return durable signal counts for the active event set in one query."""
         if not event_slugs:
             return {}
         slugs = sorted(event_slugs)
         placeholders = ", ".join("%s" for _ in slugs)
         query = f"""
             SELECT event_slug, COUNT(*) AS signal_count
-            FROM signal_weather_events
+            FROM weather_orderbook_signals
             WHERE event_slug IN ({placeholders})
             GROUP BY event_slug
         """
@@ -317,9 +317,9 @@ class WeatherSignalEventRepository:
             payload = {}
         return WeatherSignalRecord(
             id=int(row["id"]),
-            notification_key=str(row["notification_key"]),
+            signal_id=str(row["signal_id"]),
             occurred_at=_utc_datetime(row["occurred_at"]),
-            event_type=str(row["event_type"]),
+            signal_type=str(row["signal_type"]),
             event_slug=str(row["event_slug"]),
             city=str(row["city"]),
             city_slug=str(row["city_slug"]),
