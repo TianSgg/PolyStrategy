@@ -1,4 +1,4 @@
-from strategy_runtime.interfaces import (
+from base_strategy.interfaces import (
     BaseStrategy,
     OrderExecutorProtocol,
     OrderResult,

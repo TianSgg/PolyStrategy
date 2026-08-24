@@ -19,7 +19,10 @@ class Signal:
 
 
 class BaseStrategy(ABC):
-    """策略最小约束 — 只规定生命周期，不规定内部实现。"""
+    """策略最小约束 — 只规定生命周期，不规定内部实现。
+
+    生命周期: start → on_signal* → force_exit (配置变更时) → stop
+    """
 
     SUBSCRIBED_SIGNALS: ClassVar[set[str]] = set()
 
@@ -31,9 +34,18 @@ class BaseStrategy(ABC):
     async def on_signal(self, signal: Signal) -> None:
         """收到信号 — 策略自行决定如何处理。"""
 
+    async def force_exit(self, reason: str = "config_disabled") -> None:
+        """强制退出：撤买单 + 平仓。配置禁用/修改时由容器调用。
+
+        子类必须实现：
+        1. 撤销所有未成交买单
+        2. 已持份额按 1 - tick_size 最大价格挂卖单
+        3. 记录 event_closed
+        """
+
     @abstractmethod
     async def stop(self) -> None:
-        """关闭：取消定时器、撤销挂单、释放资源。"""
+        """关闭：释放资源（force_exit 之后调用）。"""
 
 
 @dataclass

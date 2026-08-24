@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from strategy_runtime.interfaces import Signal
+from base_strategy.interfaces import Signal
 
 
 class LeaderBuyAdapter:

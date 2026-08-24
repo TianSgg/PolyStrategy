@@ -63,8 +63,11 @@ class EventLogger:
         self._sequence_no = 0
         return self._event_id
 
-    def log_step(self, step: str, detail: dict[str, Any]) -> None:
-        """记录一个 step 到数据库。"""
+    def log_step(self, step: str, detail: dict[str, Any], phase: str = "entry") -> None:
+        """记录一个 step 到数据库。
+
+        phase: entry / monitor / exit / exit_risk / exit_force
+        """
         if not self._event_id:
             logger.warning("log_step called before start_event, ignoring")
             return
@@ -76,9 +79,9 @@ class EventLogger:
             INSERT INTO {self._table} (
                 owner_user_id, proxy_wallet, config_id, config_snapshot,
                 event_id, signal_id, token_id, market_slug, event_slug,
-                step, sequence_no, detail, occurred_at
+                phase, step, sequence_no, detail, occurred_at
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
         """
         params = (
@@ -91,6 +94,7 @@ class EventLogger:
             self._token_id,
             self._market_slug,
             self._event_slug,
+            phase,
             step,
             self._sequence_no,
             json.dumps(detail, ensure_ascii=False, default=str),

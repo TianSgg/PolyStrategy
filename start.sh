@@ -30,9 +30,9 @@ BACKEND_SERVICES=(
     # 名称|模块|端口|额外环境变量
     "signal_weather|signal_weather_orderbook.app|8001|"
     "signal_leader|signal_leader_activity.app|8002|"
-    "strategy_sweep|strategy_execution.app|8003|STRATEGY_TYPE=sweep STRATEGY_PORT=8003"
-    "strategy_leader|strategy_execution.app|8004|STRATEGY_TYPE=leader STRATEGY_PORT=8004"
-    "strategy_sweep_leader|strategy_execution.app|8005|STRATEGY_TYPE=sweep_leader STRATEGY_PORT=8005"
+    "strategy_sweep|strategy_weather_sweep.app|8003|"
+    "strategy_leader|strategy_leader.app|8004|"
+    "strategy_sweep_leader|strategy_sweep_leader.app|8005|"
     "gateway|main_gateway|8000|"
 )
 

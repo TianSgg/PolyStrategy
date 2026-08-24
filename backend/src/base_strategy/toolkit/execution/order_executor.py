@@ -2,6 +2,10 @@
 
 实现 strategy_runtime.interfaces.OrderExecutorProtocol。
 策略可直接使用，也可继承重写特定方法。
+
+余额管理：
+  集成 BalancePoller（后台 1s 轮询），下单前检查缓存余额，
+  失败后自动刷新并可重试。
 """
 from __future__ import annotations
 
@@ -13,7 +17,8 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from account.service import get_account_service
-from strategy_runtime.interfaces import OrderResult
+from base_strategy.interfaces import OrderResult
+from base_strategy.toolkit.execution.balance_poller import BalancePoller, get_or_create_poller
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +30,13 @@ def generate_order_id() -> str:
 
 
 class OrderExecutor:
-    """Polymarket CLOB 下单执行器。"""
+    """Polymarket CLOB 下单执行器（集成余额轮询）。"""
 
     def __init__(self, proxy_wallet: str = "") -> None:
         self._account_service = get_account_service()
         self._proxy_wallet = proxy_wallet
         self._cached_params: Dict[str, Dict[str, Any]] = {}
+        self._poller: Optional[BalancePoller] = None
 
     def cache_market_params(
         self, token_id: str, tick_size: str, neg_risk: bool
@@ -39,6 +45,26 @@ class OrderExecutor:
             "tick_size": tick_size,
             "neg_risk": neg_risk,
         }
+
+    async def ensure_poller(self, proxy_wallet: str = "") -> BalancePoller:
+        """获取当前账户的 BalancePoller（懒加载）。"""
+        wallet = (proxy_wallet or self._proxy_wallet).lower()
+        if self._poller is None or self._poller._proxy_wallet != wallet:
+            self._poller = await get_or_create_poller(wallet)
+        return self._poller
+
+    @property
+    def available_cash(self) -> Decimal:
+        """当前可用余额（instant read）。poller 未就绪时返回 0。"""
+        if self._poller is None:
+            return Decimal("0")
+        return self._poller.available_cash
+
+    def position_size(self, token_id: str) -> Decimal:
+        """当前持仓数量（instant read）。"""
+        if self._poller is None:
+            return Decimal("0")
+        return self._poller.position_size(token_id)
 
     async def place_order(
         self,
@@ -51,14 +77,36 @@ class OrderExecutor:
         tick_size: str | None = None,
         neg_risk: bool | None = None,
         gtd_sec: int = DEFAULT_GTD_SEC,
+        check_balance: bool = True,
     ) -> OrderResult:
-        """下单。返回 OrderResult。"""
+        """下单。返回 OrderResult。
+
+        check_balance=True 时，BUY 订单会先检查缓存余额，
+        余额不足直接返回 insufficient_balance 而不发请求。
+        """
         wallet = (proxy_wallet or self._proxy_wallet).lower()
         params = self._cached_params.get(token_id, {})
         ts = tick_size or params.get("tick_size", "0.01")
         nr = neg_risk if neg_risk is not None else params.get("neg_risk", False)
 
         order_id = generate_order_id()
+
+        poller = await self.ensure_poller(wallet)
+
+        if check_balance and side.upper() == "BUY":
+            notional = Decimal(price) * Decimal(size)
+            if poller.available_cash < notional:
+                logger.warning(
+                    "Insufficient balance: need=%s available=%s wallet=%s",
+                    notional, poller.available_cash, wallet[:8],
+                )
+                return OrderResult(
+                    order_id=order_id,
+                    status="insufficient_balance",
+                    filled_size="0",
+                    filled_price=None,
+                )
+
         send_ns = time.monotonic_ns()
 
         try:
@@ -75,6 +123,7 @@ class OrderExecutor:
             )
         except Exception as e:
             logger.error("Order failed: token=%s side=%s err=%s", token_id, side, e)
+            asyncio.create_task(poller.refresh())
             return OrderResult(
                 order_id=order_id,
                 status="failed",
@@ -82,7 +131,10 @@ class OrderExecutor:
                 filled_price=None,
             )
 
-        return self._parse_result(order_id, result, send_ns)
+        parsed = self._parse_result(order_id, result, send_ns)
+        if parsed.status == "failed":
+            asyncio.create_task(poller.refresh())
+        return parsed
 
     async def cancel_order(self, order_id: str, *, proxy_wallet: str = "") -> bool:
         """撤单。成功返回 True。"""
@@ -134,3 +186,9 @@ class OrderExecutor:
                 filled_size="0",
                 filled_price=None,
             )
+
+    def balance_snapshot(self) -> Dict[str, Any]:
+        """返回当前余额快照（用于日志/API 观察）。"""
+        if self._poller is None:
+            return {"status": "poller_not_initialized"}
+        return self._poller.snapshot()

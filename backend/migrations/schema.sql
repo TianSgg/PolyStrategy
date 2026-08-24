@@ -460,6 +460,7 @@ CREATE TABLE weather_sweep_events (
   event_slug VARCHAR(255) NULL,
 
   -- ③ 执行记录本身
+  phase ENUM('entry','monitor','exit','exit_risk','exit_force') NOT NULL DEFAULT 'entry',
   step VARCHAR(64) NOT NULL,
   sequence_no INT UNSIGNED NOT NULL,
   detail JSON NOT NULL,
@@ -469,6 +470,7 @@ CREATE TABLE weather_sweep_events (
   UNIQUE KEY uq_event_seq (event_id, sequence_no),
   KEY idx_owner_wallet (owner_user_id, proxy_wallet, occurred_at DESC),
   KEY idx_config_event (config_id, event_id),
+  KEY idx_phase (phase),
   KEY idx_token (token_id, occurred_at DESC),
   KEY idx_event_slug (event_slug, occurred_at DESC),
   KEY idx_occurred (occurred_at DESC)

@@ -5,8 +5,8 @@ import json
 import logging
 from typing import Any, Callable, Coroutine, Protocol
 
-from strategy_runtime.interfaces import Signal
-from toolkit.signals.dedup import TTLDeduplicator
+from base_strategy.interfaces import Signal
+from base_strategy.toolkit.signals.dedup import TTLDeduplicator
 
 logger = logging.getLogger(__name__)
 

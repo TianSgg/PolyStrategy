@@ -7,10 +7,10 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from strategy_runtime.container import SignalSourceConfig, StrategyContainer
-from strategy_runtime.instance_manager import InstanceManager
-from strategy_runtime.interfaces import BaseStrategy, StrategyContext
-from strategy_runtime.state_store import MySQLStateStore
+from base_strategy.container import SignalSourceConfig, StrategyContainer
+from base_strategy.instance_manager import InstanceManager
+from base_strategy.interfaces import BaseStrategy, StrategyContext
+from base_strategy.state_store import MySQLStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ def _create_single_instance_app(
             self._run_id = str(uuid.uuid4())
 
         async def start(self):
-            from toolkit.signals.ws_client import SignalWSClient
+            from base_strategy.toolkit.signals.ws_client import SignalWSClient
             import asyncio
 
             state_store = MySQLStateStore()

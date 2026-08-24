@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
-from toolkit.market.market_data import MarketData
+from base_strategy.toolkit.market.market_data import MarketData
 
 logger = logging.getLogger(__name__)
 

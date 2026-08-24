@@ -16,10 +16,10 @@ load_dotenv(_backend_dir / f".env.{_env}", override=True)
 from shared.logging_config import setup_logging
 setup_logging("strategy_weather_sweep")
 
-from strategy_runtime.app_factory import create_app
-from strategy_runtime.container import SignalSourceConfig
+from base_strategy.app_factory import create_app
+from base_strategy.container import SignalSourceConfig
 from strategy_weather_sweep.strategy import SweepStrategy
-from toolkit.signals.adapters.weather_adapter import WeatherSweepAdapter
+from base_strategy.toolkit.signals.adapters.weather_adapter import WeatherSweepAdapter
 
 PORT = int(os.getenv("STRATEGY_SWEEP_PORT", "8003"))
 WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")

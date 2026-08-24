@@ -14,10 +14,10 @@ import logging
 from decimal import Decimal
 from typing import Optional
 
-from strategy_runtime.interfaces import BaseStrategy, Signal, StrategyContext
-from toolkit.execution.account_ledger import AccountLedger
-from toolkit.market.tick_verifier import TickVerifier
-from toolkit.risk.stop_loss import StopLossMonitor
+from base_strategy.interfaces import BaseStrategy, Signal, StrategyContext
+from base_strategy.toolkit.execution.account_ledger import AccountLedger
+from base_strategy.toolkit.market.tick_verifier import TickVerifier
+from base_strategy.toolkit.risk.stop_loss import StopLossMonitor
 
 logger = logging.getLogger(__name__)
 

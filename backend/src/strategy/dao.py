@@ -196,15 +196,18 @@ class WeatherSweepEventDAO:
 
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = f"""
-            SELECT event_id, config_id, owner_user_id, proxy_wallet,
-                   signal_id, token_id, market_slug, event_slug,
-                   MIN(occurred_at) AS started_at,
-                   MAX(occurred_at) AS ended_at,
-                   COUNT(*) AS step_count
-            FROM {self.TABLE}
+            SELECT e.event_id, e.config_id, e.owner_user_id, e.proxy_wallet,
+                   e.signal_id, e.token_id, e.market_slug, e.event_slug,
+                   MIN(e.occurred_at) AS started_at,
+                   MAX(e.occurred_at) AS ended_at,
+                   COUNT(*) AS step_count,
+                   (SELECT phase FROM {self.TABLE} t
+                    WHERE t.event_id = e.event_id
+                    ORDER BY t.sequence_no DESC LIMIT 1) AS final_phase
+            FROM {self.TABLE} e
             WHERE {where}
-            GROUP BY event_id, config_id, owner_user_id, proxy_wallet,
-                     signal_id, token_id, market_slug, event_slug
+            GROUP BY e.event_id, e.config_id, e.owner_user_id, e.proxy_wallet,
+                     e.signal_id, e.token_id, e.market_slug, e.event_slug
             ORDER BY started_at DESC
             LIMIT %s OFFSET %s
         """
