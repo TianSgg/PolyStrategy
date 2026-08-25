@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  consul:
+    image: hashicorp/consul:1.17
+    container_name: polystrategy-consul
+    ports:
+      - "8500:8500"
+      - "8600:8600/udp"
+    command: "agent -server -bootstrap-expect=1 -ui -client=0.0.0.0 -datacenter=dc1"
+    volumes:
+      - consul-data:/consul/data
+      - ./consul/config.json:/consul/config/config.json:ro
+    networks:
+      - polystrategy
+    restart: unless-stopped
+
+  traefik:
+    image: traefik:v3.1
+    container_name: polystrategy-traefik
+    ports:
+      - "8000:8000"
+      - "8080:8080"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+    depends_on:
+      consul:
+        condition: service_started
+    networks:
+      - polystrategy
+    restart: unless-stopped
+
+volumes:
+  consul-data:
+
+networks:
+  polystrategy:
+    name: polystrategy
+    driver: bridge

@@ -1,0 +1,14 @@
+http:
+  middlewares:
+    forward-auth:
+      forwardAuth:
+        address: "http://auth-service:8010/auth/verify"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "X-User-Id"
+          - "X-User-Role"
+          - "X-Username"
+
+    auth-public:
+      stripPrefix:
+        prefixes: []

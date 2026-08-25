@@ -1,0 +1,24 @@
+entryPoints:
+  web:
+    address: ":8000"
+
+api:
+  dashboard: true
+  insecure: true
+
+providers:
+  consulCatalog:
+    endpoint:
+      address: "http://consul:8500"
+    exposedByDefault: false
+    prefix: "traefik"
+    connectByDefault: false
+
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+log:
+  level: INFO
+
+accessLog: {}
