@@ -1,4 +1,4 @@
-的哥#!/usr/bin/env bash
+#!/usr/bin/env bash
 #
 # PolyStrategy 全栈启动脚本
 #
@@ -28,12 +28,14 @@ echo "Using Python: $PYTHON"
 
 BACKEND_SERVICES=(
     # 名称|模块|端口|额外环境变量
+    "auth|auth_service.app|8010|"
+    "account|account_service.app|8011|"
+    "strategy_config|strategy_config_service.app|8012|"
     "signal_weather|signal_weather_orderbook.app|8001|"
     "signal_leader|signal_leader_activity.app|8002|"
     "strategy_sweep|strategy_weather_sweep.app|8003|"
     "strategy_leader|strategy_leader.app|8004|"
     "strategy_sweep_leader|strategy_sweep_leader.app|8005|"
-    "gateway|main_gateway|8000|"
 )
 
 # ─── 工具函数 ────────────────────────────────────────────────────────────────
@@ -48,11 +50,7 @@ start_backend_service() {
     fi
 
     local cmd
-    if [ "$module" = "main_gateway" ]; then
-        cmd="cd '$BACKEND_DIR' && PYTHONPATH='$BACKEND_DIR/src' $PYTHON main.py"
-    else
-        cmd="cd '$BACKEND_DIR/src' && $extra_env PYTHONPATH='$BACKEND_DIR/src' $PYTHON -m $module"
-    fi
+    cmd="cd '$BACKEND_DIR/src' && $extra_env PYTHONPATH='$BACKEND_DIR/src' $PYTHON -m $module"
 
     # 服务自行写日志到 logs/<service_name>/，这里只捕获启动失败的 stderr
     bash -c "nohup bash -c \"$cmd\" > /dev/null 2>&1 & echo \$! > '$pid_file'"
@@ -129,6 +127,14 @@ case "${1:-start}" in
     start)
         echo "═══ PolyStrategy — Starting all services ═══"
         echo ""
+        echo "Core services (auth, account, strategy-config):"
+        for svc in "${BACKEND_SERVICES[@]}"; do
+            IFS='|' read -r name module port extra_env <<< "$svc"
+            [[ "$name" == auth || "$name" == account || "$name" == strategy_config ]] && start_backend_service "$name" "$module" "$port" "$extra_env"
+        done
+        sleep 1
+
+        echo ""
         echo "Signal services:"
         for svc in "${BACKEND_SERVICES[@]}"; do
             IFS='|' read -r name module port extra_env <<< "$svc"
@@ -144,21 +150,15 @@ case "${1:-start}" in
         done
 
         echo ""
-        echo "Gateway:"
-        for svc in "${BACKEND_SERVICES[@]}"; do
-            IFS='|' read -r name module port extra_env <<< "$svc"
-            [[ "$name" == "gateway" ]] && start_backend_service "$name" "$module" "$port" "$extra_env"
-        done
-
-        echo ""
         echo "Frontend:"
         start_frontend
 
         echo ""
         echo "═══ All services started ═══"
-        echo "  Frontend:  http://localhost:5173"
-        echo "  Gateway:   http://localhost:8000"
-        echo "  Logs:      $ROOT_DIR/logs/<service_name>/"
+        echo "  Frontend:   http://localhost:5173"
+        echo "  Traefik:    http://localhost:8000 (需单独启动 infra)"
+        echo "  Consul UI:  http://localhost:8500"
+        echo "  Logs:       $ROOT_DIR/logs/<service_name>/"
         ;;
     stop)
         echo "═══ PolyStrategy — Stopping all services ═══"
