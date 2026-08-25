@@ -50,7 +50,7 @@ class AuthUser:
         return {"id": self.id, "username": self.username, "role": self.role, "enabled": self.enabled}
 
 
-def _extract_token(request: Request) -> str | None:
+def _extract_token(request: Request) -> Optional[str]:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[7:]

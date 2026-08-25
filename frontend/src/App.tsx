@@ -33,6 +33,7 @@ function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [showChangePwd, setShowChangePwd] = useState(false)
+  const [strategyExpanded, setStrategyExpanded] = useState(true)
 
   // Layout global state
   // Connection states
@@ -167,13 +168,41 @@ function App() {
             <span style={styles.navIcon}>💳</span>
             账户管理
           </button>
+
+          {/* 策略（可展开） */}
           <button
-            onClick={() => setCurrentPage('copytrading')}
-            style={currentPage === 'copytrading' ? theme.navItemActive : theme.navItem}
+            onClick={() => setStrategyExpanded(!strategyExpanded)}
+            style={['copytrading', 'dashboard'].includes(currentPage) && !strategyExpanded
+              ? theme.navItemActive : theme.navItem}
           >
-            <span style={styles.navIcon}>📋</span>
-            跟单策略
+            <span style={styles.navIcon}>🎯</span>
+            策略
+            <span style={{
+              marginLeft: 'auto',
+              fontSize: '12px',
+              transition: 'transform 0.2s',
+              transform: strategyExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            }}>▶</span>
           </button>
+          {strategyExpanded && (
+            <div style={styles.subNav}>
+              <button
+                onClick={() => setCurrentPage('copytrading')}
+                style={currentPage === 'copytrading' ? theme.navItemActive : theme.navItem}
+              >
+                <span style={styles.navIcon}>📋</span>
+                跟单策略
+              </button>
+              <button
+                onClick={() => setCurrentPage('dashboard')}
+                style={currentPage === 'dashboard' ? theme.navItemActive : theme.navItem}
+              >
+                <span style={styles.navIcon}>🌡</span>
+                Weather Sweep
+              </button>
+            </div>
+          )}
+
           <button
             onClick={() => setCurrentPage('pnl')}
             style={currentPage === 'pnl' ? theme.navItemActive : theme.navItem}
@@ -187,13 +216,6 @@ function App() {
           >
             <span style={styles.navIcon}>🌤</span>
             天气监控
-          </button>
-          <button
-            onClick={() => setCurrentPage('dashboard')}
-            style={currentPage === 'dashboard' ? theme.navItemActive : theme.navItem}
-          >
-            <span style={styles.navIcon}>🎯</span>
-            策略面板
           </button>
           {(authUser.role === 'admin' || authUser.role === 'root') && (
             <>
@@ -406,6 +428,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   navIcon: {
     fontSize: '18px'
+  },
+  subNav: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+    paddingLeft: '16px',
   },
   content: {
     flex: 1,

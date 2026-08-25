@@ -11,16 +11,12 @@ router = APIRouter(prefix="/api/account", tags=["accounts"])
 
 @router.post("/add")
 async def add_account(data: dict, current_user: AuthUser = Depends(get_current_user)):
-    """添加账户（名字从 Polymarket API 自动查询）"""
+    """添加账户（签名类型自动检测，名字从 Polymarket API 自动查询）"""
     private_key = data.get("private_key", "")
     if not private_key:
         raise HTTPException(status_code=400, detail="private_key is required")
     builder_code = data.get("builder_code") or None
-    if "signature_type" not in data:
-        raise HTTPException(status_code=400, detail="signature_type is required")
-    signature_type = int(data["signature_type"])
-    if signature_type not in (2, 3):
-        raise HTTPException(status_code=400, detail="signature_type must be 2 or 3")
+    signature_type = int(data["signature_type"]) if "signature_type" in data else None
     try:
         return await asyncio.to_thread(get_account_service().add_account, private_key, owner_user_id=current_user.id, signature_type=signature_type, builder_code=builder_code)
     except ValueError as e:

@@ -42,8 +42,6 @@ export default function Account({ darkMode, visible, refreshKey = 0, onAccountsL
   const [positions, setPositions] = useState<Record<number, Position[]>>({})
   const [showAddForm, setShowAddForm] = useState(false)
   const [newPrivateKey, setNewPrivateKey] = useState('')
-  const [newSignatureType, setNewSignatureType] = useState<number>(2)
-  const [newBuilderCode, setNewBuilderCode] = useState('')
   const [showBuilderCodeModal, setShowBuilderCodeModal] = useState(false)
   const [builderCodeModalAccount, setBuilderCodeModalAccount] = useState<Account | null>(null)
   const [builderCodeInput, setBuilderCodeInput] = useState('')
@@ -114,23 +112,20 @@ export default function Account({ darkMode, visible, refreshKey = 0, onAccountsL
     setLoading(true)
     setError('')
     try {
-      const body: Record<string, any> = { private_key: newPrivateKey, signature_type: newSignatureType }
-      if (newBuilderCode.trim()) {
-        body.builder_code = newBuilderCode.trim()
-      }
       const res = await apiFetch('/api/account/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ private_key: newPrivateKey })
       })
-      if (!res.ok) throw new Error('Failed to add account')
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'Failed to add account')
+      }
       setNewPrivateKey('')
-      setNewSignatureType(2)
-      setNewBuilderCode('')
       setShowAddForm(false)
       fetchAccounts()
-    } catch (e) {
-      setError('添加失败: ' + e)
+    } catch (e: any) {
+      setError('添加失败: ' + (e.message || e))
     } finally {
         setLoading(false)
     }
@@ -226,34 +221,16 @@ export default function Account({ darkMode, visible, refreshKey = 0, onAccountsL
                 className="form-input"
                 placeholder="0x..."
               />
-            </div>
-            <div className="form-group">
-              <label className="form-label">签名类型</label>
-              <select
-                value={newSignatureType}
-                onChange={e => setNewSignatureType(Number(e.target.value))}
-                className="form-input"
-              >
-                <option value={2}>Type 2 (SAFE / Proxy)</option>
-                <option value={3}>Type 3 (POLY_1271)</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Builder Code（可选）</label>
-              <input
-                type="text"
-                value={newBuilderCode}
-                onChange={e => setNewBuilderCode(e.target.value)}
-                className="form-input"
-                placeholder="0x... (bytes32)"
-              />
+              <span style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px', display: 'block' }}>
+                输入 Polymarket 账户的私钥，签名类型将自动检测
+              </span>
             </div>
             {error && <div className="error-msg">{error}</div>}
             <div className="form-actions">
               <button onClick={handleAddAccount} disabled={loading} className="btn btn-primary">
                 {loading ? '添加中...' : '添加'}
               </button>
-              <button onClick={() => { setShowAddForm(false); setError(''); setNewBuilderCode('') }} className="btn btn-outline">
+              <button onClick={() => { setShowAddForm(false); setError('') }} className="btn btn-outline">
                 取消
               </button>
             </div>
@@ -288,11 +265,11 @@ export default function Account({ darkMode, visible, refreshKey = 0, onAccountsL
                     </div>
                     {accountSummary[account.id] && (
                       <div style={{ display: 'flex', gap: '16px', marginLeft: '16px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: '13px' }}>
-                        <span style={{ color: 'var(--success-text)' }}>
-                          持仓 ${accountSummary[account.id].totalPositionValue?.toFixed(2)}
+                        <span style={{ color: 'var(--success-text)', fontWeight: 500 }}>
+                          Portfolio ${accountSummary[account.id].total_value?.toFixed(2)}
                         </span>
                         <span style={{ color: 'var(--success-text)' }}>
-                          总金额 ${accountSummary[account.id].total_value?.toFixed(2)}
+                          Cash ${accountSummary[account.id].balance?.toFixed(2)}
                         </span>
                       </div>
                     )}

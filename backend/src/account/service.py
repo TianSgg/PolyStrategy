@@ -23,16 +23,68 @@ DATA_API_URL = "https://data-api.polymarket.com"
 GAMMA_API_URL = "https://gamma-api.polymarket.com"
 
 
-def get_proxy_wallet(eoa_address: str) -> str:
-    """从 Gamma API 获取代理钱包地址"""
+def get_proxy_wallet_and_type(eoa_address: str, private_key: str) -> tuple:
+    """从 Gamma API 获取代理钱包地址，通过余额查询自动检测签名类型。
+
+    返回 (proxy_wallet, signature_type)。
+    signature_type: 0=EOA, 1=POLY_PROXY, 2=GNOSIS_SAFE, 3=DEPOSIT_WALLET
+    """
     try:
         resp = requests.get(f"https://gamma-api.polymarket.com/public-profile?address={eoa_address}", timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("proxyWallet", eoa_address)
+            proxy_wallet = data.get("proxyWallet", eoa_address)
+        else:
+            return None, None
     except Exception as e:
         logger.error(f"Failed to get proxy wallet: {e}")
-    return None
+        return None, None
+
+    detected_type = _detect_signature_type(private_key, proxy_wallet)
+    return proxy_wallet, detected_type
+
+
+def _detect_signature_type(private_key: str, proxy_wallet: str) -> int:
+    """通过调用 get_balance_allowance 自动检测签名类型。
+
+    依次尝试 Type 3→2→1→0，哪个返回有效余额或 allowance 就是正确的。
+    优先检测 Type 3（新账户最常见）。
+    """
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+
+    temp_client = ClobClient("https://clob.polymarket.com", chain_id=137, key=private_key)
+    try:
+        creds = temp_client.derive_api_key(0)
+    except Exception as e:
+        logger.warning(f"[Account] derive_api_key failed during type detection: {e}")
+        return 2  # fallback
+
+    # 优先检测 Type 3（新账户），然后 2, 1, 0
+    for sig_type in [3, 2, 1, 0]:
+        try:
+            client = ClobClient(
+                "https://clob.polymarket.com",
+                chain_id=137,
+                key=private_key,
+                signature_type=sig_type,
+                funder=proxy_wallet if sig_type != 0 else None,
+            )
+            client.set_api_creds(creds)
+            result = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+            balance = int(result.get("balance", "0"))
+            allowances = result.get("allowances", {})
+            has_allowance = any(int(v) > 0 for v in allowances.values())
+            if balance > 0 or has_allowance:
+                logger.info(f"[Account] Detected signature_type={sig_type} (balance={balance})")
+                return sig_type
+        except Exception as e:
+            logger.debug(f"[Account] Type {sig_type} check failed: {e}")
+            continue
+
+    # 全部为 0 — 可能是新账户未充值，默认 Type 3（当前最常见）
+    logger.info("[Account] All types returned zero balance, defaulting to type 3")
+    return 3
 
 
 class AccountService:
@@ -136,8 +188,8 @@ class AccountService:
             logger.warning(f"[Account] Failed to fetch profile for {address[:8]}...: {e}")
         return ""
 
-    def add_account(self, private_key: str, owner_user_id: Optional[int], signature_type: int, builder_code: Optional[str] = None) -> dict:
-        """添加账户，失败时抛出异常供调用方重试"""
+    def add_account(self, private_key: str, owner_user_id: Optional[int], signature_type: Optional[int] = None, builder_code: Optional[str] = None) -> dict:
+        """添加账户，失败时抛出异常供调用方重试。signature_type 为 None 时自动检测。"""
         # 1. 从私钥解析 EOA 地址
         private_key_hex = private_key.replace("0x", "")
         try:
@@ -149,10 +201,12 @@ class AccountService:
         key = keys.PrivateKey(private_key_bytes)
         eoa_address = key.public_key.to_checksum_address()
 
-        # 2. 获取代理钱包地址
-        proxy_wallet = get_proxy_wallet(eoa_address)
+        # 2. 获取代理钱包地址 + 自动检测签名类型
+        proxy_wallet, detected_type = get_proxy_wallet_and_type(eoa_address, private_key)
         if not proxy_wallet:
             raise RuntimeError(f"无法获取代理钱包地址，请检查网络后重试")
+        if signature_type is None:
+            signature_type = detected_type if detected_type is not None else 3
 
         proxy_wallet = proxy_wallet.lower()
 
