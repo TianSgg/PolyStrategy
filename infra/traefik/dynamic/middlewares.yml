@@ -2,7 +2,7 @@ http:
   middlewares:
     forward-auth:
       forwardAuth:
-        address: "http://auth-service:8010/auth/verify"
+        address: "http://127.0.0.1:8010/auth/verify"
         trustForwardHeader: true
         authResponseHeaders:
           - "X-User-Id"
