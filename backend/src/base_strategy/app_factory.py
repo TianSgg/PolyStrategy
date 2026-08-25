@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -11,6 +12,7 @@ from base_strategy.container import SignalSourceConfig, StrategyContainer
 from base_strategy.instance_manager import InstanceManager
 from base_strategy.interfaces import BaseStrategy, StrategyContext
 from base_strategy.state_store import MySQLStateStore
+from shared.consul import consul_lifespan
 
 logger = logging.getLogger(__name__)
 
@@ -80,15 +82,18 @@ def _create_multi_instance_app(
         executor_factory=executor_factory,
     )
 
+    service_port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8003")))
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await container.start()
         app.state.container = container
         logger.info("%s started (multi-instance)", service_name)
-        try:
-            yield
-        finally:
-            await container.stop()
+        async with consul_lifespan(service_name, service_port):
+            try:
+                yield
+            finally:
+                await container.stop()
 
     app = FastAPI(title=service_name, lifespan=lifespan)
 
@@ -175,16 +180,18 @@ def _create_single_instance_app(
             }
 
     container = _LegacyContainer()
+    service_port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8003")))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await container.start()
         app.state.container = container
         logger.info("%s started (single-instance)", service_name)
-        try:
-            yield
-        finally:
-            await container.stop()
+        async with consul_lifespan(service_name, service_port):
+            try:
+                yield
+            finally:
+                await container.stop()
 
     app = FastAPI(title=service_name, lifespan=lifespan)
 

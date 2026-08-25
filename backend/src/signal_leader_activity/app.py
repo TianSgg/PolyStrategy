@@ -42,11 +42,20 @@ _signal_repo = LeaderSignalRepository()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Leader signal service started on port %s", os.getenv("LEADER_SIGNAL_PORT", "8002"))
-    try:
+    from shared.consul import consul_lifespan
+
+    service_port = int(os.getenv("LEADER_SIGNAL_PORT", "8002"))
+    consul_tags = [
+        "traefik.enable=true",
+        "traefik.http.routers.signal-leader.rule=PathPrefix(`/api/signals`)",
+        "traefik.http.routers.signal-leader.entrypoints=web",
+        "traefik.http.routers.signal-leader.middlewares=forward-auth@file",
+    ]
+
+    logger.info("Leader signal service started on port %s", service_port)
+
+    async with consul_lifespan("signal-leader", service_port, tags=consul_tags):
         yield
-    finally:
-        pass
 
 
 app = FastAPI(title="Leader Signal Service", lifespan=lifespan)

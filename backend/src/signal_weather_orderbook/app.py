@@ -69,17 +69,28 @@ async def _broadcast_weather_signal(event_type: str, payload: dict) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from shared.consul import consul_lifespan
+
+    service_port = int(os.getenv("WEATHER_SIGNAL_PORT", "8001"))
+    consul_tags = [
+        "traefik.enable=true",
+        "traefik.http.routers.signal-weather.rule=PathPrefix(`/api/weather`)",
+        "traefik.http.routers.signal-weather.entrypoints=web",
+        "traefik.http.routers.signal-weather.middlewares=forward-auth@file",
+    ]
+
     weather_bootstrap = WeatherBootstrap()
     weather_service = await weather_bootstrap.start(on_broadcast=_broadcast_weather_signal)
     app.state.weather_service = weather_service
     app.state.weather_signal_event_repository = weather_bootstrap.signal_event_repository
 
-    logger.info("Weather signal service started on port %s", os.getenv("WEATHER_SIGNAL_PORT", "8001"))
+    logger.info("Weather signal service started on port %s", service_port)
 
-    try:
-        yield
-    finally:
-        await weather_bootstrap.stop()
+    async with consul_lifespan("signal-weather", service_port, tags=consul_tags):
+        try:
+            yield
+        finally:
+            await weather_bootstrap.stop()
 
 
 app = FastAPI(title="Weather Signal Service", lifespan=lifespan)
