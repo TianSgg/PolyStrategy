@@ -1,0 +1,162 @@
+version: "3.8"
+
+x-common-env: &common-env
+  MYSQL_HOST: ${MYSQL_HOST:-host.docker.internal}
+  MYSQL_PORT: ${MYSQL_PORT:-3306}
+  MYSQL_USER: ${MYSQL_USER:-root}
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+  MYSQL_DATABASE: ${MYSQL_DATABASE:-polystrategy}
+  CONSUL_HTTP_ADDR: http://polystrategy-consul:8500
+  ENV: ${ENV:-dev}
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-dev-secret-change-in-production}
+
+x-common-build: &common-build
+  context: ./backend
+  dockerfile: Dockerfile
+
+services:
+  auth-service:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: auth_service.app
+    container_name: polystrategy-auth
+    ports:
+      - "8010:8010"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: auth-service
+      SERVICE_PORT: "8010"
+    networks:
+      - polystrategy
+    restart: unless-stopped
+
+  account-service:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: account_service.app
+    container_name: polystrategy-account
+    ports:
+      - "8011:8011"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: account-service
+      SERVICE_PORT: "8011"
+    networks:
+      - polystrategy
+    restart: unless-stopped
+
+  strategy-config-service:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: strategy_config_service.app
+    container_name: polystrategy-strategy-config
+    ports:
+      - "8012:8012"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: strategy-config-service
+      SERVICE_PORT: "8012"
+    networks:
+      - polystrategy
+    restart: unless-stopped
+
+  signal-weather:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: signal_weather_orderbook.app
+    container_name: polystrategy-signal-weather
+    ports:
+      - "8001:8001"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: signal-weather
+      SERVICE_PORT: "8001"
+      WEATHER_SIGNAL_PORT: "8001"
+    networks:
+      - polystrategy
+    restart: unless-stopped
+
+  signal-leader:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: signal_leader_activity.app
+    container_name: polystrategy-signal-leader
+    ports:
+      - "8002:8002"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: signal-leader
+      SERVICE_PORT: "8002"
+      LEADER_SIGNAL_PORT: "8002"
+    networks:
+      - polystrategy
+    restart: unless-stopped
+
+  strategy-sweep:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: strategy_weather_sweep.app
+    container_name: polystrategy-strategy-sweep
+    ports:
+      - "8003:8003"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: strategy-sweep
+      SERVICE_PORT: "8003"
+      STRATEGY_SWEEP_PORT: "8003"
+      WEATHER_SIGNAL_WS_URL: ws://polystrategy-signal-weather:8001/ws/signal
+    networks:
+      - polystrategy
+    restart: unless-stopped
+    depends_on:
+      - signal-weather
+
+  strategy-leader:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: strategy_leader.app
+    container_name: polystrategy-strategy-leader
+    ports:
+      - "8004:8004"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: strategy-leader
+      SERVICE_PORT: "8004"
+      LEADER_SIGNAL_WS_URL: ws://polystrategy-signal-leader:8002/ws/signal
+    networks:
+      - polystrategy
+    restart: unless-stopped
+    depends_on:
+      - signal-leader
+
+  strategy-sweep-leader:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: strategy_sweep_leader.app
+    container_name: polystrategy-strategy-sweep-leader
+    ports:
+      - "8005:8005"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: strategy-sweep-leader
+      SERVICE_PORT: "8005"
+      WEATHER_SIGNAL_WS_URL: ws://polystrategy-signal-weather:8001/ws/signal
+      LEADER_SIGNAL_WS_URL: ws://polystrategy-signal-leader:8002/ws/signal
+    networks:
+      - polystrategy
+    restart: unless-stopped
+    depends_on:
+      - signal-weather
+      - signal-leader
+
+networks:
+  polystrategy:
+    external: true
