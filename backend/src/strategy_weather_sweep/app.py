@@ -1,6 +1,7 @@
 """扫单策略微服务入口。
 
-策略自己创建 FastAPI app，自己编排生命周期，按需使用 framework 工具。
+职责：启动编排 — 创建 app、管理生命周期、注册路由。
+不包含业务逻辑（在 service.py）和数据库操作（在 dao.py）。
 """
 import asyncio
 import os
@@ -34,8 +35,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from framework.consul import consul_lifespan
 from framework.instance_pool import InstancePool, InstanceConfig
 from framework.orderbook_ws import OrderBookWS
-from framework.strategy_runtime.event_logger import EventLogger
-from framework.strategy_runtime.order_executor import OrderExecutor
 from framework.strategy_runtime.signal_client import SignalWSClient
 from framework.strategy_runtime.weather_adapter import WeatherSweepAdapter
 from framework.trading.provider import set_client_provider
@@ -50,18 +49,15 @@ logger = logging.getLogger(__name__)
 PORT = int(os.getenv("STRATEGY_SWEEP_PORT", str(_cfg["service"]["port"])))
 WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")
 
-# ==================== 工具实例 ====================
+# ==================== 共享工具 ====================
 
 orderbook_ws = OrderBookWS()
 _config_dao = WeatherSweepConfigDAO()
 
-# ==================== 多实例管理 ====================
-
-_strategies: dict[int, SweepStrategy] = {}
+# ==================== 实例池（委托 service.py 工厂方法） ====================
 
 
 def _load_configs() -> list[InstanceConfig]:
-    """从 DB 加载所有 enabled 配置。"""
     rows = _config_dao.list_all_enabled()
     return [
         InstanceConfig(id=r["id"], version=r["params_version"], data=r)
@@ -70,44 +66,11 @@ def _load_configs() -> list[InstanceConfig]:
 
 
 async def _create_instance(cfg: InstanceConfig) -> SweepStrategy:
-    """根据配置创建一个策略实例。"""
-    data = cfg.data
-    proxy_wallet = data["proxy_wallet"]
-
-    executor = OrderExecutor(proxy_wallet=proxy_wallet)
-    await executor.ensure_poller(proxy_wallet)
-
-    event_logger = EventLogger(
-        table=_cfg["strategy"]["events_table"],
-        owner_user_id=data["owner_user_id"],
-        proxy_wallet=proxy_wallet,
-        config_id=cfg.id,
-        config_snapshot=data.get("params"),
-    )
-
-    strategy = SweepStrategy()
-    await strategy.start_with_tools(
-        config=data["params"],
-        executor=executor,
-        orderbook_ws=orderbook_ws,
-        event_logger=event_logger,
-        proxy_wallet=proxy_wallet,
-    )
-
-    _strategies[cfg.id] = strategy
-    logger.info("Instance %d started: wallet=%s", cfg.id, proxy_wallet[:10])
-    return strategy
+    return await SweepStrategy.create(cfg.data, orderbook_ws)
 
 
 async def _destroy_instance(strategy: SweepStrategy, reason: str) -> None:
-    """强制退出并停止一个策略实例。"""
-    if hasattr(strategy, "force_exit"):
-        await strategy.force_exit(reason)
-    await strategy.stop()
-    for cid, s in list(_strategies.items()):
-        if s is strategy:
-            _strategies.pop(cid, None)
-            break
+    await strategy.destroy(reason)
 
 
 pool = InstancePool(
@@ -120,8 +83,7 @@ pool = InstancePool(
 
 
 async def _dispatch_signal(signal) -> None:
-    """将信号分发给所有运行中的策略实例。"""
-    for strategy in list(_strategies.values()):
+    for strategy in pool.all_instances():
         try:
             await strategy.on_signal(signal)
         except Exception:
@@ -173,16 +135,12 @@ app.include_router(strategy_router)
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "strategy": "SweepStrategy",
-        **pool.health(),
-    }
+    return {"strategy": "SweepStrategy", **pool.health()}
 
 
 @app.get("/api/status")
 async def status():
-    return health()
+    return await health()
 
 
 @app.post("/internal/reload")

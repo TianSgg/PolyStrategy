@@ -9,6 +9,21 @@ http:
           - "X-User-Role"
           - "X-Username"
 
+    dashboard-auth:
+      basicAuth:
+        # 生成: htpasswd -nb admin your_password
+        users:
+          - "admin:$apr1$PLACEHOLDER$REPLACE_WITH_HTPASSWD_OUTPUT"
+
     auth-public:
       stripPrefix:
         prefixes: []
+
+  routers:
+    dashboard:
+      rule: "PathPrefix(`/api`) || PathPrefix(`/dashboard`)"
+      entryPoints:
+        - web
+      service: api@internal
+      middlewares:
+        - dashboard-auth

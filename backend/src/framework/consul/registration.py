@@ -10,6 +10,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 CONSUL_HTTP_ADDR = os.getenv("CONSUL_HTTP_ADDR", "http://localhost:8500")
+CONSUL_HTTP_TOKEN = os.getenv("CONSUL_HTTP_TOKEN", "")
 
 
 def _get_local_ip() -> str:
@@ -57,11 +58,13 @@ class ConsulRegistration:
                 "DeregisterCriticalServiceAfter": "60s",
             },
         }
+        headers = {"X-Consul-Token": CONSUL_HTTP_TOKEN} if CONSUL_HTTP_TOKEN else {}
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.put(
                     f"{CONSUL_HTTP_ADDR}/v1/agent/service/register",
                     json=payload,
+                    headers=headers,
                     timeout=5,
                 )
                 if resp.status_code == 200:
@@ -75,10 +78,12 @@ class ConsulRegistration:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
+        headers = {"X-Consul-Token": CONSUL_HTTP_TOKEN} if CONSUL_HTTP_TOKEN else {}
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.put(
                     f"{CONSUL_HTTP_ADDR}/v1/agent/service/deregister/{self.service_id}",
+                    headers=headers,
                     timeout=5,
                 )
                 if resp.status_code == 200:

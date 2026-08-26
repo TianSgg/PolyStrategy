@@ -1,5 +1,7 @@
 """策略 1: Sweep 信号下单 — BUY@0.99 → tick exit SELL@0.999。
 
+职责：策略业务逻辑 + 实例工厂方法。
+
 流程:
   1. 收到合格 sweep → 快速 BUY@0.99 固定份额
   2. 启动风控 + 订单簿监听
@@ -19,7 +21,9 @@ import time
 from decimal import Decimal
 from typing import Any, Optional
 
+from framework.strategy_runtime.event_logger import EventLogger
 from framework.strategy_runtime.interfaces import Signal
+from framework.strategy_runtime.order_executor import OrderExecutor
 from framework.strategy_runtime.tick_verifier import TickVerifier
 from strategy_weather_sweep.internal.risk_monitor import SweepRiskMonitor
 
@@ -29,7 +33,51 @@ logger = logging.getLogger(__name__)
 class SweepStrategy:
     """策略 1: 扫单信号 → BUY@0.99 → tick exit SELL@0.999。"""
 
-    async def start_with_tools(
+    # ==================== 工厂方法 ====================
+
+    EVENTS_TABLE = "weather_sweep_events"
+
+    @classmethod
+    async def create(
+        cls,
+        config_data: dict[str, Any],
+        orderbook_ws: Any,
+    ) -> SweepStrategy:
+        """工厂方法 — 根据一条 DB 配置创建完整策略实例。
+
+        策略自己知道需要什么工具，外部不需要关心内部细节。
+        """
+        proxy_wallet = config_data["proxy_wallet"]
+
+        executor = OrderExecutor(proxy_wallet=proxy_wallet)
+        await executor.ensure_poller(proxy_wallet)
+
+        event_logger = EventLogger(
+            table=cls.EVENTS_TABLE,
+            owner_user_id=config_data["owner_user_id"],
+            proxy_wallet=proxy_wallet,
+            config_id=config_data["id"],
+            config_snapshot=config_data.get("params"),
+        )
+
+        instance = cls()
+        await instance._init_tools(
+            config=config_data["params"],
+            executor=executor,
+            orderbook_ws=orderbook_ws,
+            event_logger=event_logger,
+            proxy_wallet=proxy_wallet,
+        )
+        return instance
+
+    async def destroy(self, reason: str) -> None:
+        """销毁实例：强制退出 + 释放资源。"""
+        await self.force_exit(reason)
+        await self.stop()
+
+    # ==================== 初始化 ====================
+
+    async def _init_tools(
         self,
         config: dict[str, Any],
         executor: Any,
@@ -37,7 +85,7 @@ class SweepStrategy:
         event_logger: Any = None,
         proxy_wallet: str = "",
     ) -> None:
-        """使用独立工具初始化策略。"""
+        """内部初始化 — 由工厂方法调用。"""
         self._config = config
         self._executor = executor
         self._orderbook_ws = orderbook_ws
