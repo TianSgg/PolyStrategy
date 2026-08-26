@@ -16,9 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from account.api import router as account_router
-from market.api import router as market_router
-from shared.consul import consul_lifespan
+from account_service.api import router as account_router
+from account_service.market_api import router as market_router
+from framework.consul import consul_lifespan
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,13 @@
+service:
+  name: account-service
+  port: 8011
+
+consul:
+  tags:
+    - "traefik.enable=true"
+    - "traefik.http.routers.account.rule=PathPrefix(`/api/account`) || PathPrefix(`/api/market`)"
+    - "traefik.http.routers.account.entrypoints=web"
+    - "traefik.http.routers.account.middlewares=forward-auth@file"
+  health_path: /health
+
+dependencies: []
