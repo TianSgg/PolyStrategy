@@ -19,11 +19,13 @@ from framework.strategy_runtime.app_factory import create_app
 from framework.strategy_runtime.container import SignalSourceConfig
 from strategy_leader.strategy import LeaderStrategy
 from framework.strategy_runtime.leader_adapter import LeaderBuyAdapter
+from account_service.service import get_account_service
 
 PORT = int(os.getenv("STRATEGY_LEADER_PORT", "8004"))
 LEADER_SIGNAL_URL = os.getenv("LEADER_SIGNAL_WS_URL", "ws://localhost:8002/ws/signals")
 
 app = create_app(
+    client_provider=get_account_service(),
     strategy_class=LeaderStrategy,
     config={
         "initial_cash": os.getenv("STRATEGY_INITIAL_CASH", "1000"),

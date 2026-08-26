@@ -7,6 +7,8 @@ from py_clob_client_v2.clob_types import PartialCreateOrderOptions, OrderType, O
 from py_clob_client_v2.clob_types import OrderArgsV2 as OrderArgs
 from py_clob_client_v2.order_builder.constants import BUY, SELL
 
+from framework.trading.provider import get_client
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_GTD_EXPIRATION_SEC = 30 * 60
@@ -22,11 +24,7 @@ def place_limit_order(
     neg_risk: bool = None,
     gtd_expiration_sec: int = None,
 ) -> Optional[dict]:
-    from account_service.service import get_account_service
-    service = get_account_service()
-    client = service.get_or_create_clob_client(proxy_wallet)
-    if not client:
-        raise RuntimeError(f"No client for {service.get_acc_name(proxy_wallet)}")
+    client = get_client(proxy_wallet)
 
     if side == "BUY":
         exp_sec = gtd_expiration_sec or DEFAULT_GTD_EXPIRATION_SEC
@@ -45,9 +43,5 @@ def place_limit_order(
 
 
 def cancel_order(proxy_wallet: str, order_id: str) -> dict:
-    from account_service.service import get_account_service
-    service = get_account_service()
-    client = service.get_or_create_clob_client(proxy_wallet)
-    if not client:
-        raise RuntimeError(f"No client for {service.get_acc_name(proxy_wallet)}")
+    client = get_client(proxy_wallet)
     return client.cancel_order(OrderPayload(orderID=order_id))

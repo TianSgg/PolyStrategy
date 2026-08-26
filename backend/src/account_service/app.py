@@ -34,6 +34,10 @@ CONSUL_TAGS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from account_service.service import get_account_service
+    from framework.trading.provider import set_client_provider
+    set_client_provider(get_account_service())
+
     logger.info(f"[AccountService] Started on port {SERVICE_PORT}")
     async with consul_lifespan(SERVICE_NAME, SERVICE_PORT, tags=CONSUL_TAGS):
         yield

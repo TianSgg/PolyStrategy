@@ -20,12 +20,14 @@ from framework.strategy_runtime.container import SignalSourceConfig
 from strategy_sweep_leader.strategy import SweepLeaderStrategy
 from framework.strategy_runtime.leader_adapter import LeaderBuyAdapter
 from framework.strategy_runtime.weather_adapter import WeatherSweepAdapter
+from account_service.service import get_account_service
 
 PORT = int(os.getenv("STRATEGY_SWEEP_LEADER_PORT", "8005"))
 WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")
 LEADER_SIGNAL_URL = os.getenv("LEADER_SIGNAL_WS_URL", "ws://localhost:8002/ws/signals")
 
 app = create_app(
+    client_provider=get_account_service(),
     strategy_class=SweepLeaderStrategy,
     config={
         "initial_cash": os.getenv("STRATEGY_INITIAL_CASH", "1000"),

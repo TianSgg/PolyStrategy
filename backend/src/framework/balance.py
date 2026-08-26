@@ -22,12 +22,12 @@ async def fetch_position_value(addr: str) -> float:
 
 
 def fetch_clob_balance(proxy_wallet: str) -> float:
-    from account_service.service import get_account_service
+    from framework.trading.provider import get_client
     from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
 
-    service = get_account_service()
-    client = service.get_or_create_clob_client(proxy_wallet)
-    if not client:
+    try:
+        client = get_client(proxy_wallet)
+    except RuntimeError:
         return 0.0
     try:
         result = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))

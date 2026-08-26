@@ -13,6 +13,7 @@ from framework.strategy_runtime.instance_manager import InstanceManager
 from framework.strategy_runtime.interfaces import BaseStrategy, StrategyContext
 from framework.strategy_runtime.state_store import MySQLStateStore
 from framework.consul import consul_lifespan
+from framework.trading.provider import set_client_provider
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +35,17 @@ def create_app(
     # 扩展
     extra_routers: list | None = None,
     consul_tags: list[str] | None = None,
+    # 依赖注入
+    client_provider: Any = None,
 ) -> FastAPI:
     """创建标准化的策略微服务 FastAPI 应用。
 
     多实例模式：指定 strategy_type + config_table，从 DB 加载配置。
     单实例模式（兼容）：指定 config + proxy_wallet，使用环境变量配置。
     """
+
+    if client_provider:
+        set_client_provider(client_provider)
 
     if strategy_type and config_table:
         return _create_multi_instance_app(

@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from account_service.service import get_account_service
+from framework.trading.provider import get_client
 from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
 
 logger = logging.getLogger(__name__)
@@ -154,9 +154,9 @@ class BalancePoller:
 
     async def _poll_balance_and_orders(self) -> None:
         """轮询 CLOB: balance_allowance + open_orders。"""
-        account_service = get_account_service()
-        client = account_service.get_or_create_clob_client(self._proxy_wallet)
-        if not client:
+        try:
+            client = get_client(self._proxy_wallet)
+        except RuntimeError:
             logger.warning("[BalancePoller] no client for %s", self._proxy_wallet[:8])
             return
 
