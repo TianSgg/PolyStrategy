@@ -9,9 +9,8 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from signal_weather.dao import WeatherSignalEventRepository
 from signal_weather.types import WeatherSignalRecord
-from signal_weather.service import WeatherOrderBookService
+from signal_weather.service import WeatherService
 
 router = APIRouter(prefix="/api/weather", tags=["weather-orderbook"])
 
@@ -66,12 +65,8 @@ class WeatherOrderbookResponse(BaseModel):
     asks: list[dict]
 
 
-def _service(request: Request) -> WeatherOrderBookService:
+def _service(request: Request) -> WeatherService:
     return request.app.state.weather_service
-
-
-def _signal_event_repository(request: Request) -> WeatherSignalEventRepository:
-    return request.app.state.weather_signal_event_repository
 
 
 def signal_response(record: WeatherSignalRecord) -> WeatherSignalResponse:
@@ -132,7 +127,7 @@ async def weather_event_signals(
                 signals=[signal_response(r) for r in page],
                 next_before_id=page[-1].id if has_more and page else None,
             )
-    records = await _signal_event_repository(request).list_for_event(event_slug, limit + 1, before_id)
+    records = await _service(request).list_event_signals(event_slug, limit + 1, before_id)
     has_more = len(records) > limit
     page = records[:limit]
     return WeatherSignalsResponse(
@@ -151,7 +146,7 @@ async def weather_recent_signals(
     limit: int = Query(default=100, ge=1, le=500),
     before_id: int | None = Query(default=None, ge=1),
 ) -> WeatherRecentSignalsResponse:
-    records = await _signal_event_repository(request).list_recent(limit + 1, before_id)
+    records = await _service(request).list_recent_signals(limit + 1, before_id)
     has_more = len(records) > limit
     page = records[:limit]
     return WeatherRecentSignalsResponse(

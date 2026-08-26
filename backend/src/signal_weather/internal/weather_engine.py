@@ -8,11 +8,11 @@ from datetime import date, datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from .discovery import WeatherDiscovery
+from ._discovery import WeatherDiscovery
 from signal_weather.types import MarketCandidate, WeatherCity
 from signal_weather.types import WeatherEvent
-from .monitor import WeatherOrderBookMonitor
-from .market import SharedMarketWebSocket
+from ._monitor import WeatherOrderBookMonitor
+from .market_websocket import SharedMarketWebSocket
 
 logger = logging.getLogger(__name__)
 EventStartedHandler = Callable[[WeatherCity, str, date, str, Optional[MarketCandidate], bool], Awaitable[None]]
@@ -28,7 +28,7 @@ class DirectionState:
     next_monitor: WeatherOrderBookMonitor | None = None
 
 
-class WeatherCoordinator:
+class WeatherEngine:
     """Owns startup HTTP selection and candidate-market WS advancement."""
     def __init__(
         self,
@@ -515,3 +515,7 @@ class WeatherCoordinator:
         if 0 <= state.index < len(state.candidates):
             return state.candidates[state.index]
         return state.candidates[0] if state.candidates else None
+
+
+# Temporary internal alias for code migrated from the old coordinator name.
+WeatherCoordinator = WeatherEngine

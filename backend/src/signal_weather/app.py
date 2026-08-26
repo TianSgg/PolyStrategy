@@ -1,16 +1,14 @@
 """天气信号独立微服务入口 — port 8001。
 
 职责：
-  - 监听 Polymarket 订单簿变化（WeatherBootstrap）
+  - 监听 Polymarket 订单簿变化
   - 持久化信号到 weather_orderbook_signals
   - 通过 WS /ws/signal 向策略执行服务广播 weather_sweep 信号
   - 提供天气相关 REST API
 """
-import asyncio
 import logging
 import os
 import sys
-import time
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,74 +20,58 @@ if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
 _backend_dir = Path(__file__).resolve().parent.parent.parent
-load_dotenv(_backend_dir / ".env", override=True)
+_env = os.getenv("ENV", "dev")
+load_dotenv(_backend_dir / f".env.{_env}", override=True)
 
 from framework.logging import setup_logging
 setup_logging("signal_weather")
+from framework.db import MYSQL_CONFIG
+from framework.config_loader import load_service_config
 
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, WebSocket
+import aiohttp
+import asyncmy
 
 from signal_weather.api import router as weather_router
-from signal_weather.bootstrap import WeatherBootstrap
-from signal_weather.ws_hub import WeatherSignalHub
+from signal_weather.dao import WeatherDao
+from signal_weather.internal.polymarket_client import PolymarketMarketClient
+from signal_weather.service import WeatherService
 
-signal_hub = WeatherSignalHub()
-
-
-async def _broadcast_weather_signal(event_type: str, payload: dict) -> None:
-    """Coordinator 回调 — 将事件转为 WS 信号格式并广播到策略服务。"""
-    asset = payload.get("asset", {})
-    current_ob = payload.get("current_orderbook", {})
-    event_slug = asset.get("event_slug", "")
-    direction = event_slug.split("-temperature-in-", 1)[0] if "-temperature-in-" in event_slug else ""
-
-    signal_dict = {
-        "event_id": f"{event_slug}:{asset.get('asset_id', '')}:{int(time.time() * 1000)}",
-        "event_type": event_type,
-        "token_id": asset.get("asset_id", ""),
-        "outcome": asset.get("outcome", ""),
-        "city": asset.get("city", ""),
-        "event_slug": event_slug,
-        "market_slug": asset.get("market_slug"),
-        "temperature_label": asset.get("temperature_label"),
-        "direction": direction,
-        "reason": payload.get("reason", ""),
-        "is_from_main": payload.get("is_from_main", True),
-        "occurred_at_ms": current_ob.get("observed_at_unix_ms", int(time.time() * 1000)),
-        "received_at_ns": time.time_ns(),
-        "orderbook_snapshot": current_ob,
-    }
-    if payload.get("next_candidate_orderbook"):
-        signal_dict["next_candidate_orderbook"] = payload["next_candidate_orderbook"]
-    await signal_hub.broadcast(signal_dict)
-
+SERVICE_CONFIG = load_service_config(Path(__file__).parent)
+SERVICE_NAME = SERVICE_CONFIG["service"]["name"]
+SERVICE_PORT = int(os.getenv("WEATHER_SIGNAL_PORT", SERVICE_CONFIG["service"]["port"]))
+CONSUL_TAGS = SERVICE_CONFIG.get("consul", {}).get("tags", [])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from framework.consul import consul_lifespan
 
-    service_port = int(os.getenv("WEATHER_SIGNAL_PORT", "8001"))
-    consul_tags = [
-        "traefik.enable=true",
-        "traefik.http.routers.signal-weather.rule=PathPrefix(`/api/weather`)",
-        "traefik.http.routers.signal-weather.entrypoints=web",
-        "traefik.http.routers.signal-weather.middlewares=forward-auth@file",
-    ]
+    mysql_pool = await asyncmy.create_pool(
+        host=MYSQL_CONFIG["host"], port=MYSQL_CONFIG["port"], user=MYSQL_CONFIG["user"],
+        password=MYSQL_CONFIG["password"], db=MYSQL_CONFIG["database"], minsize=3,
+        maxsize=10, pool_recycle=1800, autocommit=True, connect_timeout=5,
+    )
+    dao = WeatherDao(mysql_pool)
+    cities = await dao.list_enabled()
+    http_session = aiohttp.ClientSession()
+    service = WeatherService(cities, dao, PolymarketMarketClient(http_session))
+    app.state.weather_service = service
+    app.state.weather_http_session = http_session
+    app.state.weather_mysql_pool = mysql_pool
+    await service.start()
 
-    weather_bootstrap = WeatherBootstrap()
-    weather_service = await weather_bootstrap.start(on_broadcast=_broadcast_weather_signal)
-    app.state.weather_service = weather_service
-    app.state.weather_signal_event_repository = weather_bootstrap.signal_event_repository
+    logger.info("Weather signal service started on port %s", SERVICE_PORT)
 
-    logger.info("Weather signal service started on port %s", service_port)
-
-    async with consul_lifespan("signal-weather", service_port, tags=consul_tags):
+    async with consul_lifespan(SERVICE_NAME, SERVICE_PORT, tags=CONSUL_TAGS):
         try:
             yield
         finally:
-            await weather_bootstrap.stop()
+            await service.stop()
+            await http_session.close()
+            mysql_pool.close()
+            await mysql_pool.wait_closed()
 
 
 app = FastAPI(title="Weather Signal Service", lifespan=lifespan)
@@ -99,7 +81,7 @@ app.include_router(weather_router)
 @app.websocket("/ws/signal")
 async def signal_websocket(ws: WebSocket):
     """策略执行服务连接此端点订阅 weather_sweep 信号。"""
-    await signal_hub.handle_connection(ws)
+    await ws.app.state.weather_service.handle_signal_websocket(ws)
 
 
 @app.get("/health")
@@ -113,5 +95,5 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.getenv("WEATHER_SIGNAL_PORT", "8001")),
+        port=SERVICE_PORT,
     )

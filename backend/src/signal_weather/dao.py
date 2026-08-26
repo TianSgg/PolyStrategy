@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,60 +10,6 @@ from asyncmy.cursors import DictCursor
 
 from signal_weather.types import WeatherCity
 from signal_weather.types import WeatherSignalRecord
-
-CITY_TIMEZONE_MAP: dict[str, str] = {
-    "taipei": "Asia/Taipei",
-    "miami": "America/New_York",
-    "kuala-lumpur": "Asia/Kuala_Lumpur",
-    "paris": "Europe/Paris",
-    "mexico-city": "America/Mexico_City",
-    "nyc": "America/New_York",
-    "panama-city": "America/Panama",
-    "sao-paulo": "America/Sao_Paulo",
-    "buenos-aires": "America/Argentina/Buenos_Aires",
-    "lucknow": "Asia/Kolkata",
-    "cape-town": "Africa/Johannesburg",
-    "karachi": "Asia/Karachi",
-    "london": "Europe/London",
-    "wellington": "Pacific/Auckland",
-    "tel-aviv": "Asia/Jerusalem",
-    "tokyo": "Asia/Tokyo",
-    "denver": "America/Denver",
-    "manila": "Asia/Manila",
-    "toronto": "America/Toronto",
-    "amsterdam": "Europe/Amsterdam",
-    "ankara": "Europe/Istanbul",
-    "atlanta": "America/New_York",
-    "austin": "America/Chicago",
-    "beijing": "Asia/Shanghai",
-    "busan": "Asia/Seoul",
-    "chengdu": "Asia/Shanghai",
-    "chicago": "America/Chicago",
-    "chongqing": "Asia/Shanghai",
-    "dallas": "America/Chicago",
-    "guangzhou": "Asia/Shanghai",
-    "helsinki": "Europe/Helsinki",
-    "hong-kong": "Asia/Hong_Kong",
-    "houston": "America/Chicago",
-    "istanbul": "Europe/Istanbul",
-    "jeddah": "Asia/Riyadh",
-    "jinan": "Asia/Shanghai",
-    "los-angeles": "America/Los_Angeles",
-    "madrid": "Europe/Madrid",
-    "milan": "Europe/Rome",
-    "moscow": "Europe/Moscow",
-    "munich": "Europe/Berlin",
-    "qingdao": "Asia/Shanghai",
-    "san-francisco": "America/Los_Angeles",
-    "seattle": "America/Los_Angeles",
-    "shanghai": "Asia/Shanghai",
-    "shenzhen": "Asia/Shanghai",
-    "singapore": "Asia/Singapore",
-    "warsaw": "Europe/Warsaw",
-    "wuhan": "Asia/Shanghai",
-    "zhengzhou": "Asia/Shanghai",
-}
-
 
 class WeatherCityRepository:
     """MySQL-backed runtime source for enabled weather monitoring cities."""
@@ -119,45 +64,6 @@ class WeatherCityRepository:
         if not directions:
             raise RuntimeError(f"weather_cities {slug}: enabled city must monitor at least one direction")
         return WeatherCity(name=name, slug=slug, timezone=timezone, directions=directions)
-
-
-class WeatherCityFileLoader:
-    """Load weather cities from a local JSON file."""
-
-    def __init__(self, file_path: str) -> None:
-        self._path = Path(file_path)
-
-    def list_enabled(self) -> list[WeatherCity]:
-        if not self._path.is_file():
-            raise RuntimeError(f"Weather cities file not found: {self._path}")
-        data = json.loads(self._path.read_text(encoding="utf-8"))
-        entries = data.get("cities", [])
-        if not entries:
-            raise RuntimeError(f"Weather cities file has no cities: {self._path}")
-        cities: list[WeatherCity] = []
-        for entry in entries:
-            name = entry.get("name", "").strip()
-            slug = entry.get("slug", "").strip()
-            if not name or not slug:
-                continue
-            timezone = entry.get("timezone") or CITY_TIMEZONE_MAP.get(slug)
-            if not timezone:
-                raise RuntimeError(f"No timezone for city {slug}; add 'timezone' to JSON or CITY_TIMEZONE_MAP")
-            try:
-                ZoneInfo(timezone)
-            except ZoneInfoNotFoundError as error:
-                raise RuntimeError(f"Invalid timezone {timezone!r} for {slug}") from error
-            monitor = entry.get("monitor", "highest")
-            if monitor == "both":
-                directions = ("highest", "lowest")
-            elif monitor == "lowest":
-                directions = ("lowest",)
-            else:
-                directions = ("highest",)
-            cities.append(WeatherCity(name=name, slug=slug, timezone=timezone, directions=directions))
-        if not cities:
-            raise RuntimeError(f"Weather cities file produced no valid cities: {self._path}")
-        return cities
 
 
 class WeatherSignalEventRepository:
@@ -337,6 +243,16 @@ class WeatherSignalEventRepository:
             payload=payload,
             created_at=_utc_datetime(row["created_at"]),
         )
+
+
+class WeatherDao(WeatherCityRepository, WeatherSignalEventRepository):
+    """统一的天气服务 DAO。
+
+    城市配置和天气信号属于同一个微服务的数据边界，统一由这个门面
+    暴露。旧的 Repository 类暂时保留，便于并行迁移期间兼容已有导入。
+    """
+
+    pass
 
 
 def _mysql_datetime(value: datetime) -> datetime:
