@@ -1,0 +1,13 @@
+service:
+  name: signal-weather
+  port: 8001
+
+consul:
+  tags:
+    - "traefik.enable=true"
+    - "traefik.http.routers.signal-weather.rule=PathPrefix(`/api/weather-signals`)"
+    - "traefik.http.routers.signal-weather.entrypoints=web"
+    - "traefik.http.routers.signal-weather.middlewares=forward-auth@file"
+  health_path: /health
+
+dependencies: []

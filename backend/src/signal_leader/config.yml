@@ -1,0 +1,13 @@
+service:
+  name: signal-leader
+  port: 8002
+
+consul:
+  tags:
+    - "traefik.enable=true"
+    - "traefik.http.routers.signal-leader.rule=PathPrefix(`/api/signals`)"
+    - "traefik.http.routers.signal-leader.entrypoints=web"
+    - "traefik.http.routers.signal-leader.middlewares=forward-auth@file"
+  health_path: /health
+
+dependencies: []
