@@ -1,0 +1,14 @@
+service:
+  name: auth-service
+  port: 8010
+
+consul:
+  tags:
+    - "traefik.enable=true"
+    - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
+    - "traefik.http.routers.auth.entrypoints=web"
+    - "traefik.http.routers.auth-forward.rule=PathPrefix(`/auth/verify`)"
+    - "traefik.http.routers.auth-forward.entrypoints=web"
+  health_path: /health
+
+dependencies: []

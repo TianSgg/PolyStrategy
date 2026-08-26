@@ -6,7 +6,7 @@ Traefik 将每个请求的 headers 转发到此端点：
 """
 from fastapi import APIRouter, Request, Response, status
 
-from auth.service import AUTH_COOKIE_NAME, get_auth_service
+from auth_service.service import AUTH_COOKIE_NAME, get_auth_service
 
 router = APIRouter(tags=["forward-auth"])
 

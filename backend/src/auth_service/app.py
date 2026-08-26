@@ -17,10 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from auth.api import router as auth_router
-from auth.migrations import run_auth_migrations
+from auth_service.api import router as auth_router
+from auth_service.migrations import run_auth_migrations
 from auth_service.forward_auth import router as forward_auth_router
-from shared.consul import consul_lifespan
+from framework.consul import consul_lifespan
 
 logger = logging.getLogger(__name__)
 
