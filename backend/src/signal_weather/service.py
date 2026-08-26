@@ -11,8 +11,7 @@ from zoneinfo import ZoneInfo
 from fastapi import WebSocket, WebSocketDisconnect
 
 from signal_weather.dao import WeatherDao
-from signal_weather.internal.weather_engine import WeatherEngine
-from signal_weather.internal._discovery import WeatherDiscovery
+from signal_weather.internal.weather_engine import WeatherEngine, WeatherDiscovery
 from signal_weather.internal.polymarket_client import PolymarketMarketClient
 from signal_weather.types import WeatherCity, WeatherEvent, WeatherSignalRecord
 
