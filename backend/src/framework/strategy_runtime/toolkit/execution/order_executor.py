@@ -16,7 +16,7 @@ import uuid
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from framework.trading import get_account_service
+from framework.trading import place_limit_order, cancel_order as _cancel_order
 from framework.strategy_runtime.interfaces import OrderResult
 from framework.strategy_runtime.toolkit.execution.balance_poller import BalancePoller, get_or_create_poller
 
@@ -33,7 +33,6 @@ class OrderExecutor:
     """Polymarket CLOB 下单执行器（集成余额轮询）。"""
 
     def __init__(self, proxy_wallet: str = "") -> None:
-        self._account_service = get_account_service()
         self._proxy_wallet = proxy_wallet
         self._cached_params: Dict[str, Dict[str, Any]] = {}
         self._poller: Optional[BalancePoller] = None
@@ -111,7 +110,7 @@ class OrderExecutor:
 
         try:
             result = await asyncio.to_thread(
-                self._account_service.place_limit_order,
+                place_limit_order,
                 wallet,
                 token_id,
                 side.upper(),
@@ -140,9 +139,7 @@ class OrderExecutor:
         """撤单。成功返回 True。"""
         wallet = (proxy_wallet or self._proxy_wallet).lower()
         try:
-            await asyncio.to_thread(
-                self._account_service.cancel_order, wallet, order_id
-            )
+            await asyncio.to_thread(_cancel_order, wallet, order_id)
             return True
         except Exception as e:
             logger.error("Cancel failed: order=%s err=%s", order_id, e)
