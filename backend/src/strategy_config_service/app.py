@@ -19,13 +19,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from auth.service import AUTH_COOKIE_NAME, get_auth_service
-from performance.router import router as performance_router
-from pnl.router import router as pnl_router
-from pnl.service import get_pnl_service
-from shared.consul import consul_lifespan
-from shared.frontend_ws import get_frontend_ws_manager
-from strategy.api import router as strategy_router
+from auth_service.service import AUTH_COOKIE_NAME, get_auth_service
+from strategy_config_service.performance_api import router as performance_router
+from strategy_config_service.pnl_api import router as pnl_router
+from strategy_config_service.pnl_service import get_pnl_service
+from framework.consul import consul_lifespan
+from strategy_config_service.ws_frontend import get_frontend_ws_manager
+from strategy_config_service.strategy_api import router as strategy_router
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def _get_ws_user(websocket: WebSocket):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from performance import get_performance_service
+    from strategy_config_service.performance_service import get_performance_service
 
     perf_svc = get_performance_service()
     await perf_svc.start()
@@ -115,7 +115,7 @@ async def websocket_performance(websocket: WebSocket):
         return
 
     await websocket.accept()
-    from performance import get_performance_service
+    from strategy_config_service.performance_service import get_performance_service
 
     perf_svc = get_performance_service()
     try:
