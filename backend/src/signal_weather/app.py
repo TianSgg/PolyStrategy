@@ -26,7 +26,7 @@ load_dotenv(_backend_dir / f".env.{_env}", override=True)
 from framework.logging import setup_logging
 setup_logging("signal_weather")
 from framework.db import MYSQL_CONFIG
-from framework.config_loader import load_service_config
+from signal_weather.internal.config_loader import load_service_config
 
 logger = logging.getLogger(__name__)
 

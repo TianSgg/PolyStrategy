@@ -6,7 +6,7 @@ import logging
 from typing import Any, Callable, Coroutine, Protocol
 
 from framework.strategy_runtime.interfaces import Signal
-from framework.strategy_runtime.toolkit.signals.dedup import TTLDeduplicator
+from framework.strategy_runtime.signal_dedup import TTLDeduplicator
 
 logger = logging.getLogger(__name__)
 

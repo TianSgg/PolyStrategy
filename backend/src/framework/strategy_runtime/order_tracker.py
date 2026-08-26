@@ -8,7 +8,7 @@ import logging
 from decimal import Decimal
 from typing import Dict, Set
 
-from framework.strategy_runtime.toolkit.execution.account_ledger import AccountLedger
+from framework.strategy_runtime.account_ledger import AccountLedger
 
 logger = logging.getLogger(__name__)
 

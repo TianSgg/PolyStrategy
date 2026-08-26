@@ -20,8 +20,8 @@ from decimal import Decimal
 from typing import Optional
 
 from framework.strategy_runtime.interfaces import BaseStrategy, Signal, StrategyContext
-from framework.strategy_runtime.toolkit.market.tick_verifier import TickVerifier
-from framework.strategy_runtime.toolkit.risk.stop_loss import StopLossMonitor
+from framework.strategy_runtime.tick_verifier import TickVerifier
+from framework.strategy_runtime.stop_loss import StopLossMonitor
 
 logger = logging.getLogger(__name__)
 

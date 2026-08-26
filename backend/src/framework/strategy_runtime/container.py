@@ -47,7 +47,7 @@ class StrategyContainer:
         self._running = False
 
     async def start(self) -> None:
-        from framework.strategy_runtime.toolkit.signals.ws_client import SignalWSClient
+        from framework.strategy_runtime.signal_client import SignalWSClient
 
         for source in self._signal_sources:
             client = SignalWSClient(url=source.url, adapter=source.adapter)

@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 
 from framework.trading import place_limit_order, cancel_order as _cancel_order
 from framework.strategy_runtime.interfaces import OrderResult
-from framework.strategy_runtime.toolkit.execution.balance_poller import BalancePoller, get_or_create_poller
+from framework.strategy_runtime.balance_poller import BalancePoller, get_or_create_poller
 
 logger = logging.getLogger(__name__)
 

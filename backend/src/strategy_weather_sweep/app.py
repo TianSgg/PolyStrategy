@@ -21,7 +21,7 @@ from framework.strategy_runtime.app_factory import create_app
 from framework.strategy_runtime.container import SignalSourceConfig
 from strategy_weather_sweep.service import SweepStrategy
 from strategy_weather_sweep.api import router as strategy_router
-from framework.strategy_runtime.toolkit.signals.adapters.weather_adapter import WeatherSweepAdapter
+from framework.strategy_runtime.weather_adapter import WeatherSweepAdapter
 
 PORT = int(os.getenv("STRATEGY_SWEEP_PORT", "8003"))
 WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")

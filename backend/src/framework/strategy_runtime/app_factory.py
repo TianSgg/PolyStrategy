@@ -144,7 +144,7 @@ def _create_single_instance_app(
             self._run_id = str(uuid.uuid4())
 
         async def start(self):
-            from framework.strategy_runtime.toolkit.signals.ws_client import SignalWSClient
+            from framework.strategy_runtime.signal_client import SignalWSClient
             import asyncio
 
             state_store = MySQLStateStore()

@@ -18,8 +18,8 @@ setup_logging("strategy_sweep_leader")
 from framework.strategy_runtime.app_factory import create_app
 from framework.strategy_runtime.container import SignalSourceConfig
 from strategy_sweep_leader.strategy import SweepLeaderStrategy
-from framework.strategy_runtime.toolkit.signals.adapters.leader_adapter import LeaderBuyAdapter
-from framework.strategy_runtime.toolkit.signals.adapters.weather_adapter import WeatherSweepAdapter
+from framework.strategy_runtime.leader_adapter import LeaderBuyAdapter
+from framework.strategy_runtime.weather_adapter import WeatherSweepAdapter
 
 PORT = int(os.getenv("STRATEGY_SWEEP_LEADER_PORT", "8005"))
 WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")
