@@ -1,0 +1,19 @@
+service:
+  name: strategy-leader
+  port: 8004
+
+consul:
+  tags:
+    - "traefik.enable=true"
+    - "traefik.http.routers.strategy-leader.rule=PathPrefix(`/api/strategy-leader`)"
+    - "traefik.http.routers.strategy-leader.entrypoints=web"
+    - "traefik.http.routers.strategy-leader.middlewares=forward-auth@file"
+  health_path: /health
+
+dependencies:
+  - signal-leader
+
+strategy:
+  type: leader_copy
+  config_table: weather_sweep_configs
+  events_table: weather_sweep_events

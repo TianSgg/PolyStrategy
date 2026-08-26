@@ -1,0 +1,19 @@
+service:
+  name: strategy-weather-sweep
+  port: 8003
+
+consul:
+  tags:
+    - "traefik.enable=true"
+    - "traefik.http.routers.strategy-weather-sweep.rule=PathPrefix(`/api/strategy-weather-sweep`)"
+    - "traefik.http.routers.strategy-weather-sweep.entrypoints=web"
+    - "traefik.http.routers.strategy-weather-sweep.middlewares=forward-auth@file"
+  health_path: /health
+
+dependencies:
+  - signal-weather
+
+strategy:
+  type: weather_sweep
+  config_table: weather_sweep_configs
+  events_table: weather_sweep_events

@@ -1,0 +1,20 @@
+service:
+  name: strategy-sweep-leader
+  port: 8005
+
+consul:
+  tags:
+    - "traefik.enable=true"
+    - "traefik.http.routers.strategy-sweep-leader.rule=PathPrefix(`/api/strategy-sweep-leader`)"
+    - "traefik.http.routers.strategy-sweep-leader.entrypoints=web"
+    - "traefik.http.routers.strategy-sweep-leader.middlewares=forward-auth@file"
+  health_path: /health
+
+dependencies:
+  - signal-weather
+  - signal-leader
+
+strategy:
+  type: sweep_leader
+  config_table: weather_sweep_configs
+  events_table: weather_sweep_events

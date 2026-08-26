@@ -19,9 +19,9 @@ import time
 from decimal import Decimal
 from typing import Optional
 
-from base_strategy.interfaces import BaseStrategy, Signal, StrategyContext
-from base_strategy.toolkit.market.tick_verifier import TickVerifier
-from base_strategy.toolkit.risk.stop_loss import StopLossMonitor
+from framework.strategy_runtime.interfaces import BaseStrategy, Signal, StrategyContext
+from framework.strategy_runtime.toolkit.market.tick_verifier import TickVerifier
+from framework.strategy_runtime.toolkit.risk.stop_loss import StopLossMonitor
 
 logger = logging.getLogger(__name__)
 
