@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from auth import AuthUser, get_current_user
+from framework.auth import AuthUser, get_current_user
 from framework.balance import fetch_address_value
 from .service import get_leader_service
 

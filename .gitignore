@@ -38,4 +38,4 @@ deploy/state/
 *.png
 
 scripts/
-backend/test/
+backend/test/.consul-data/
