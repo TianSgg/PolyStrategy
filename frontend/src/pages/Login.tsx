@@ -4,7 +4,7 @@ import { apiFetch } from '../api'
 type AuthUser = {
   id: number
   username: string
-  role: 'root' | 'admin' | 'user'
+  role: 'root' | 'user'
   enabled: boolean
 }
 

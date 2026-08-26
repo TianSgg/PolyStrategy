@@ -10,8 +10,6 @@ from typing import List, Optional
 
 from fastapi import HTTPException, Request, status
 
-ROLE_HIERARCHY = {"root": 3, "admin": 2, "user": 1}
-
 
 @dataclass(frozen=True)
 class AuthUser:
@@ -24,21 +22,13 @@ class AuthUser:
     def is_root(self) -> bool:
         return self.role == "root"
 
-    @property
-    def is_admin(self) -> bool:
-        return self.role in ("admin", "root")
-
     def can_view(self, owner_user_id: int) -> bool:
         if self.is_root:
-            return True
-        if self.role == "admin":
             return True
         return owner_user_id == self.id
 
     def visible_user_ids(self) -> Optional[List[int]]:
         if self.is_root:
-            return None
-        if self.role == "admin":
             return None
         return [self.id]
 
@@ -63,13 +53,6 @@ def get_current_user(request: Request) -> AuthUser:
         role=user_role,
         enabled=True,
     )
-
-
-def require_admin(request: Request) -> AuthUser:
-    user = get_current_user(request)
-    if not user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin required")
-    return user
 
 
 def require_root(request: Request) -> AuthUser:

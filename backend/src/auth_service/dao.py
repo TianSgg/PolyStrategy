@@ -233,17 +233,15 @@ def _ensure_global_unique_index(cursor, table: str, index_name: str, columns: st
 
 
 def _get_first_root_id(cursor) -> Optional[int]:
+    # Upgrade all admins to root (admin role removed)
+    cursor.execute("UPDATE users SET role = 'root' WHERE role = 'admin'")
+    if cursor.rowcount > 0:
+        logger.info("[Auth] Upgraded %d admin(s) to root", cursor.rowcount)
+
     cursor.execute("SELECT id FROM users WHERE role = 'root' ORDER BY id ASC LIMIT 1")
     row = cursor.fetchone()
     if row:
         return int(row[0])
-    cursor.execute("SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1")
-    row = cursor.fetchone()
-    if row:
-        admin_id = int(row[0])
-        cursor.execute("UPDATE users SET role = 'root' WHERE id = %s", (admin_id,))
-        logger.info("[Auth] Upgraded first admin (id=%s) to root", admin_id)
-        return admin_id
     return None
 
 

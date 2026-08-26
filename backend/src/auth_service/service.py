@@ -111,7 +111,7 @@ class AuthService:
 
     def create_user(self, username: str, password: str, role: str = "user") -> int:
         username = username.strip()
-        role = role if role in ("root", "admin", "user") else "user"
+        role = role if role in ("root", "user") else "user"
         if not username:
             raise ValueError("username is required")
         if len(password) < 6:

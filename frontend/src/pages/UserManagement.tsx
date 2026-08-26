@@ -5,25 +5,25 @@ import './UserManagement.css'
 type User = {
   id: number
   username: string
-  role: 'root' | 'admin' | 'user'
+  role: 'root' | 'user'
   enabled: boolean
   created_at: string | null
 }
 
 interface Props {
   darkMode: boolean
-  currentRole: 'root' | 'admin' | 'user'
+  currentRole: 'root' | 'user'
   currentUserId: number
 }
 
-const ROLE_HIERARCHY: Record<string, number> = { root: 3, admin: 2, user: 1 }
-const ALL_ROLES: ('root' | 'admin' | 'user')[] = ['user', 'admin', 'root']
+const ROLE_HIERARCHY: Record<string, number> = { root: 2, user: 1 }
+const ALL_ROLES: ('root' | 'user')[] = ['user', 'root']
 
 export default function UserManagement({ darkMode, currentRole, currentUserId }: Props) {
   const [users, setUsers] = useState<User[]>([])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [role, setRole] = useState<'root' | 'admin' | 'user'>('user')
+  const [role, setRole] = useState<'root' | 'user'>('user')
   const [error, setError] = useState('')
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editUsername, setEditUsername] = useState('')
@@ -141,7 +141,7 @@ export default function UserManagement({ darkMode, currentRole, currentUserId }:
               <label className="form-label">角色</label>
               <select
                 value={role}
-                onChange={e => setRole(e.target.value as 'root' | 'admin' | 'user')}
+                onChange={e => setRole(e.target.value as 'root' | 'user')}
                 className="form-select"
               >
                 {ALL_ROLES.filter(r => ROLE_HIERARCHY[r] < ROLE_HIERARCHY[currentRole]).map(r => (

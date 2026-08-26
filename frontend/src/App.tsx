@@ -12,7 +12,7 @@ import { apiFetch, setUnauthorizedHandler } from './api'
 import { useBalance } from './contexts/BalanceContext'
 
 type Page = 'account' | 'copytrading' | 'users' | 'weather' | 'dashboard'
-type AuthUser = { id: number; username: string; role: 'root' | 'admin' | 'user'; enabled: boolean }
+type AuthUser = { id: number; username: string; role: 'root' | 'user'; enabled: boolean }
 
 const DARK_MODE_STORAGE_KEY = 'weathertaker:dark-mode'
 
@@ -162,7 +162,7 @@ function App() {
             <span style={styles.navIcon}>🌤</span>
             天气监控
           </button>
-          {(authUser.role === 'admin' || authUser.role === 'root') && (
+          {authUser.role === 'root' && (
             <button
               onClick={() => setCurrentPage('users')}
               style={currentPage === 'users' ? theme.navItemActive : theme.navItem}

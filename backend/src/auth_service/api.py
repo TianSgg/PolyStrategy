@@ -35,12 +35,6 @@ def get_current_user(request: Request) -> AuthUser:
     return AuthUser(id=user.id, username=user.username, role=user.role, enabled=user.enabled)
 
 
-def require_admin(current_user: AuthUser = Depends(get_current_user)) -> AuthUser:
-    if not current_user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin required")
-    return current_user
-
-
 def require_root(current_user: AuthUser = Depends(get_current_user)) -> AuthUser:
     if not current_user.is_root:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Root required")
@@ -107,12 +101,12 @@ async def me(current_user: AuthUser = Depends(get_current_user)):
 
 
 @router.get("/users")
-async def list_users(_: AuthUser = Depends(require_admin)):
+async def list_users(_: AuthUser = Depends(require_root)):
     return {"users": get_auth_service().list_users()}
 
 
 @router.post("/users")
-async def create_user(data: CreateUserRequest, current_user: AuthUser = Depends(require_admin)):
+async def create_user(data: CreateUserRequest, current_user: AuthUser = Depends(require_root)):
     if ROLE_HIERARCHY.get(data.role, 0) >= ROLE_HIERARCHY.get(current_user.role, 0):
         raise HTTPException(status_code=403, detail="只能创建比自己低的角色")
     try:
@@ -135,7 +129,7 @@ def _check_target_permission(current_user: AuthUser, user_id: int):
 
 
 @router.put("/users/{user_id}")
-async def update_user(user_id: int, data: UpdateUserRequest, current_user: AuthUser = Depends(require_admin)):
+async def update_user(user_id: int, data: UpdateUserRequest, current_user: AuthUser = Depends(require_root)):
     if data.username is None and data.enabled is None:
         raise HTTPException(status_code=400, detail="No fields to update")
     if user_id == current_user.id and data.enabled is False:
@@ -171,7 +165,7 @@ async def change_password(data: ChangePasswordRequest, current_user: AuthUser = 
 
 
 @router.delete("/users/{user_id}")
-async def delete_user(user_id: int, current_user: AuthUser = Depends(require_admin)):
+async def delete_user(user_id: int, current_user: AuthUser = Depends(require_root)):
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="不能删除自己")
     _check_target_permission(current_user, user_id)
