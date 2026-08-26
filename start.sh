@@ -30,7 +30,6 @@ BACKEND_SERVICES=(
     # 名称|模块|端口|额外环境变量
     "auth|auth_service.app|8010|"
     "account|account_service.app|8011|"
-    "strategy_config|strategy_config_service.app|8012|"
     "signal_weather|signal_weather.app|8001|"
     "signal_leader|signal_leader.app|8002|"
     "strategy_sweep|strategy_weather_sweep.app|8003|"
@@ -127,10 +126,10 @@ case "${1:-start}" in
     start)
         echo "═══ PolyStrategy — Starting all services ═══"
         echo ""
-        echo "Core services (auth, account, strategy-config):"
+        echo "Core services (auth, account):"
         for svc in "${BACKEND_SERVICES[@]}"; do
             IFS='|' read -r name module port extra_env <<< "$svc"
-            [[ "$name" == auth || "$name" == account || "$name" == strategy_config ]] && start_backend_service "$name" "$module" "$port" "$extra_env"
+            [[ "$name" == auth || "$name" == account ]] && start_backend_service "$name" "$module" "$port" "$extra_env"
         done
         sleep 1
 

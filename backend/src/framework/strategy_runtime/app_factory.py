@@ -31,6 +31,9 @@ def create_app(
     config: dict[str, Any] | None = None,
     proxy_wallet: str = "",
     executor: Any = None,
+    # 扩展
+    extra_routers: list | None = None,
+    consul_tags: list[str] | None = None,
 ) -> FastAPI:
     """创建标准化的策略微服务 FastAPI 应用。
 
@@ -47,6 +50,8 @@ def create_app(
             config_table=config_table,
             events_table=events_table,
             executor_factory=executor_factory,
+            extra_routers=extra_routers,
+            consul_tags=consul_tags,
         )
 
     return _create_single_instance_app(
@@ -56,6 +61,7 @@ def create_app(
         config=config or {},
         proxy_wallet=proxy_wallet,
         executor=executor,
+        consul_tags=consul_tags,
     )
 
 
@@ -68,6 +74,8 @@ def _create_multi_instance_app(
     config_table: str,
     events_table: str,
     executor_factory: Any,
+    extra_routers: list | None = None,
+    consul_tags: list[str] | None = None,
 ) -> FastAPI:
     instance_manager = InstanceManager(
         strategy_type=strategy_type,
@@ -89,7 +97,7 @@ def _create_multi_instance_app(
         await container.start()
         app.state.container = container
         logger.info("%s started (multi-instance)", service_name)
-        async with consul_lifespan(service_name, service_port):
+        async with consul_lifespan(service_name, service_port, tags=consul_tags):
             try:
                 yield
             finally:
@@ -110,6 +118,9 @@ def _create_multi_instance_app(
         result = await container.reload()
         return {"status": "ok", **result}
 
+    for r in (extra_routers or []):
+        app.include_router(r)
+
     return app
 
 
@@ -121,6 +132,7 @@ def _create_single_instance_app(
     config: dict[str, Any],
     proxy_wallet: str,
     executor: Any,
+    consul_tags: list[str] | None = None,
 ) -> FastAPI:
     """兼容旧的单实例模式。"""
 
@@ -187,7 +199,7 @@ def _create_single_instance_app(
         await container.start()
         app.state.container = container
         logger.info("%s started (single-instance)", service_name)
-        async with consul_lifespan(service_name, service_port):
+        async with consul_lifespan(service_name, service_port, tags=consul_tags):
             try:
                 yield
             finally:

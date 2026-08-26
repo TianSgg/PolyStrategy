@@ -2,7 +2,6 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import { BalanceProvider } from './contexts/BalanceContext'
 import './global.css'
-import './ws-client'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   // <React.StrictMode>

@@ -4,12 +4,11 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from framework.auth import AuthUser, get_current_user
-from strategy_config_service.strategy_dao import WeatherSweepConfigDAO, WeatherSweepEventDAO
+from strategy_weather_sweep.strategy_dao import WeatherSweepConfigDAO, WeatherSweepEventDAO
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +16,6 @@ router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
 _config_dao = WeatherSweepConfigDAO()
 _event_dao = WeatherSweepEventDAO()
-
-STRATEGY_SWEEP_URL = "http://127.0.0.1:8003"
 
 
 # ─── Request / Response Models ───
@@ -67,7 +64,7 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
 
 
 @router.post("/configs")
-async def create_config(data: CreateConfigRequest, current_user: AuthUser = Depends(get_current_user)):
+async def create_config(data: CreateConfigRequest, request: Request, current_user: AuthUser = Depends(get_current_user)):
     config_id = _config_dao.create({
         "owner_user_id": current_user.id,
         "account_id": data.account_id,
@@ -81,7 +78,7 @@ async def create_config(data: CreateConfigRequest, current_user: AuthUser = Depe
         "tick_verify_retries": data.tick_verify_retries,
         "tick_verify_backoff_ms": data.tick_verify_backoff_ms,
     })
-    await _notify_reload()
+    await _reload(request)
     return {"config_id": config_id}
 
 
@@ -89,6 +86,7 @@ async def create_config(data: CreateConfigRequest, current_user: AuthUser = Depe
 async def update_config(
     config_id: int,
     data: UpdateConfigRequest,
+    request: Request,
     current_user: AuthUser = Depends(get_current_user),
 ):
     cfg = _config_dao.get_by_id(config_id)
@@ -102,17 +100,17 @@ async def update_config(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     _config_dao.update(config_id, updates)
-    await _notify_reload()
+    await _reload(request)
     return {"status": "ok"}
 
 
 @router.delete("/configs/{config_id}")
-async def delete_config(config_id: int, current_user: AuthUser = Depends(get_current_user)):
+async def delete_config(config_id: int, request: Request, current_user: AuthUser = Depends(get_current_user)):
     cfg = _config_dao.get_by_id(config_id)
     if not cfg or not current_user.can_view(cfg["owner_user_id"]):
         raise HTTPException(status_code=404, detail="Config not found")
     _config_dao.soft_delete(config_id)
-    await _notify_reload()
+    await _reload(request)
     return {"status": "ok"}
 
 
@@ -148,12 +146,7 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
 # ─── Internal helpers ───
 
 
-async def _notify_reload() -> None:
-    """通知策略进程重新加载配置。"""
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.post(f"{STRATEGY_SWEEP_URL}/internal/reload")
-            if resp.status_code != 200:
-                logger.warning("Reload notify failed: %d", resp.status_code)
-    except Exception:
-        logger.warning("Failed to notify strategy process for reload", exc_info=True)
+async def _reload(request: Request) -> None:
+    """Directly reload the strategy container (same process)."""
+    container = request.app.state.container
+    await container.reload()

@@ -2,19 +2,16 @@ import { useState, useEffect, useMemo } from 'react'
 import Account from './pages/Account'
 import CopyTrading from './pages/CopyTrading'
 import Login from './pages/Login'
-import PnL from './pages/PnL'
-import PerformanceMonitor from './pages/PerformanceMonitor'
 import WeatherMonitor from './pages/WeatherMonitor'
 import StrategyDashboard from './pages/StrategyDashboard'
 import UserManagement from './pages/UserManagement'
 import StatusBar from './components/StatusBar'
 import ChangePasswordModal from './components/ChangePasswordModal'
 import { ToastContainer } from './components/Toast'
-import { WS_BASE, apiFetch, setUnauthorizedHandler } from './api'
+import { apiFetch, setUnauthorizedHandler } from './api'
 import { useBalance } from './contexts/BalanceContext'
-import './ws-client'
 
-type Page = 'account' | 'copytrading' | 'pnl' | 'users' | 'performance' | 'weather' | 'dashboard'
+type Page = 'account' | 'copytrading' | 'users' | 'weather' | 'dashboard'
 type AuthUser = { id: number; username: string; role: 'root' | 'admin' | 'user'; enabled: boolean }
 
 const DARK_MODE_STORAGE_KEY = 'weathertaker:dark-mode'
@@ -35,22 +32,7 @@ function App() {
   const [showChangePwd, setShowChangePwd] = useState(false)
   const [strategyExpanded, setStrategyExpanded] = useState(true)
 
-  // Layout global state
-  // Connection states
-  const [connected, setConnected] = useState(false)
-  const [wsLatency, setWsLatency] = useState({
-    ws_market: "--",
-    ws_user: "--",
-    predexon: "--",
-  })
-  const [httpLatency, setHttpLatency] = useState({
-    data_api: "--",
-    clob_api: "--",
-    gamma_api: "--",
-  })
-
   const { accountBalances } = useBalance()
-  const [latencyLoading, setLatencyLoading] = useState(false)
   const [balanceRefreshKey, setBalanceRefreshKey] = useState(0)
   const [accountsList, setAccountsList] = useState<{ id: number; name: string; proxy_wallet: string }[]>([])
 
@@ -78,42 +60,12 @@ function App() {
     return () => setUnauthorizedHandler(null)
   }, [])
 
-  useEffect(() => {
-    if (!authUser) {
-      setConnected(false)
-      return
-    }
-    const client = new (window as any).PolymarketWSClient(`${WS_BASE}/ws/market`)
-
-    client.on('open', () => setConnected(true))
-    client.on('close', () => setConnected(false))
-    client.on('latency', (data: any) => {
-      setWsLatency({
-        ws_market: data.ws?.ws_market ?? "--",
-        ws_user: data.ws?.ws_user ?? "--",
-        predexon: data.ws?.predexon ?? "--",
-      })
-      setHttpLatency({
-        data_api: data.http?.data_api ?? "--",
-        clob_api: data.http?.clob_api ?? "--",
-        gamma_api: data.http?.gamma_api ?? "--",
-      })
-    })
-
-    client.connect()
-
-    return () => {
-      client.disconnect()
-    }
-  }, [authUser])
-
   const handleLogout = async () => {
     await apiFetch('/api/auth/logout', { method: 'POST' })
     setAuthUser(null)
     setCurrentPage('account')
   }
 
-  // Propagate background color via root styles as fallback for clean UI edge
   useEffect(() => {
     try {
       localStorage.setItem(DARK_MODE_STORAGE_KEY, String(darkMode))
@@ -204,13 +156,6 @@ function App() {
           )}
 
           <button
-            onClick={() => setCurrentPage('pnl')}
-            style={currentPage === 'pnl' ? theme.navItemActive : theme.navItem}
-          >
-            <span style={styles.navIcon}>📊</span>
-            利润看板
-          </button>
-          <button
             onClick={() => setCurrentPage('weather')}
             style={currentPage === 'weather' ? theme.navItemActive : theme.navItem}
           >
@@ -218,22 +163,13 @@ function App() {
             天气监控
           </button>
           {(authUser.role === 'admin' || authUser.role === 'root') && (
-            <>
-              <button
-                onClick={() => setCurrentPage('performance')}
-                style={currentPage === 'performance' ? theme.navItemActive : theme.navItem}
-              >
-                <span style={styles.navIcon}>📈</span>
-                性能监控
-              </button>
-              <button
-                onClick={() => setCurrentPage('users')}
-                style={currentPage === 'users' ? theme.navItemActive : theme.navItem}
-              >
-                <span style={styles.navIcon}>👥</span>
-                用户管理
-              </button>
-            </>
+            <button
+              onClick={() => setCurrentPage('users')}
+              style={currentPage === 'users' ? theme.navItemActive : theme.navItem}
+            >
+              <span style={styles.navIcon}>👥</span>
+              用户管理
+            </button>
           )}
         </nav>
       </div>
@@ -242,39 +178,10 @@ function App() {
       <div style={styles.content}>
         {/* 全局状态栏 */}
         <StatusBar
-          connected={connected}
-          wsLatency={wsLatency}
-          httpLatency={httpLatency}
           darkMode={darkMode}
           setDarkMode={setDarkMode}
           totalBalance={totalBalance}
           onBalanceRefresh={() => setBalanceRefreshKey(k => k + 1)}
-          latencyLoading={latencyLoading}
-          onLatencyRefresh={async () => {
-            setLatencyLoading(true)
-            try {
-              const res = await apiFetch('/api/performance/latency', { method: 'POST' });
-              const data = await res.json();
-              if (data.data) {
-                const ws = data.data.ws || {};
-                const http = data.data.http || {};
-                setWsLatency({
-                  ws_market: ws.ws_market ?? "--",
-                  ws_user: ws.ws_user ?? "--",
-                  predexon: ws.predexon ?? "--",
-                });
-                setHttpLatency({
-                  data_api: http.data_api ?? "--",
-                  clob_api: http.clob_api ?? "--",
-                  gamma_api: http.gamma_api ?? "--",
-                });
-              }
-            } catch (e) {
-              console.error('Failed to refresh latency', e);
-            } finally {
-              setLatencyLoading(false);
-            }
-          }}
           username={authUser.username}
           onLogout={handleLogout}
           onChangePassword={() => setShowChangePwd(true)}
@@ -293,9 +200,6 @@ function App() {
         <div style={{ display: currentPage === 'copytrading' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <CopyTrading darkMode={darkMode} visible={currentPage === 'copytrading'} />
         </div>
-        <div style={{ display: currentPage === 'pnl' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-          <PnL darkMode={darkMode} visible={currentPage === 'pnl'} accounts={accountsList} />
-        </div>
         <div style={{ display: currentPage === 'users' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <UserManagement darkMode={darkMode} currentRole={authUser.role} currentUserId={authUser.id} />
         </div>
@@ -304,9 +208,6 @@ function App() {
         </div>
         <div style={{ display: currentPage === 'dashboard' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <StrategyDashboard darkMode={darkMode} />
-        </div>
-        <div style={{ display: currentPage === 'performance' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-          <PerformanceMonitor darkMode={darkMode} visible={currentPage === 'performance'} />
         </div>
       </div>
     </div>
