@@ -19,8 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from framework.strategy_runtime.app_factory import create_app
 from framework.strategy_runtime.container import SignalSourceConfig
-from strategy_weather_sweep.strategy import SweepStrategy
-from strategy_weather_sweep.strategy_api import router as strategy_router
+from strategy_weather_sweep.service import SweepStrategy
+from strategy_weather_sweep.api import router as strategy_router
 from framework.strategy_runtime.toolkit.signals.adapters.weather_adapter import WeatherSweepAdapter
 
 PORT = int(os.getenv("STRATEGY_SWEEP_PORT", "8003"))

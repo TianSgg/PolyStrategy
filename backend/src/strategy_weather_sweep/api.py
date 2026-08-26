@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from framework.auth import AuthUser, get_current_user
-from strategy_weather_sweep.strategy_dao import WeatherSweepConfigDAO, WeatherSweepEventDAO
+from strategy_weather_sweep.dao import WeatherSweepConfigDAO, WeatherSweepEventDAO
 
 logger = logging.getLogger(__name__)
 
