@@ -2,8 +2,10 @@
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 
+from fastapi import Query
+
 from framework.auth import AuthUser, get_current_user
-from framework.trading import get_account_service
+from framework.trading import get_account_service, get_market_service
 from framework.balance import fetch_address_value
 
 router = APIRouter(prefix="/api/account", tags=["accounts"])
@@ -86,5 +88,12 @@ async def get_account_balance(proxy_wallet: str, current_user: AuthUser = Depend
         "total_position_value": pv,
         "total_value": b + pv,
     }
+
+
+@router.get("/market/price")
+async def get_price(asset_id: str = Query(...)):
+    """获取资产当前价格"""
+    price = await get_market_service().get_price(asset_id)
+    return {"price": price}
 
 

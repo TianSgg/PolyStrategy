@@ -529,7 +529,7 @@ export default function CopyTrading({ darkMode, visible }: Props) {
 
   const fetchMidPrice = async (assetId: string): Promise<number | null> => {
     try {
-      const res = await apiFetch(`/api/market/price?asset_id=${assetId}`)
+      const res = await apiFetch(`/api/account/market/price?asset_id=${assetId}`)
       if (res.ok) {
         const data = await res.json()
         return data.price ?? null
