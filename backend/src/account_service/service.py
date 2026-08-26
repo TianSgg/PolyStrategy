@@ -15,7 +15,7 @@ from py_clob_client_v2.clob_types import OrderArgsV2 as OrderArgs
 from py_clob_client_v2.order_builder.constants import BUY, SELL
 
 from account_service.dao import AccountDao
-from account_service.crypto import encrypt, decrypt
+from account_service.internal.crypto import encrypt, decrypt
 from eth_keys import keys
 from typing import List, Dict, Optional
 

@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from signal_weather.gateway import PolymarketMarketClient
+from .market import PolymarketMarketClient
 from signal_weather.types import MarketCandidate, WeatherAsset, WeatherCity
 
 MAX_HIGH_CERTAINTY_TICK = 0.001

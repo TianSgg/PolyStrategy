@@ -10,7 +10,7 @@ from typing import Literal
 
 from signal_weather.types import MarketCandidate
 from signal_weather.types import WeatherEvent
-from signal_weather.orderbook import LocalOrderBook
+from .orderbook import LocalOrderBook
 
 logger = logging.getLogger(__name__)
 

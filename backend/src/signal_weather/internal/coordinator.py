@@ -8,11 +8,11 @@ from datetime import date, datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from signal_weather.discovery import WeatherDiscovery
+from .discovery import WeatherDiscovery
 from signal_weather.types import MarketCandidate, WeatherCity
 from signal_weather.types import WeatherEvent
-from signal_weather.monitor import WeatherOrderBookMonitor
-from signal_weather.gateway import SharedMarketWebSocket
+from .monitor import WeatherOrderBookMonitor
+from .market import SharedMarketWebSocket
 
 logger = logging.getLogger(__name__)
 EventStartedHandler = Callable[[WeatherCity, str, date, str, Optional[MarketCandidate], bool], Awaitable[None]]

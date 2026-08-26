@@ -6,7 +6,7 @@ from fastapi import Query
 
 from framework.auth import AuthUser, get_current_user
 from account_service.service import get_account_service
-from account_service.market_service import get_market_service
+from account_service.internal.market_service import get_market_service
 from framework.balance import fetch_address_value
 
 router = APIRouter(prefix="/api/account", tags=["accounts"])
