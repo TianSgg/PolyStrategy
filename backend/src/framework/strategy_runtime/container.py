@@ -36,12 +36,14 @@ class StrategyContainer:
         instance_manager: InstanceManager,
         events_table: str = "weather_sweep_events",
         executor_factory: Any = None,
+        orderbook_ws: Any = None,
     ) -> None:
         self._strategy_class = strategy_class
         self._signal_sources = signal_sources
         self._instance_manager = instance_manager
         self._events_table = events_table
         self._executor_factory = executor_factory
+        self._orderbook_ws = orderbook_ws
         self._instances: dict[int, _RunningInstance] = {}
         self._ws_tasks: list[asyncio.Task] = []
         self._running = False
@@ -96,6 +98,7 @@ class StrategyContainer:
             proxy_wallet=cfg.proxy_wallet,
             run_id=run_id,
             event_logger=event_logger,
+            orderbook_ws=self._orderbook_ws,
         )
 
         strategy = self._strategy_class()

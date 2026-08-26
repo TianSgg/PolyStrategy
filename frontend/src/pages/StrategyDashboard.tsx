@@ -17,6 +17,8 @@ interface SweepConfig {
   fixed_entry_shares: number
   entry_wait_ms: number
   sweep_outcome_filter: string
+  signal_source_filter: string
+  signal_threshold_filter: string
   stop_loss_ratio: number
   exit_wait_ms: number
   tick_verify_retries: number
@@ -36,6 +38,8 @@ const DEFAULT_FORM = {
   fixed_entry_shares: 100,
   entry_wait_ms: 30000,
   sweep_outcome_filter: 'no',
+  signal_source_filter: 'all',
+  signal_threshold_filter: 'all',
   stop_loss_ratio: 0.6,
   exit_wait_ms: 5000,
   tick_verify_retries: 3,
@@ -135,6 +139,8 @@ export default function StrategyDashboard({ darkMode }: Props) {
       fixed_entry_shares: cfg.fixed_entry_shares,
       entry_wait_ms: cfg.entry_wait_ms,
       sweep_outcome_filter: cfg.sweep_outcome_filter,
+      signal_source_filter: cfg.signal_source_filter || 'all',
+      signal_threshold_filter: cfg.signal_threshold_filter || 'all',
       stop_loss_ratio: cfg.stop_loss_ratio,
       exit_wait_ms: cfg.exit_wait_ms,
       tick_verify_retries: cfg.tick_verify_retries,
@@ -378,16 +384,48 @@ export default function StrategyDashboard({ darkMode }: Props) {
               {/* Sweep Outcome Filter */}
               <div>
                 <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
-                  信号方向过滤
+                  Token 方向
                 </label>
                 <select
                   value={form.sweep_outcome_filter}
                   onChange={e => setForm({ ...form, sweep_outcome_filter: e.target.value })}
                   style={inputStyle}
                 >
-                  <option value="no">仅 No (推荐)</option>
+                  <option value="no">仅 No</option>
                   <option value="yes">仅 Yes</option>
                   <option value="all">全部</option>
+                </select>
+              </div>
+
+              {/* Signal Source Filter */}
+              <div>
+                <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
+                  信号来源
+                </label>
+                <select
+                  value={form.signal_source_filter}
+                  onChange={e => setForm({ ...form, signal_source_filter: e.target.value })}
+                  style={inputStyle}
+                >
+                  <option value="all">全部</option>
+                  <option value="main">仅主监控器</option>
+                  <option value="next">仅 Next 候选</option>
+                </select>
+              </div>
+
+              {/* Signal Threshold Filter */}
+              <div>
+                <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
+                  触发阈值
+                </label>
+                <select
+                  value={form.signal_threshold_filter}
+                  onChange={e => setForm({ ...form, signal_threshold_filter: e.target.value })}
+                  style={inputStyle}
+                >
+                  <option value="all">全部 (0.99 + 0.98)</option>
+                  <option value="0.99">仅 0.99</option>
+                  <option value="0.98">仅 0.98</option>
                 </select>
               </div>
 

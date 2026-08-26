@@ -250,11 +250,11 @@ def _ensure_root(cursor, hash_fn) -> int:
     if root_id:
         return root_id
 
-    username = os.getenv("ADMIN_USERNAME", "admin")
-    password = os.getenv("ADMIN_PASSWORD")
+    username = os.getenv("ROOT_USERNAME", "root")
+    password = os.getenv("ROOT_PASSWORD")
     if not password:
         password = secrets.token_urlsafe(18)
-        logger.warning("[Auth] ADMIN_PASSWORD not set; generated one-time root password: %s", password)
+        logger.warning("[Auth] ROOT_PASSWORD not set; generated one-time root password: %s", password)
 
     cursor.execute(
         """INSERT INTO users (username, password_hash, role, enabled)

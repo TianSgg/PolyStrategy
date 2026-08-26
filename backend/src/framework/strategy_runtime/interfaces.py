@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -18,34 +17,24 @@ class Signal:
     payload: dict = field(default_factory=dict)
 
 
-class BaseStrategy(ABC):
-    """策略最小约束 — 只规定生命周期，不规定内部实现。
+class BaseStrategy:
+    """策略基类 — 可选继承，提供默认空实现。
 
-    生命周期: start → on_signal* → force_exit (配置变更时) → stop
+    不再是 ABC，不强制子类实现任何方法。
+    策略可以继承它获得类型提示，也可以完全不用它。
     """
 
-    SUBSCRIBED_SIGNALS: ClassVar[set[str]] = set()
-
-    @abstractmethod
     async def start(self, ctx: StrategyContext) -> None:
         """初始化：策略从 ctx 获取需要的工具，设置内部状态。"""
 
-    @abstractmethod
     async def on_signal(self, signal: Signal) -> None:
         """收到信号 — 策略自行决定如何处理。"""
 
     async def force_exit(self, reason: str = "config_disabled") -> None:
-        """强制退出：撤买单 + 平仓。配置禁用/修改时由容器调用。
+        """强制退出：撤买单 + 平仓。"""
 
-        子类必须实现：
-        1. 撤销所有未成交买单
-        2. 已持份额按 1 - tick_size 最大价格挂卖单
-        3. 记录 event_closed
-        """
-
-    @abstractmethod
     async def stop(self) -> None:
-        """关闭：释放资源（force_exit 之后调用）。"""
+        """关闭：释放资源。"""
 
 
 @dataclass
@@ -58,6 +47,7 @@ class StrategyContext:
     proxy_wallet: str
     run_id: str
     event_logger: Any = None
+    orderbook_ws: Any = None
 
 
 class OrderExecutorProtocol(Protocol):

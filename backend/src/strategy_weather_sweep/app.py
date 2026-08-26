@@ -1,7 +1,14 @@
-"""扫单策略微服务入口 — port 8003。"""
+"""扫单策略微服务入口。
+
+策略自己创建 FastAPI app，自己编排生命周期，按需使用 framework 工具。
+"""
+import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+import yaml
 
 _src_dir = str(Path(__file__).resolve().parent.parent)
 if _src_dir not in sys.path:
@@ -12,45 +19,146 @@ from dotenv import load_dotenv
 _backend_dir = Path(__file__).resolve().parent.parent.parent
 load_dotenv(_backend_dir / ".env", override=True)
 
-from framework.logging import setup_logging
-setup_logging("strategy_weather_sweep")
+_config_path = Path(__file__).resolve().parent / "config.yml"
+with open(_config_path) as f:
+    _cfg = yaml.safe_load(f)
 
+from framework.logging import setup_logging
+setup_logging(_cfg["service"]["name"])
+
+import logging
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from framework.strategy_runtime.app_factory import create_app
-from framework.strategy_runtime.container import SignalSourceConfig
-from strategy_weather_sweep.service import SweepStrategy
-from strategy_weather_sweep.api import router as strategy_router
+from framework.consul import consul_lifespan
+from framework.instance_pool import InstancePool, InstanceConfig
+from framework.orderbook_ws import OrderBookWS
+from framework.strategy_runtime.event_logger import EventLogger
+from framework.strategy_runtime.order_executor import OrderExecutor
+from framework.strategy_runtime.signal_client import SignalWSClient
 from framework.strategy_runtime.weather_adapter import WeatherSweepAdapter
-from account_service.service import get_account_service
+from framework.trading.provider import set_client_provider
 
-PORT = int(os.getenv("STRATEGY_SWEEP_PORT", "8003"))
+from account_service.service import get_account_service
+from strategy_weather_sweep.api import router as strategy_router
+from strategy_weather_sweep.dao import WeatherSweepConfigDAO
+from strategy_weather_sweep.service import SweepStrategy
+
+logger = logging.getLogger(__name__)
+
+PORT = int(os.getenv("STRATEGY_SWEEP_PORT", str(_cfg["service"]["port"])))
 WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")
 
-CONSUL_TAGS = [
-    "traefik.enable=true",
-    "traefik.http.routers.strategy-sweep.rule=PathPrefix(`/api/strategy`)",
-    "traefik.http.routers.strategy-sweep.entrypoints=web",
-    "traefik.http.routers.strategy-sweep.middlewares=forward-auth@file",
-]
+# ==================== 工具实例 ====================
 
-app = create_app(
-    client_provider=get_account_service(),
-    strategy_class=SweepStrategy,
-    signal_sources=[
-        SignalSourceConfig(
-            url=WEATHER_SIGNAL_URL,
-            adapter=WeatherSweepAdapter(),
-            name="weather_orderbook",
-        ),
-    ],
-    service_name="strategy_weather_sweep",
-    strategy_type="weather_sweep",
-    config_table="weather_sweep_configs",
-    events_table="weather_sweep_events",
-    extra_routers=[strategy_router],
-    consul_tags=CONSUL_TAGS,
+orderbook_ws = OrderBookWS()
+_config_dao = WeatherSweepConfigDAO()
+
+# ==================== 多实例管理 ====================
+
+_strategies: dict[int, SweepStrategy] = {}
+
+
+def _load_configs() -> list[InstanceConfig]:
+    """从 DB 加载所有 enabled 配置。"""
+    rows = _config_dao.list_all_enabled()
+    return [
+        InstanceConfig(id=r["id"], version=r["params_version"], data=r)
+        for r in rows
+    ]
+
+
+async def _create_instance(cfg: InstanceConfig) -> SweepStrategy:
+    """根据配置创建一个策略实例。"""
+    data = cfg.data
+    proxy_wallet = data["proxy_wallet"]
+
+    executor = OrderExecutor(proxy_wallet=proxy_wallet)
+    await executor.ensure_poller(proxy_wallet)
+
+    event_logger = EventLogger(
+        table=_cfg["strategy"]["events_table"],
+        owner_user_id=data["owner_user_id"],
+        proxy_wallet=proxy_wallet,
+        config_id=cfg.id,
+        config_snapshot=data.get("params"),
+    )
+
+    strategy = SweepStrategy()
+    await strategy.start_with_tools(
+        config=data["params"],
+        executor=executor,
+        orderbook_ws=orderbook_ws,
+        event_logger=event_logger,
+        proxy_wallet=proxy_wallet,
+    )
+
+    _strategies[cfg.id] = strategy
+    logger.info("Instance %d started: wallet=%s", cfg.id, proxy_wallet[:10])
+    return strategy
+
+
+async def _destroy_instance(strategy: SweepStrategy, reason: str) -> None:
+    """强制退出并停止一个策略实例。"""
+    if hasattr(strategy, "force_exit"):
+        await strategy.force_exit(reason)
+    await strategy.stop()
+    for cid, s in list(_strategies.items()):
+        if s is strategy:
+            _strategies.pop(cid, None)
+            break
+
+
+pool = InstancePool(
+    config_loader=_load_configs,
+    create_instance=_create_instance,
+    destroy_instance=_destroy_instance,
 )
+
+# ==================== 信号分发 ====================
+
+
+async def _dispatch_signal(signal) -> None:
+    """将信号分发给所有运行中的策略实例。"""
+    for strategy in list(_strategies.values()):
+        try:
+            await strategy.on_signal(signal)
+        except Exception:
+            logger.exception("Strategy error on signal %s", signal.signal_id)
+
+
+# ==================== FastAPI App ====================
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    set_client_provider(get_account_service())
+    await orderbook_ws.start()
+    await pool.start()
+
+    signal_client = SignalWSClient(url=WEATHER_SIGNAL_URL, adapter=WeatherSweepAdapter())
+    signal_task = asyncio.create_task(
+        signal_client.listen(_dispatch_signal), name="ws:weather_signal"
+    )
+
+    app.state.pool = pool
+    app.state.orderbook_ws = orderbook_ws
+
+    async with consul_lifespan(_cfg["service"]["name"], PORT, tags=_cfg["consul"]["tags"]):
+        try:
+            yield
+        finally:
+            signal_task.cancel()
+            try:
+                await signal_task
+            except asyncio.CancelledError:
+                pass
+            await pool.stop()
+            await orderbook_ws.stop()
+
+
+app = FastAPI(title=_cfg["service"]["name"], lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,6 +167,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(strategy_router)
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "strategy": "SweepStrategy",
+        **pool.health(),
+    }
+
+
+@app.get("/api/status")
+async def status():
+    return health()
+
+
+@app.post("/internal/reload")
+async def reload():
+    result = await pool.reload()
+    return {"status": "ok", **result}
+
 
 if __name__ == "__main__":
     import uvicorn

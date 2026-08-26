@@ -16,6 +16,43 @@ class WeatherSweepConfigDAO:
 
     TABLE = "weather_sweep_configs"
 
+    def list_all_enabled(self) -> List[Dict[str, Any]]:
+        """加载所有 enabled 的配置（含 proxy_wallet），供实例管理使用。"""
+        sql = f"""
+            SELECT c.id, c.owner_user_id, c.account_id, c.name, c.params_version,
+                   c.fixed_entry_shares, c.entry_wait_ms, c.sweep_outcome_filter,
+                   c.signal_source_filter, c.signal_threshold_filter,
+                   c.stop_loss_ratio, c.exit_wait_ms, c.tick_verify_retries,
+                   c.tick_verify_backoff_ms,
+                   a.proxy_wallet
+            FROM {self.TABLE} c
+            JOIN accounts a ON a.id = c.account_id
+            WHERE c.enabled = 1 AND c.deleted_at IS NULL
+            ORDER BY c.id
+        """
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                columns = [desc[0] for desc in cur.description]
+                rows = cur.fetchall()
+
+        result = []
+        for row in rows:
+            d = dict(zip(columns, row))
+            d["params"] = {
+                "fixed_entry_shares": str(d["fixed_entry_shares"]),
+                "entry_wait_ms": int(d["entry_wait_ms"]),
+                "sweep_outcome_filter": d.get("sweep_outcome_filter", "no"),
+                "signal_source_filter": d.get("signal_source_filter", "all"),
+                "signal_threshold_filter": d.get("signal_threshold_filter", "all"),
+                "stop_loss_ratio": str(d["stop_loss_ratio"]),
+                "exit_wait_ms": int(d["exit_wait_ms"]),
+                "tick_verify_retries": int(d["tick_verify_retries"]),
+                "tick_verify_backoff_ms": int(d["tick_verify_backoff_ms"]),
+            }
+            result.append(d)
+        return result
+
     def list_by_owner(self, owner_user_id: int) -> List[Dict[str, Any]]:
         sql = f"""
             SELECT c.*, a.proxy_wallet, a.name AS account_name
@@ -68,11 +105,13 @@ class WeatherSweepConfigDAO:
             INSERT INTO {self.TABLE} (
                 owner_user_id, account_id, name, enabled,
                 fixed_entry_shares, entry_wait_ms, sweep_outcome_filter,
+                signal_source_filter, signal_threshold_filter,
                 stop_loss_ratio, exit_wait_ms, tick_verify_retries, tick_verify_backoff_ms,
                 created_at, updated_at
             ) VALUES (
                 %(owner_user_id)s, %(account_id)s, %(name)s, %(enabled)s,
                 %(fixed_entry_shares)s, %(entry_wait_ms)s, %(sweep_outcome_filter)s,
+                %(signal_source_filter)s, %(signal_threshold_filter)s,
                 %(stop_loss_ratio)s, %(exit_wait_ms)s, %(tick_verify_retries)s, %(tick_verify_backoff_ms)s,
                 NOW(3), NOW(3)
             )
@@ -88,7 +127,8 @@ class WeatherSweepConfigDAO:
         params = []
         for key in (
             "name", "enabled", "fixed_entry_shares", "entry_wait_ms",
-            "sweep_outcome_filter", "stop_loss_ratio", "exit_wait_ms",
+            "sweep_outcome_filter", "signal_source_filter", "signal_threshold_filter",
+            "stop_loss_ratio", "exit_wait_ms",
             "tick_verify_retries", "tick_verify_backoff_ms",
         ):
             if key in data:

@@ -13,6 +13,7 @@ from framework.strategy_runtime.instance_manager import InstanceManager
 from framework.strategy_runtime.interfaces import BaseStrategy, StrategyContext
 from framework.strategy_runtime.state_store import MySQLStateStore
 from framework.consul import consul_lifespan
+from framework.orderbook_ws import OrderBookWS
 from framework.trading.provider import set_client_provider
 
 logger = logging.getLogger(__name__)
@@ -88,26 +89,32 @@ def _create_multi_instance_app(
         config_table=config_table,
     )
 
+    orderbook_ws = OrderBookWS()
+
     container = StrategyContainer(
         strategy_class=strategy_class,
         signal_sources=signal_sources,
         instance_manager=instance_manager,
         events_table=events_table,
         executor_factory=executor_factory,
+        orderbook_ws=orderbook_ws,
     )
 
     service_port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8003")))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await orderbook_ws.start()
         await container.start()
         app.state.container = container
+        app.state.orderbook_ws = orderbook_ws
         logger.info("%s started (multi-instance)", service_name)
         async with consul_lifespan(service_name, service_port, tags=consul_tags):
             try:
                 yield
             finally:
                 await container.stop()
+                await orderbook_ws.stop()
 
     app = FastAPI(title=service_name, lifespan=lifespan)
 

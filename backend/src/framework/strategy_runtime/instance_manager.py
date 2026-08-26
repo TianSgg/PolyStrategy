@@ -36,6 +36,7 @@ class InstanceManager:
         sql = f"""
             SELECT c.id, c.owner_user_id, c.account_id, c.name, c.enabled,
                    c.fixed_entry_shares, c.entry_wait_ms, c.sweep_outcome_filter,
+                   c.signal_source_filter, c.signal_threshold_filter,
                    c.stop_loss_ratio, c.exit_wait_ms, c.tick_verify_retries,
                    c.tick_verify_backoff_ms, c.params_version,
                    a.proxy_wallet
@@ -56,7 +57,9 @@ class InstanceManager:
             params = {
                 "fixed_entry_shares": str(d["fixed_entry_shares"]),
                 "entry_wait_ms": int(d["entry_wait_ms"]),
-                "sweep_outcome_filter": d["sweep_outcome_filter"],
+                "sweep_outcome_filter": d.get("sweep_outcome_filter", "no"),
+                "signal_source_filter": d.get("signal_source_filter", "all"),
+                "signal_threshold_filter": d.get("signal_threshold_filter", "all"),
                 "stop_loss_ratio": str(d["stop_loss_ratio"]),
                 "exit_wait_ms": int(d["exit_wait_ms"]),
                 "tick_verify_retries": int(d["tick_verify_retries"]),
@@ -83,6 +86,7 @@ class InstanceManager:
         sql = f"""
             SELECT c.id, c.owner_user_id, c.account_id, c.name, c.enabled,
                    c.fixed_entry_shares, c.entry_wait_ms, c.sweep_outcome_filter,
+                   c.signal_source_filter, c.signal_threshold_filter,
                    c.stop_loss_ratio, c.exit_wait_ms, c.tick_verify_retries,
                    c.tick_verify_backoff_ms, c.params_version,
                    a.proxy_wallet
@@ -103,7 +107,9 @@ class InstanceManager:
         params = {
             "fixed_entry_shares": str(d["fixed_entry_shares"]),
             "entry_wait_ms": int(d["entry_wait_ms"]),
-            "sweep_outcome_filter": d["sweep_outcome_filter"],
+            "sweep_outcome_filter": d.get("sweep_outcome_filter", "no"),
+            "signal_source_filter": d.get("signal_source_filter", "all"),
+            "signal_threshold_filter": d.get("signal_threshold_filter", "all"),
             "stop_loss_ratio": str(d["stop_loss_ratio"]),
             "exit_wait_ms": int(d["exit_wait_ms"]),
             "tick_verify_retries": int(d["tick_verify_retries"]),

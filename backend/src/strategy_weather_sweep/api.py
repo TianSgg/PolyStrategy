@@ -5,10 +5,10 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
 
 from framework.auth import AuthUser, get_current_user
 from strategy_weather_sweep.dao import WeatherSweepConfigDAO, WeatherSweepEventDAO
+from strategy_weather_sweep.type import CreateConfigRequest, UpdateConfigRequest
 
 logger = logging.getLogger(__name__)
 
@@ -16,34 +16,6 @@ router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
 _config_dao = WeatherSweepConfigDAO()
 _event_dao = WeatherSweepEventDAO()
-
-
-# ─── Request / Response Models ───
-
-
-class CreateConfigRequest(BaseModel):
-    account_id: int
-    name: str
-    enabled: bool = False
-    fixed_entry_shares: float = 100.0
-    entry_wait_ms: int = 30000
-    sweep_outcome_filter: str = "no"
-    stop_loss_ratio: float = 0.60
-    exit_wait_ms: int = 5000
-    tick_verify_retries: int = 3
-    tick_verify_backoff_ms: int = 1000
-
-
-class UpdateConfigRequest(BaseModel):
-    name: Optional[str] = None
-    enabled: Optional[bool] = None
-    fixed_entry_shares: Optional[float] = None
-    entry_wait_ms: Optional[int] = None
-    sweep_outcome_filter: Optional[str] = None
-    stop_loss_ratio: Optional[float] = None
-    exit_wait_ms: Optional[int] = None
-    tick_verify_retries: Optional[int] = None
-    tick_verify_backoff_ms: Optional[int] = None
 
 
 # ─── Configs CRUD ───
@@ -73,6 +45,8 @@ async def create_config(data: CreateConfigRequest, request: Request, current_use
         "fixed_entry_shares": data.fixed_entry_shares,
         "entry_wait_ms": data.entry_wait_ms,
         "sweep_outcome_filter": data.sweep_outcome_filter,
+        "signal_source_filter": data.signal_source_filter,
+        "signal_threshold_filter": data.signal_threshold_filter,
         "stop_loss_ratio": data.stop_loss_ratio,
         "exit_wait_ms": data.exit_wait_ms,
         "tick_verify_retries": data.tick_verify_retries,
@@ -147,6 +121,6 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
 
 
 async def _reload(request: Request) -> None:
-    """Directly reload the strategy container (same process)."""
-    container = request.app.state.container
-    await container.reload()
+    """Directly reload the instance pool (same process)."""
+    pool = request.app.state.pool
+    await pool.reload()
