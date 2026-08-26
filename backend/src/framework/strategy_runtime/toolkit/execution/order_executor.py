@@ -16,7 +16,7 @@ import uuid
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from account.service import get_account_service
+from account_service.service import get_account_service
 from framework.strategy_runtime.interfaces import OrderResult
 from framework.strategy_runtime.toolkit.execution.balance_poller import BalancePoller, get_or_create_poller
 

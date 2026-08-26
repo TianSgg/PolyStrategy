@@ -22,7 +22,7 @@ async def fetch_position_value(addr: str) -> float:
 
 
 def fetch_clob_balance(proxy_wallet: str) -> float:
-    from account.service import get_account_service
+    from account_service.service import get_account_service
     from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
 
     service = get_account_service()
