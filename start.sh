@@ -155,9 +155,9 @@ case "${1:-start}" in
         echo ""
         echo "═══ All services started ═══"
         echo "  Frontend:   http://localhost:5173"
-        echo "  Traefik:    http://localhost:8000 (需单独启动 infra)"
-        echo "  Consul UI:  http://localhost:8500"
         echo "  Logs:       $ROOT_DIR/logs/<service_name>/"
+        echo ""
+        echo "  Note: Consul + Traefik 由 PolyInfra 项目单独管理"
         ;;
     stop)
         echo "═══ PolyStrategy — Stopping all services ═══"

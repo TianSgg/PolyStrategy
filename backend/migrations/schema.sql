@@ -1,6 +1,6 @@
--- PolyStrategy 全量建表 (V1~V8 合并 + 信号表拆分)
--- 新环境直接执行此文件即可，无需逐个跑增量迁移
--- ⚠️ 会 DROP 已有表，勿在生产环境直接执行
+-- PolyStrategy 全量建表
+-- 新环境直接执行此文件即可建立完整数据库
+-- ⚠️ 会 DROP 已有库，勿在生产环境直接执行
 
 DROP DATABASE IF EXISTS polystrategy;
 CREATE DATABASE polystrategy DEFAULT CHARACTER SET utf8mb4;
@@ -21,7 +21,7 @@ CREATE TABLE users (
 );
 
 -- ============================================================
--- 账户表
+-- 账户表（钱包 + API 密钥）
 -- ============================================================
 CREATE TABLE accounts (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -43,192 +43,40 @@ CREATE TABLE accounts (
 );
 
 -- ============================================================
--- Leader 管理表
--- ============================================================
-CREATE TABLE leaders (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Leader 代理钱包地址',
-  name VARCHAR(128) NOT NULL COMMENT 'Leader 显示名称',
-  profile_image VARCHAR(512) DEFAULT '' COMMENT '头像 URL',
-  bio VARCHAR(512) DEFAULT '' COMMENT '个人简介',
-  pseudonym VARCHAR(128) DEFAULT '' COMMENT '匿名显示名',
-  x_username VARCHAR(128) DEFAULT '' COMMENT 'X (Twitter) 用户名',
-  verified_badge TINYINT(1) DEFAULT 0 COMMENT 'Polymarket 认证标识',
-  display_username_public TINYINT(1) DEFAULT 0 COMMENT '是否公开显示用户名',
-  poly_created_at DATETIME(3) DEFAULT NULL COMMENT 'Polymarket 创建时间（UTC+8）',
-  owner_user_id INT NULL,
-  created_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  UNIQUE KEY idx_leaders_owner_proxy (owner_user_id, proxy_wallet),
-  INDEX idx_leaders_owner_user_id (owner_user_id)
-);
-
--- ============================================================
--- 跟单配置表 (含 V2 size_mode + V3 sweep_confirm_window)
--- ============================================================
-CREATE TABLE copy_trading_configs (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Leader 代理钱包地址',
-  follower_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Follower 代理钱包地址',
-  gtd_expiration_sec INT NOT NULL DEFAULT 1800 COMMENT 'GTD订单过期时间（秒），默认30分钟',
-  buy_size DECIMAL(20, 4) NOT NULL DEFAULT 100.0000 COMMENT '固定买入数量（shares）',
-  size_mode VARCHAR(10) NOT NULL DEFAULT 'fixed' COMMENT '份额模式: fixed=固定数量, ratio=按leader比例',
-  size_ratio DECIMAL(10, 4) NOT NULL DEFAULT 1.0000 COMMENT '比例模式下的倍率',
-  size_min DECIMAL(20, 4) NOT NULL DEFAULT 0.0000 COMMENT '比例模式下最小下单份额',
-  sweep_confirm_window_ms INT NOT NULL DEFAULT 0 COMMENT '天气扫单确认窗口(ms)，0=不参与天气扫单入场',
-  enabled TINYINT(1) DEFAULT 0 COMMENT '是否启用',
-  owner_user_id INT NULL,
-  created_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  UNIQUE KEY idx_leader_follower (leader_proxy_wallet, follower_proxy_wallet),
-  INDEX idx_copy_trading_configs_owner_user_id (owner_user_id)
-);
-
--- ============================================================
--- 跟单配置关联 asset 列表
--- ============================================================
-CREATE TABLE copy_trading_config_assets (
-  config_id INT NOT NULL,
-  asset_id VARCHAR(128) NOT NULL,
-  last_seen_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  PRIMARY KEY (config_id, asset_id),
-  INDEX idx_config_last_seen (config_id, last_seen_at)
-);
-
--- ============================================================
--- 跟单交易记录表
--- ============================================================
-CREATE TABLE copy_trading_orders (
-  id VARCHAR(128) PRIMARY KEY COMMENT '0x开头，follower_order_hash',
-  config_id INT NOT NULL,
-  leader VARCHAR(128) NOT NULL COMMENT 'leader proxy_wallet',
-  follower VARCHAR(128) NOT NULL COMMENT 'follower proxy_wallet',
-  leader_tx_hash VARCHAR(128) NOT NULL COMMENT 'leader transaction hash',
-  asset_id VARCHAR(128) NOT NULL,
-  side VARCHAR(16) NOT NULL COMMENT 'BUY / SELL',
-  leader_size DECIMAL(20,4) NOT NULL,
-  leader_price DECIMAL(20,4) NOT NULL,
-  follow_size DECIMAL(20,4) NOT NULL COMMENT 'follower 成交数量',
-  follow_price DECIMAL(20,4) NOT NULL COMMENT 'follower 成交价（含tick调整）',
-  size_matched DECIMAL(20,4) NOT NULL DEFAULT 0 COMMENT '已成交数量',
-  status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING / FILLED / CANCELED / ERROR',
-  err_msg VARCHAR(255) COMMENT '错误信息',
-  signal_latency_ms INT DEFAULT NULL COMMENT '信号到达→下单结果耗时(ms)',
-  sweep_to_leader_ms INT DEFAULT NULL COMMENT 'sweep入场→leader信号确认延迟(ms)',
-  created_at DATETIME(3) NOT NULL,
-  updated_at DATETIME(3) NOT NULL,
-  INDEX idx_config_id_asset_status (config_id, asset_id, status),
-  INDEX idx_follower (follower),
-  INDEX idx_created_at (created_at)
-);
-
--- ============================================================
--- Asset 市场名称缓存表
--- ============================================================
-CREATE TABLE copy_trading_asset_questions (
-  asset_id VARCHAR(128) NOT NULL PRIMARY KEY,
-  question VARCHAR(512) NOT NULL,
-  outcome VARCHAR(128) DEFAULT '' COMMENT 'Asset 对应 outcome',
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR)
-);
-
--- ============================================================
--- Follower 仓位表
--- ============================================================
-CREATE TABLE copy_trading_follower_positions (
-  follower_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Follower 代理钱包地址',
-  asset_id VARCHAR(128) NOT NULL COMMENT '资产 ID',
-  size DECIMAL(20, 8) NOT NULL DEFAULT 0 COMMENT '持仓数量',
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  PRIMARY KEY (follower_proxy_wallet, asset_id)
-);
-
--- ============================================================
--- Follower 待成交 SELL 锁单
--- ============================================================
-CREATE TABLE copy_trading_follower_pending_sell (
-  follower_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Follower 代理钱包地址',
-  asset_id VARCHAR(128) NOT NULL COMMENT '资产 ID',
-  pending DECIMAL(20, 8) NOT NULL DEFAULT 0 COMMENT '锁定中的挂单数量',
-  question VARCHAR(512) COMMENT '市场标题',
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  PRIMARY KEY (follower_proxy_wallet, asset_id)
-);
-
--- ============================================================
--- Follower 待成交 BUY 锁单
--- ============================================================
-CREATE TABLE copy_trading_follower_pending_buy (
-  follower_proxy_wallet VARCHAR(128) NOT NULL COMMENT 'Follower 代理钱包地址',
-  asset_id VARCHAR(128) NOT NULL COMMENT '资产 ID',
-  pending DECIMAL(20, 8) NOT NULL DEFAULT 0 COMMENT '锁定中的买单数量',
-  question VARCHAR(512) COMMENT '市场标题',
-  updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  PRIMARY KEY (follower_proxy_wallet, asset_id)
-);
-
--- ============================================================
--- 账户余额历史表
--- ============================================================
-CREATE TABLE copy_trading_account_balance_history (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  proxy_wallet VARCHAR(128) NOT NULL,
-  total_value DECIMAL(20,6) NOT NULL COMMENT '账户总价值(余额+持仓)',
-  created_at DATETIME(3) NOT NULL COMMENT '记录时间(UTC+8)',
-  INDEX idx_abh_wallet_time (proxy_wallet, created_at),
-  INDEX idx_abh_time (created_at)
-);
-
--- ============================================================
--- 余额调整表（充值/提现记录）
--- ============================================================
-CREATE TABLE copy_trading_balance_adjustments (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  proxy_wallet VARCHAR(128) NOT NULL,
-  delta DECIMAL(20,6) NOT NULL COMMENT '充值为正,提现为负',
-  applied_at DATETIME(3) NOT NULL COMMENT '生效时间点(快照时间戳)',
-  note VARCHAR(255) DEFAULT '' COMMENT '备注',
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  INDEX idx_ba_wallet (proxy_wallet),
-  INDEX idx_ba_applied (applied_at)
-);
-
--- ============================================================
 -- 天气城市监听配置
 -- ============================================================
 CREATE TABLE weather_cities (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '城市配置主键',
-  city_name VARCHAR(100) NOT NULL COMMENT '城市展示名，例如 Miami',
-  city_slug VARCHAR(100) NOT NULL COMMENT 'Polymarket 城市 slug，例如 miami',
-  timezone VARCHAR(64) NOT NULL COMMENT 'IANA 时区，例如 America/New_York',
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  city_name VARCHAR(100) NOT NULL,
+  city_slug VARCHAR(100) NOT NULL,
+  timezone VARCHAR(64) NOT NULL,
 
-  has_highest_market TINYINT(1) NOT NULL DEFAULT 0 COMMENT '该城市是否存在最高温市场',
-  has_lowest_market TINYINT(1) NOT NULL DEFAULT 0 COMMENT '该城市是否存在最低温市场',
-  monitor_highest TINYINT(1) NOT NULL DEFAULT 0 COMMENT '本项目是否监听最高温市场',
-  monitor_lowest TINYINT(1) NOT NULL DEFAULT 0 COMMENT '本项目是否监听最低温市场',
-  enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '城市总开关；0 时不监听任何方向',
+  has_highest_market TINYINT(1) NOT NULL DEFAULT 0,
+  has_lowest_market TINYINT(1) NOT NULL DEFAULT 0,
+  monitor_highest TINYINT(1) NOT NULL DEFAULT 0,
+  monitor_lowest TINYINT(1) NOT NULL DEFAULT 0,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
 
-  sort_order INT NOT NULL DEFAULT 0 COMMENT '前端排序，值越小越靠前',
-  metadata JSON NULL COMMENT '预留扩展信息',
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间 UTC，毫秒级',
-  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '最后修改时间 UTC，毫秒级',
+  sort_order INT NOT NULL DEFAULT 0,
+  metadata JSON NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 
   PRIMARY KEY (id),
   UNIQUE KEY uq_weather_cities_city_slug (city_slug),
   KEY idx_weather_cities_enabled_sort (enabled, sort_order),
   CONSTRAINT chk_monitor_highest_requires_market CHECK (monitor_highest = 0 OR has_highest_market = 1),
   CONSTRAINT chk_monitor_lowest_requires_market CHECK (monitor_lowest = 0 OR has_lowest_market = 1)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='天气城市监听配置';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
--- 天气信号记录（原 signal_weather_events）
+-- 天气信号记录
 -- ============================================================
 CREATE TABLE weather_orderbook_signals (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  signal_id VARCHAR(512) NOT NULL COMMENT '信号唯一标识',
-  signal_type ENUM('sweep', 'no_longer_possible', 'market_resolved', 'event_started') NOT NULL COMMENT '信号类型',
-  occurred_at DATETIME(3) NOT NULL COMMENT '信号发生时间 UTC',
+  signal_id VARCHAR(512) NOT NULL,
+  signal_type ENUM('sweep', 'no_longer_possible', 'market_resolved', 'event_started') NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
   event_slug VARCHAR(255) NOT NULL,
   city VARCHAR(100) NOT NULL,
   city_slug VARCHAR(100) NOT NULL,
@@ -244,7 +92,7 @@ CREATE TABLE weather_orderbook_signals (
   token_id VARCHAR(100) NULL,
   status ENUM('monitoring', 'resolved', 'exhausted') NULL,
   reason VARCHAR(255) NULL,
-  payload JSON NOT NULL COMMENT '订单簿快照等详情',
+  payload JSON NOT NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
   PRIMARY KEY (id),
@@ -252,8 +100,70 @@ CREATE TABLE weather_orderbook_signals (
   KEY idx_event_time (event_slug, occurred_at DESC, id DESC),
   KEY idx_city_date (city_slug, direction, local_date),
   KEY idx_recent (occurred_at DESC, id DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='天气信号记录';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
+-- Weather Sweep 策略配置
+-- ============================================================
+CREATE TABLE weather_sweep_configs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  owner_user_id INT NOT NULL,
+  account_id INT NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+
+  fixed_entry_shares DECIMAL(20,4) NOT NULL DEFAULT 100.0000,
+  entry_wait_ms INT NOT NULL DEFAULT 30000,
+  sweep_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'no',
+  signal_source_filter VARCHAR(8) NOT NULL DEFAULT 'main',
+  signal_threshold_filter VARCHAR(8) NOT NULL DEFAULT 'all',
+  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
+  exit_wait_ms INT NOT NULL DEFAULT 5000,
+  tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,
+  tick_verify_backoff_ms INT NOT NULL DEFAULT 1000,
+
+  params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  deleted_at DATETIME(3) DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_owner_name (owner_user_id, name),
+  KEY idx_account (account_id, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
+-- Weather Sweep 执行事件日志
+-- ============================================================
+CREATE TABLE weather_sweep_events (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+  owner_user_id INT NOT NULL,
+  proxy_wallet VARCHAR(128) NOT NULL,
+  config_id BIGINT UNSIGNED NOT NULL,
+  config_snapshot JSON NULL,
+
+  event_id CHAR(36) NOT NULL,
+  signal_id VARCHAR(512) NULL,
+  token_id VARCHAR(128) NULL,
+  market_slug VARCHAR(255) NULL,
+  event_slug VARCHAR(255) NULL,
+
+  phase ENUM('entry','monitor','exit','exit_risk','exit_force') NOT NULL DEFAULT 'entry',
+  step VARCHAR(64) NOT NULL,
+  sequence_no INT UNSIGNED NOT NULL,
+  detail JSON NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_event_seq (event_id, sequence_no),
+  KEY idx_owner_wallet (owner_user_id, proxy_wallet, occurred_at DESC),
+  KEY idx_config_event (config_id, event_id),
+  KEY idx_phase (phase),
+  KEY idx_token (token_id, occurred_at DESC),
+  KEY idx_event_slug (event_slug, occurred_at DESC),
+  KEY idx_occurred (occurred_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
 -- 天气城市种子数据
@@ -316,191 +226,47 @@ INSERT INTO weather_cities (
 
 
 -- ============================================================
--- Leader 信号记录（原 leader_signal_events）
+-- ↓↓↓ 以下表暂未使用，保留供后续启用 ↓↓↓
 -- ============================================================
-CREATE TABLE leader_signals (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  signal_id VARCHAR(256) NOT NULL COMMENT '信号唯一标识',
-  signal_type VARCHAR(64) NOT NULL DEFAULT 'leader_buy',
-  token_id VARCHAR(128) NOT NULL,
-  outcome VARCHAR(8) DEFAULT NULL,
-  leader_proxy_wallet VARCHAR(128) NOT NULL,
-  leader_name VARCHAR(128) DEFAULT NULL,
-  order_size DECIMAL(20,4) DEFAULT NULL,
-  order_price DECIMAL(20,8) DEFAULT NULL,
-  market_slug VARCHAR(255) DEFAULT NULL,
-  occurred_at DATETIME(3) DEFAULT NULL,
-  received_at DATETIME(3) DEFAULT NULL,
-  received_monotonic_ns BIGINT UNSIGNED DEFAULT NULL,
-  extra_json JSON DEFAULT NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_signal_id (signal_id),
-  KEY idx_token_time (token_id, received_at),
-  KEY idx_wallet_time (leader_proxy_wallet, received_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Leader 活动信号记录';
+-- -- Leader 管理表
+-- CREATE TABLE leaders ( ... );
 
--- ============================================================
--- 策略 1 配置: Weather Sweep（原 strategy_sweep_configs）
--- ============================================================
-CREATE TABLE weather_sweep_configs (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  owner_user_id INT NOT NULL,
-  account_id INT NOT NULL,
-  name VARCHAR(128) NOT NULL,
-  enabled TINYINT(1) NOT NULL DEFAULT 0,
+-- -- Leader 信号记录
+-- CREATE TABLE leader_signals ( ... );
 
-  fixed_entry_shares DECIMAL(20,4) NOT NULL DEFAULT 100.0000,
-  entry_wait_ms INT NOT NULL DEFAULT 30000,
-  sweep_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'no',
-  signal_source_filter VARCHAR(8) NOT NULL DEFAULT 'all',
-  signal_threshold_filter VARCHAR(8) NOT NULL DEFAULT 'all',
-  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
-  exit_wait_ms INT NOT NULL DEFAULT 5000,
-  tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,
-  tick_verify_backoff_ms INT NOT NULL DEFAULT 1000,
+-- -- 策略 2 配置: Leader
+-- CREATE TABLE strategy_leader_configs ( ... );
 
-  params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
-  deleted_at DATETIME(3) DEFAULT NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+-- -- 策略 3 配置: Sweep + Leader 确认
+-- CREATE TABLE strategy_sweep_leader_configs ( ... );
 
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_owner_name (owner_user_id, name),
-  KEY idx_account (account_id, enabled)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Weather Sweep 策略配置（一个配置 = 一个实例）';
+-- -- 跟单配置表
+-- CREATE TABLE copy_trading_configs ( ... );
 
--- ============================================================
--- 策略 2 配置: Leader
--- ============================================================
-CREATE TABLE strategy_leader_configs (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  owner_user_id INT NOT NULL,
-  account_id INT NOT NULL,
-  name VARCHAR(128) NOT NULL,
-  enabled TINYINT(1) NOT NULL DEFAULT 0,
+-- -- 跟单配置关联 asset 列表
+-- CREATE TABLE copy_trading_config_assets ( ... );
 
-  entry_size_mode VARCHAR(16) NOT NULL DEFAULT 'fixed',
-  fixed_entry_shares DECIMAL(20,4) NOT NULL DEFAULT 100.0000,
-  entry_wait_ms INT NOT NULL DEFAULT 30000,
-  leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT '要跟踪的 leader 地址',
-  leader_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'all',
-  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
-  exit_wait_ms INT NOT NULL DEFAULT 5000,
-  tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,
-  tick_verify_backoff_ms INT NOT NULL DEFAULT 1000,
+-- -- 跟单交易记录表
+-- CREATE TABLE copy_trading_orders ( ... );
 
-  params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
-  deleted_at DATETIME(3) DEFAULT NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  updated_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+-- -- Asset 市场名称缓存表
+-- CREATE TABLE copy_trading_asset_questions ( ... );
 
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_leader_configs_owner_name (owner_user_id, name),
-  KEY idx_leader_configs_account (account_id, enabled),
-  KEY idx_leader_configs_leader (leader_proxy_wallet, enabled)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='策略 2 (Leader) 配置';
+-- -- Follower 仓位表
+-- CREATE TABLE copy_trading_follower_positions ( ... );
 
--- ============================================================
--- 策略 3 配置: Sweep + Leader 确认
--- ============================================================
-CREATE TABLE strategy_sweep_leader_configs (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  owner_user_id INT NOT NULL,
-  account_id INT NOT NULL,
-  name VARCHAR(128) NOT NULL,
-  enabled TINYINT(1) NOT NULL DEFAULT 0,
+-- -- Follower 待成交 SELL 锁单
+-- CREATE TABLE copy_trading_follower_pending_sell ( ... );
 
-  fixed_probe_shares DECIMAL(20,4) NOT NULL DEFAULT 50.0000,
-  entry_wait_ms INT NOT NULL DEFAULT 30000,
-  sweep_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'no',
-  leader_proxy_wallet VARCHAR(128) NOT NULL COMMENT '确认用 leader 地址',
-  leader_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'all',
-  leader_confirm_window_ms INT NOT NULL DEFAULT 60000,
-  post_confirm_wait_ms INT NOT NULL DEFAULT 30000,
+-- -- Follower 待成交 BUY 锁单
+-- CREATE TABLE copy_trading_follower_pending_buy ( ... );
 
-  exit_mode VARCHAR(32) NOT NULL DEFAULT 'risk_tick_exit',
-  exit_wait_ms INT NOT NULL DEFAULT 5000,
+-- -- 账户余额历史表
+-- CREATE TABLE copy_trading_account_balance_history ( ... );
 
-  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
-  tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,
-  tick_verify_backoff_ms INT NOT NULL DEFAULT 1000,
+-- -- 余额调整表
+-- CREATE TABLE copy_trading_balance_adjustments ( ... );
 
-  params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
-  deleted_at DATETIME(3) DEFAULT NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-  updated_at DATETIME(3) NOT NULL DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
-
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_sweep_leader_configs_owner_name (owner_user_id, name),
-  KEY idx_sweep_leader_configs_account (account_id, enabled),
-  KEY idx_sweep_leader_configs_leader (leader_proxy_wallet, enabled)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='策略 3 (Sweep+Leader) 配置';
-
--- ============================================================
--- Weather Sweep 执行事件日志（一个 event = 多个 step）
--- ============================================================
-CREATE TABLE weather_sweep_events (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-
-  -- ① 配置相关
-  owner_user_id INT NOT NULL,
-  proxy_wallet VARCHAR(128) NOT NULL,
-  config_id BIGINT UNSIGNED NOT NULL,
-  config_snapshot JSON NULL,
-
-  -- ② event 上下文
-  event_id CHAR(36) NOT NULL,
-  signal_id VARCHAR(512) NULL,
-  token_id VARCHAR(128) NULL,
-  market_slug VARCHAR(255) NULL,
-  event_slug VARCHAR(255) NULL,
-
-  -- ③ 执行记录本身
-  phase ENUM('entry','monitor','exit','exit_risk','exit_force') NOT NULL DEFAULT 'entry',
-  step VARCHAR(64) NOT NULL,
-  sequence_no INT UNSIGNED NOT NULL,
-  detail JSON NOT NULL,
-  occurred_at DATETIME(3) NOT NULL,
-
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_event_seq (event_id, sequence_no),
-  KEY idx_owner_wallet (owner_user_id, proxy_wallet, occurred_at DESC),
-  KEY idx_config_event (config_id, event_id),
-  KEY idx_phase (phase),
-  KEY idx_token (token_id, occurred_at DESC),
-  KEY idx_event_slug (event_slug, occurred_at DESC),
-  KEY idx_occurred (occurred_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Weather Sweep 执行事件日志';
-
--- ============================================================
--- 资金账本
--- ============================================================
-CREATE TABLE strategy_account_ledger (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  account_id INT NOT NULL,
-  run_id CHAR(36) DEFAULT NULL,
-  order_id CHAR(36) DEFAULT NULL,
-  token_id VARCHAR(128) DEFAULT NULL,
-  entry_type VARCHAR(32) NOT NULL,
-  cash_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
-  shares_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
-  reserved_cash_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
-  reserved_shares_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
-  dedupe_key VARCHAR(256) NOT NULL,
-  occurred_at DATETIME(3) NOT NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  metadata_json JSON DEFAULT NULL,
-
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_ledger_dedupe (dedupe_key),
-  KEY idx_ledger_account_time (account_id, occurred_at),
-  KEY idx_ledger_run (run_id, occurred_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='策略资金账本';
+-- -- 资金账本
+-- CREATE TABLE strategy_account_ledger ( ... );

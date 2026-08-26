@@ -2,7 +2,11 @@
 
 职责：策略业务逻辑 + 实例工厂方法。
 
-流程:
+架构：
+  SweepStrategy — 实例级管理器，持有共享工具，管理多笔并行交易
+  SweepTrade   — 单笔交易生命周期（per token_id）
+
+流程 (每笔 trade):
   1. 收到合格 sweep → 快速 BUY@0.99 固定份额
   2. 启动风控 + 订单簿监听
   3. entry_wait_ms 后撤销未成交 BUY
@@ -19,7 +23,7 @@ import asyncio
 import logging
 import time
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from framework.strategy_runtime.event_logger import EventLogger
 from framework.strategy_runtime.interfaces import Signal
@@ -30,78 +34,39 @@ from strategy_weather_sweep.internal.risk_monitor import SweepRiskMonitor
 logger = logging.getLogger(__name__)
 
 
-class SweepStrategy:
-    """策略 1: 扫单信号 → BUY@0.99 → tick exit SELL@0.999。"""
+# ============================================================
+# SweepTrade — 单笔交易的完整生命周期
+# ============================================================
 
-    # ==================== 工厂方法 ====================
 
-    EVENTS_TABLE = "weather_sweep_events"
+class SweepTrade:
+    """单笔交易：从信号触发到平仓退出的完整状态机。"""
 
-    @classmethod
-    async def create(
-        cls,
-        config_data: dict[str, Any],
-        orderbook_ws: Any,
-    ) -> SweepStrategy:
-        """工厂方法 — 根据一条 DB 配置创建完整策略实例。
-
-        策略自己知道需要什么工具，外部不需要关心内部细节。
-        """
-        proxy_wallet = config_data["proxy_wallet"]
-
-        executor = OrderExecutor(proxy_wallet=proxy_wallet)
-        await executor.ensure_poller(proxy_wallet)
-
-        event_logger = EventLogger(
-            table=cls.EVENTS_TABLE,
-            owner_user_id=config_data["owner_user_id"],
-            proxy_wallet=proxy_wallet,
-            config_id=config_data["id"],
-            config_snapshot=config_data.get("params"),
-        )
-
-        instance = cls()
-        await instance._init_tools(
-            config=config_data["params"],
-            executor=executor,
-            orderbook_ws=orderbook_ws,
-            event_logger=event_logger,
-            proxy_wallet=proxy_wallet,
-        )
-        return instance
-
-    async def destroy(self, reason: str) -> None:
-        """销毁实例：强制退出 + 释放资源。"""
-        await self.force_exit(reason)
-        await self.stop()
-
-    # ==================== 初始化 ====================
-
-    async def _init_tools(
+    def __init__(
         self,
+        token_id: str,
+        market_slug: str,
         config: dict[str, Any],
-        executor: Any,
+        executor: OrderExecutor,
         orderbook_ws: Any,
-        event_logger: Any = None,
-        proxy_wallet: str = "",
+        event_logger: Optional[EventLogger],
+        on_closed: Callable[[str], None],
     ) -> None:
-        """内部初始化 — 由工厂方法调用。"""
+        self.token_id = token_id
+        self.market_slug = market_slug
         self._config = config
         self._executor = executor
         self._orderbook_ws = orderbook_ws
         self._el = event_logger
-        self._proxy_wallet = proxy_wallet
+        self._on_closed = on_closed
 
-        self.state = "idle"
-        self._draining = False
-        self.token_id: Optional[str] = None
-        self.market_slug: Optional[str] = None
+        self.state = "entry_working"
         self.position_shares = Decimal("0")
         self.entry_order_id: Optional[str] = None
         self._entry_timer: Optional[asyncio.Task] = None
         self._tick_verified = False
         self._tick_size = Decimal("0.01")
-        self._event_start_ms: int = 0
+        self._event_start_ms = int(time.time() * 1000)
 
         self.risk = SweepRiskMonitor(
             orderbook_ws=orderbook_ws,
@@ -111,118 +76,11 @@ class SweepStrategy:
         )
         self.tick_verifier = TickVerifier()
 
-    async def drain(self) -> None:
-        self._draining = True
-
-    @property
-    def is_idle(self) -> bool:
-        return self.state in ("idle", "closed")
-
-
-    # ==================== Signal Dispatch ====================
-
-    async def on_signal(self, signal: Signal) -> None:
-        if signal.signal_type == "sweep" and self.state == "idle" and not self._draining:
-            if self._should_accept_signal(signal):
-                await self._enter(signal)
-
-    def _should_accept_signal(self, signal: Signal) -> bool:
-        """根据配置过滤信号：outcome、来源、阈值。"""
-        payload = signal.payload
-        cfg = self._config
-
-        outcome_filter = cfg.get("sweep_outcome_filter", "no")
-        if outcome_filter != "all" and payload.get("outcome", "") != outcome_filter:
-            return False
-
-        source_filter = cfg.get("signal_source_filter", "all")
-        if source_filter == "main" and not payload.get("is_from_main", True):
-            return False
-        if source_filter == "next" and payload.get("is_from_main", True):
-            return False
-
-        threshold_filter = cfg.get("signal_threshold_filter", "all")
-        if threshold_filter != "all":
-            reason = payload.get("reason", "")
-            if f"through_{threshold_filter}_cleared" not in reason:
-                return False
-
-        return True
-
-    # ==================== Lifecycle ====================
-
-    async def stop(self) -> None:
-        if self._entry_timer and not self._entry_timer.done():
-            self._entry_timer.cancel()
-        await self.risk.stop()
-
-    async def force_exit(self, reason: str = "config_disabled") -> None:
-        """强制退出：撤买单 + 平仓卖出。由容器在配置变更/禁用时调用。"""
-        if self.state in ("idle", "closed"):
-            return
-
-        if self._entry_timer and not self._entry_timer.done():
-            self._entry_timer.cancel()
-        await self.risk.stop()
-
-        if self._el:
-            self._el.log_step("force_exit", {
-                "reason": reason,
-                "trigger": "user",
-                "state_at_exit": self.state,
-                "position_shares": str(self.position_shares),
-            }, phase="exit_force")
-
-        if self.entry_order_id:
-            cancelled = await self._executor.cancel_order(self.entry_order_id)
-            if self._el:
-                self._el.log_step("buy_cancelled", {
-                    "order_id": self.entry_order_id,
-                    "success": cancelled,
-                }, phase="exit_force")
-            self.entry_order_id = None
-
-        if self.position_shares > 0 and self.token_id:
-            sell_price = Decimal("1") - self._tick_size
-            result = await self._executor.place_order(
-                token_id=self.token_id,
-                side="SELL",
-                price=str(sell_price),
-                size=str(self.position_shares),
-                check_balance=False,
-            )
-            if self._el:
-                self._el.log_step("force_sell_placed", {
-                    "order_id": result.order_id,
-                    "price": str(sell_price),
-                    "size": str(self.position_shares),
-                    "tick_size": str(self._tick_size),
-                }, phase="exit_force")
-
-            if result.status == "filled":
-                filled = Decimal(result.filled_size)
-                self.position_shares -= filled
-                if self._el:
-                    self._el.log_step("force_sell_filled", {
-                        "order_id": result.order_id,
-                        "filled_size": str(filled),
-                        "fill_price": str(sell_price),
-                        "remaining_position": str(self.position_shares),
-                    }, phase="exit_force")
-
-        self._close_event("force_exit", phase="exit_force")
-        self.state = "closed"
-
     # ==================== Entry ====================
 
-    async def _enter(self, signal: Signal) -> None:
-        self.token_id = signal.token_id
-        self.market_slug = signal.market_slug
-        self._event_start_ms = int(time.time() * 1000)
-        self._tick_size = Decimal("0.01")
-
+    async def enter(self, signal: Signal) -> None:
         orderbook_snapshot = signal.payload.get("orderbook_snapshot", {})
-        await self.risk.start(token_id=signal.token_id, orderbook_snapshot=orderbook_snapshot)
+        await self.risk.start(token_id=self.token_id, orderbook_snapshot=orderbook_snapshot)
 
         if self._el:
             self._el.start_event(
@@ -249,21 +107,18 @@ class SweepStrategy:
         actual_shares = min(fixed_shares, Decimal(str(max_shares)))
 
         if actual_shares <= 0:
-            logger.warning("No available cash, closing")
+            logger.warning("No available cash for %s, closing", self.token_id[:10])
             if self._el:
                 self._el.log_step("buy_failed", {
                     "reason": "no_cash",
                     "requested_size": str(fixed_shares),
                     "available_cash": str(available),
                 }, phase="entry")
-                self._close_event("buy_failed", phase="entry")
-            self.state = "closed"
+            self._close("buy_failed", phase="entry")
             return
 
-        self.state = "entry_working"
-
         result = await self._executor.place_order(
-            token_id=signal.token_id,
+            token_id=self.token_id,
             side="BUY",
             price=str(buy_price),
             size=str(actual_shares),
@@ -276,8 +131,7 @@ class SweepStrategy:
                     "reason": result.status,
                     "requested_size": str(actual_shares),
                 }, phase="entry")
-                self._close_event("buy_failed", phase="entry")
-            self.state = "closed"
+            self._close("buy_failed", phase="entry")
             return
 
         if self._el:
@@ -320,18 +174,14 @@ class SweepStrategy:
             }, phase="entry")
 
         if self.position_shares <= 0:
-            self._close_event("timeout_no_fill", phase="entry")
-            self.state = "closed"
+            self._close("timeout_no_fill", phase="entry")
         else:
             self.state = "exit_working"
 
     # ==================== Monitor & Exit ====================
 
     async def _on_tick_change(self, new_tick: Decimal) -> None:
-        """风控 WS 检测到 tick_size 变更回调。"""
         if self._tick_verified or self.state not in ("entry_working", "exit_working"):
-            return
-        if not self.token_id:
             return
 
         if new_tick == Decimal("0.001"):
@@ -355,9 +205,8 @@ class SweepStrategy:
     async def _tick_exit(self) -> None:
         await self.risk.stop()
 
-        if self.position_shares <= 0 or not self.token_id:
-            self._close_event("tick_exit", phase="exit")
-            self.state = "closed"
+        if self.position_shares <= 0:
+            self._close("tick_exit", phase="exit")
             return
 
         sell_price = Decimal("1") - self._tick_size
@@ -389,14 +238,12 @@ class SweepStrategy:
                     "remaining_position": str(self.position_shares),
                 }, phase="exit")
 
-        self._close_event("tick_exit", phase="exit")
-        self.state = "closed"
+        self._close("tick_exit", phase="exit")
 
     # ==================== Risk Exit ====================
 
     async def _risk_exit(self) -> None:
-        """风控触发：撤销挂单 + 强行平仓所有持仓。"""
-        if self.state == "closed" or not self.token_id:
+        if self.state == "closed":
             return
 
         self.state = "risk_exiting"
@@ -442,18 +289,197 @@ class SweepStrategy:
                 filled = Decimal(result.filled_size)
                 self.position_shares -= filled
 
-        self._close_event("stop_loss", phase="exit_risk")
-        self.state = "closed"
+        self._close("stop_loss", phase="exit_risk")
+
+    # ==================== Force Exit ====================
+
+    async def force_exit(self, reason: str = "config_disabled") -> None:
+        if self.state == "closed":
+            return
+
+        if self._entry_timer and not self._entry_timer.done():
+            self._entry_timer.cancel()
+        await self.risk.stop()
+
+        if self._el:
+            self._el.log_step("force_exit", {
+                "reason": reason,
+                "trigger": "user",
+                "state_at_exit": self.state,
+                "position_shares": str(self.position_shares),
+            }, phase="exit_force")
+
+        if self.entry_order_id:
+            cancelled = await self._executor.cancel_order(self.entry_order_id)
+            if self._el:
+                self._el.log_step("buy_cancelled", {
+                    "order_id": self.entry_order_id,
+                    "success": cancelled,
+                }, phase="exit_force")
+            self.entry_order_id = None
+
+        if self.position_shares > 0:
+            sell_price = Decimal("1") - self._tick_size
+            result = await self._executor.place_order(
+                token_id=self.token_id,
+                side="SELL",
+                price=str(sell_price),
+                size=str(self.position_shares),
+                check_balance=False,
+            )
+            if self._el:
+                self._el.log_step("force_sell_placed", {
+                    "order_id": result.order_id,
+                    "price": str(sell_price),
+                    "size": str(self.position_shares),
+                    "tick_size": str(self._tick_size),
+                }, phase="exit_force")
+
+            if result.status == "filled":
+                filled = Decimal(result.filled_size)
+                self.position_shares -= filled
+                if self._el:
+                    self._el.log_step("force_sell_filled", {
+                        "order_id": result.order_id,
+                        "filled_size": str(filled),
+                        "fill_price": str(sell_price),
+                        "remaining_position": str(self.position_shares),
+                    }, phase="exit_force")
+
+        self._close("force_exit", phase="exit_force")
+
+    # ==================== Stop ====================
+
+    async def stop(self) -> None:
+        if self._entry_timer and not self._entry_timer.done():
+            self._entry_timer.cancel()
+        await self.risk.stop()
 
     # ==================== Helpers ====================
 
-    def _close_event(self, reason: str, phase: str = "exit") -> None:
-        if not self._el:
+    def _close(self, reason: str, phase: str = "exit") -> None:
+        if self._el:
+            duration_ms = int(time.time() * 1000) - self._event_start_ms if self._event_start_ms else 0
+            self._el.log_step("event_closed", {
+                "reason": reason,
+                "total_position": str(self.position_shares),
+                "duration_ms": duration_ms,
+            }, phase=phase)
+            self._el.end_event()
+        self.state = "closed"
+        self._on_closed(self.token_id)
+
+
+# ============================================================
+# SweepStrategy — 实例级交易管理器
+# ============================================================
+
+
+class SweepStrategy:
+    """策略实例：管理多笔并行交易，按 token_id 去重。"""
+
+    EVENTS_TABLE = "weather_sweep_events"
+
+    # ==================== 工厂方法 ====================
+
+    @classmethod
+    async def create(
+        cls,
+        config_data: dict[str, Any],
+        orderbook_ws: Any,
+    ) -> SweepStrategy:
+        """工厂方法 — 根据一条 DB 配置创建完整策略实例。"""
+        proxy_wallet = config_data["proxy_wallet"]
+
+        executor = OrderExecutor(proxy_wallet=proxy_wallet)
+        await executor.ensure_poller(proxy_wallet)
+
+        instance = cls()
+        instance._config = config_data["params"]
+        instance._executor = executor
+        instance._orderbook_ws = orderbook_ws
+        instance._proxy_wallet = proxy_wallet
+        instance._owner_user_id = config_data["owner_user_id"]
+        instance._config_id = config_data["id"]
+        instance._config_snapshot = config_data.get("params")
+        instance._draining = False
+        instance._trades: dict[str, SweepTrade] = {}
+        return instance
+
+    # ==================== Signal Dispatch ====================
+
+    async def on_signal(self, signal: Signal) -> None:
+        if signal.signal_type != "sweep":
             return
-        duration_ms = int(time.time() * 1000) - self._event_start_ms if self._event_start_ms else 0
-        self._el.log_step("event_closed", {
-            "reason": reason,
-            "total_position": str(self.position_shares),
-            "duration_ms": duration_ms,
-        }, phase=phase)
-        self._el.end_event()
+        if self._draining:
+            return
+        if signal.token_id in self._trades:
+            return
+        if not self._should_accept_signal(signal):
+            return
+
+        el = EventLogger(
+            table=self.EVENTS_TABLE,
+            owner_user_id=self._owner_user_id,
+            proxy_wallet=self._proxy_wallet,
+            config_id=self._config_id,
+            config_snapshot=self._config_snapshot,
+        )
+
+        trade = SweepTrade(
+            token_id=signal.token_id,
+            market_slug=signal.market_slug,
+            config=self._config,
+            executor=self._executor,
+            orderbook_ws=self._orderbook_ws,
+            event_logger=el,
+            on_closed=self._remove_trade,
+        )
+        self._trades[signal.token_id] = trade
+        await trade.enter(signal)
+
+    def _should_accept_signal(self, signal: Signal) -> bool:
+        payload = signal.payload
+        cfg = self._config
+
+        outcome_filter = cfg.get("sweep_outcome_filter", "no")
+        if outcome_filter != "all" and payload.get("outcome", "") != outcome_filter:
+            return False
+
+        source_filter = cfg.get("signal_source_filter", "main")
+        if source_filter == "main" and not payload.get("is_from_main", True):
+            return False
+        if source_filter == "next" and payload.get("is_from_main", True):
+            return False
+
+        threshold_filter = cfg.get("signal_threshold_filter", "all")
+        if threshold_filter != "all":
+            reason = payload.get("reason", "")
+            if f"through_{threshold_filter}_cleared" not in reason:
+                return False
+
+        return True
+
+    # ==================== Lifecycle ====================
+
+    async def destroy(self, reason: str) -> None:
+        await self.force_exit(reason)
+
+    async def force_exit(self, reason: str = "config_disabled") -> None:
+        for trade in list(self._trades.values()):
+            await trade.force_exit(reason)
+        self._trades.clear()
+
+    async def drain(self) -> None:
+        self._draining = True
+
+    def _remove_trade(self, token_id: str) -> None:
+        self._trades.pop(token_id, None)
+
+    @property
+    def active_trade_count(self) -> int:
+        return len(self._trades)
+
+    @property
+    def active_tokens(self) -> list[str]:
+        return list(self._trades.keys())
