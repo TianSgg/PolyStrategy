@@ -17,9 +17,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from auth_service.api import router as auth_router
-from auth_service.migrations import run_auth_migrations
-from auth_service.forward_auth import router as forward_auth_router
+from auth_service.api import router as auth_router, forward_auth_router
+from auth_service.dao import run_auth_migrations
+from auth_service.service import hash_password
 from framework.consul import consul_lifespan
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ CONSUL_TAGS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    run_auth_migrations()
+    run_auth_migrations(hash_password)
     logger.info(f"[AuthService] Started on port {SERVICE_PORT}")
     async with consul_lifespan(SERVICE_NAME, SERVICE_PORT, tags=CONSUL_TAGS):
         yield

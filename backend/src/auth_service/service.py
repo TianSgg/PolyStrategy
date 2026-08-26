@@ -1,4 +1,4 @@
-"""JWT authentication service and auth database helpers."""
+"""AuthService — JWT 签发/验证 + 密码哈希 + 认证逻辑。"""
 import base64
 import hashlib
 import hmac
@@ -7,11 +7,10 @@ import logging
 import os
 import secrets
 import time
-from dataclasses import dataclass
 from typing import Optional, List
 
-from framework.db import get_db_connection
-from framework.time_utils import UTC8_DB_NOW_SQL, format_utc8
+from auth_service.dao import AuthDao
+from auth_service.types import UserRecord
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +24,6 @@ if not AUTH_JWT_SECRET:
         raise RuntimeError("AUTH_JWT_SECRET is required in production")
     AUTH_JWT_SECRET = "dev-polystrategy-change-me"
     logger.warning("[Auth] AUTH_JWT_SECRET not set; using development-only default secret")
-
-
-@dataclass
-class UserRecord:
-    id: int
-    username: str
-    role: str
-    enabled: bool
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -101,10 +90,10 @@ class AuthService:
             return None
 
     def authenticate(self, username: str, password: str) -> Optional[UserRecord]:
-        user = self.get_user_by_username(username)
+        user = AuthDao.get_user_by_username(username)
         if not user:
             return None
-        full = self._get_user_full_by_username(username)
+        full = AuthDao.get_user_full_by_username(username)
         if not full or not full.get("enabled"):
             return None
         if not verify_password(password, full.get("password_hash") or ""):
@@ -112,74 +101,13 @@ class AuthService:
         return user
 
     def get_user_by_id(self, user_id: int) -> Optional[UserRecord]:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                """SELECT id, username, role, enabled, created_at, updated_at
-                   FROM users WHERE id = %s""",
-                (user_id,),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return UserRecord(
-                id=row[0],
-                username=row[1],
-                role=row[2],
-                enabled=bool(row[3]),
-                created_at=format_utc8(row[4]),
-                updated_at=format_utc8(row[5]),
-            )
-        finally:
-            conn.close()
+        return AuthDao.get_user_by_id(user_id)
 
     def get_user_by_username(self, username: str) -> Optional[UserRecord]:
-        full = self._get_user_full_by_username(username)
-        if not full:
-            return None
-        return UserRecord(
-            id=full["id"],
-            username=full["username"],
-            role=full["role"],
-            enabled=bool(full["enabled"]),
-            created_at=format_utc8(full.get("created_at")),
-            updated_at=format_utc8(full.get("updated_at")),
-        )
-
-    def _get_user_full_by_username(self, username: str) -> Optional[dict]:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                """SELECT id, username, password_hash, role, enabled, created_at, updated_at
-                   FROM users WHERE username = %s""",
-                (username.strip(),),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            columns = [col[0] for col in cursor.description]
-            return dict(zip(columns, row))
-        finally:
-            conn.close()
+        return AuthDao.get_user_by_username(username)
 
     def list_users(self) -> List[dict]:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                """SELECT id, username, role, enabled, created_at, updated_at
-                   FROM users ORDER BY id ASC"""
-            )
-            columns = [col[0] for col in cursor.description]
-            users = [dict(zip(columns, row)) for row in cursor.fetchall()]
-            for user in users:
-                user["created_at"] = format_utc8(user.get("created_at"))
-                user["updated_at"] = format_utc8(user.get("updated_at"))
-            return users
-        finally:
-            conn.close()
+        return AuthDao.list_users()
 
     def create_user(self, username: str, password: str, role: str = "user") -> int:
         username = username.strip()
@@ -188,87 +116,24 @@ class AuthService:
             raise ValueError("username is required")
         if len(password) < 6:
             raise ValueError("password must be at least 6 characters")
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                """INSERT INTO users (username, password_hash, role, enabled)
-                   VALUES (%s, %s, %s, 1)""",
-                (username, hash_password(password), role),
-            )
-            conn.commit()
-            return cursor.lastrowid
-        finally:
-            conn.close()
+        return AuthDao.insert_user(username, hash_password(password), role)
 
     def set_user_enabled(self, user_id: int, enabled: bool) -> bool:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                f"""UPDATE users SET enabled = %s, updated_at = {UTC8_DB_NOW_SQL}
-                   WHERE id = %s""",
-                (1 if enabled else 0, user_id),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-        finally:
-            conn.close()
+        return AuthDao.set_user_enabled(user_id, enabled)
 
     def update_password(self, user_id: int, password: str) -> bool:
         if len(password) < 6:
             raise ValueError("password must be at least 6 characters")
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                f"""UPDATE users SET password_hash = %s, updated_at = {UTC8_DB_NOW_SQL}
-                   WHERE id = %s""",
-                (hash_password(password), user_id),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-        finally:
-            conn.close()
+        return AuthDao.update_password(user_id, hash_password(password))
 
     def update_username(self, user_id: int, username: str) -> bool:
-        import pymysql.err
         username = username.strip()
         if not username:
             raise ValueError("username is required")
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                f"""UPDATE users SET username = %s, updated_at = {UTC8_DB_NOW_SQL}
-                   WHERE id = %s""",
-                (username, user_id),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-        except pymysql.err.IntegrityError:
-            raise ValueError("用户名已存在")
-        finally:
-            conn.close()
+        return AuthDao.update_username(user_id, username)
 
     def delete_user_and_transfer(self, user_id: int, to_user_id: int) -> bool:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            for table in ("accounts", "leaders", "copy_trading_configs"):
-                cursor.execute(
-                    f"UPDATE {table} SET owner_user_id = %s WHERE owner_user_id = %s",
-                    (to_user_id, user_id),
-                )
-            cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
-            deleted = cursor.rowcount > 0
-            conn.commit()
-            return deleted
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        return AuthDao.delete_user_and_transfer(user_id, to_user_id)
 
 
 _auth_service: Optional[AuthService] = None

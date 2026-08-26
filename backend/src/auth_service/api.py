@@ -1,14 +1,53 @@
-"""Authentication and user-management routes."""
+"""Auth service API routes."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
-from .dependencies import AuthUser, get_current_user, require_admin
-from .service import AUTH_COOKIE_NAME, AUTH_COOKIE_SECURE, AUTH_SESSION_DAYS, get_auth_service
+from auth_service.types import AuthUser, ROLE_HIERARCHY
+from auth_service.service import AUTH_COOKIE_NAME, AUTH_COOKIE_SECURE, AUTH_SESSION_DAYS, get_auth_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+forward_auth_router = APIRouter(tags=["forward-auth"])
 
+
+# ==================== 鉴权依赖 ====================
+
+def _extract_token(request: Request) -> Optional[str]:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    return request.cookies.get(AUTH_COOKIE_NAME)
+
+
+def get_current_user(request: Request) -> AuthUser:
+    token = _extract_token(request)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    payload = get_auth_service().decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+    user = get_auth_service().get_user_by_id(int(payload.get("sub", 0)))
+    if not user or not user.enabled:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User disabled or not found")
+    return AuthUser(id=user.id, username=user.username, role=user.role, enabled=user.enabled)
+
+
+def require_admin(current_user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    if not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin required")
+    return current_user
+
+
+def require_root(current_user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    if not current_user.is_root:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Root required")
+    return current_user
+
+
+# ==================== Request/Response Models ====================
 
 class LoginRequest(BaseModel):
     username: str
@@ -31,6 +70,8 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
     confirm_password: str
 
+
+# ==================== Auth Routes ====================
 
 def _set_auth_cookie(response: Response, token: str):
     response.set_cookie(
@@ -72,7 +113,6 @@ async def list_users(_: AuthUser = Depends(require_admin)):
 
 @router.post("/users")
 async def create_user(data: CreateUserRequest, current_user: AuthUser = Depends(require_admin)):
-    from .dependencies import ROLE_HIERARCHY
     if ROLE_HIERARCHY.get(data.role, 0) >= ROLE_HIERARCHY.get(current_user.role, 0):
         raise HTTPException(status_code=403, detail="只能创建比自己低的角色")
     try:
@@ -85,8 +125,6 @@ async def create_user(data: CreateUserRequest, current_user: AuthUser = Depends(
 
 
 def _check_target_permission(current_user: AuthUser, user_id: int):
-    """校验当前用户是否有权操作目标用户（只能操作比自己低级的）"""
-    from .dependencies import ROLE_HIERARCHY
     if user_id == current_user.id:
         return
     target = get_auth_service().get_user_by_id(user_id)
@@ -144,5 +182,32 @@ async def delete_user(user_id: int, current_user: AuthUser = Depends(require_adm
 
 @router.get("/verify")
 async def verify(current_user: AuthUser = Depends(get_current_user)):
-    """Nginx auth_request 端点。返回 200 表示鉴权通过，401 表示未认证。"""
     return {"status": "ok", "user_id": current_user.id, "role": current_user.role}
+
+
+# ==================== Traefik ForwardAuth ====================
+
+@forward_auth_router.get("/auth/verify")
+@forward_auth_router.head("/auth/verify")
+async def forward_auth_verify(request: Request):
+    token = _extract_token(request)
+    if not token:
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    auth_service = get_auth_service()
+    payload = auth_service.decode_token(token)
+    if not payload:
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    user = auth_service.get_user_by_id(int(payload.get("sub", 0)))
+    if not user or not user.enabled:
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    return Response(
+        status_code=status.HTTP_200_OK,
+        headers={
+            "X-User-Id": str(user.id),
+            "X-User-Role": user.role,
+            "X-Username": user.username,
+        },
+    )

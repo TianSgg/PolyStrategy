@@ -14,15 +14,37 @@ from py_clob_client_v2.clob_types import (
 from py_clob_client_v2.clob_types import OrderArgsV2 as OrderArgs
 from py_clob_client_v2.order_builder.constants import BUY, SELL
 
+from cryptography.fernet import Fernet
 from account_service.dao import AccountDao
-from account_service.internal.crypto import encrypt, decrypt
 from eth_keys import keys
 from typing import List, Dict, Optional
 
+import os
 import pymysql
 import requests
 import asyncio
 import logging
+
+def _load_encryption_key() -> bytes:
+    env_key = os.environ.get("ENCRYPTION_KEY")
+    if env_key:
+        return env_key.encode()
+    raise RuntimeError("ENCRYPTION_KEY environment variable is required")
+
+_cipher = Fernet(_load_encryption_key())
+
+def encrypt(text: str) -> str:
+    if not text:
+        return ""
+    return _cipher.encrypt(text.encode()).decode()
+
+def decrypt(encrypted: str) -> str:
+    if not encrypted:
+        return ""
+    try:
+        return _cipher.decrypt(encrypted.encode()).decode()
+    except Exception:
+        return ""
 import time
 
 logger = logging.getLogger(__name__)
