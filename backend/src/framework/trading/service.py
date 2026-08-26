@@ -5,10 +5,10 @@ from py_clob_client_v2.clob_types import (
 from py_clob_client_v2.clob_types import OrderArgsV2 as OrderArgs
 from py_clob_client_v2.order_builder.constants import BUY, SELL
 
-from .dao import AccountDao
+from account_service.dao import AccountDao
 from eth_keys import keys
 from typing import List, Dict, Optional
-from account_service.crypto import encrypt, decrypt
+from framework.trading.crypto import encrypt, decrypt
 
 import pymysql
 import requests

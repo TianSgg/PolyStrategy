@@ -1,7 +1,7 @@
 """Market API 路由"""
 from fastapi import APIRouter, Query
 
-from account_service.market_service import get_market_service
+from framework.trading import get_market_service
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 

@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from account_service.service import get_account_service
+from framework.trading import get_account_service
 from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
 
 logger = logging.getLogger(__name__)

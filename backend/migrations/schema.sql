@@ -270,7 +270,7 @@ INSERT INTO weather_cities (
   ('Mexico City', 'mexico-city', 'America/Mexico_City', 1, 0, 1, 0, 1, 50),
   ('New York City', 'nyc', 'America/New_York', 1, 1, 1, 1, 1, 60),
   ('Panama City', 'panama-city', 'America/Panama', 1, 0, 1, 0, 1, 70),
-  ('Sao Paulo', 'sao-paulo', 'America/Sao_Paulo', 1, 0, 1, 0, 1, 80),
+  ('Sao Paulo', 'sao-paulo', 'America/Sao_Paulo', 1, 1, 1, 1, 1, 80),
   ('Buenos Aires', 'buenos-aires', 'America/Argentina/Buenos_Aires', 1, 0, 1, 0, 1, 90),
   ('Lucknow', 'lucknow', 'Asia/Kolkata', 1, 0, 1, 0, 1, 100),
   ('Cape Town', 'cape-town', 'Africa/Johannesburg', 1, 0, 1, 0, 1, 110),

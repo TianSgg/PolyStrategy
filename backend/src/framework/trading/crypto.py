@@ -6,7 +6,8 @@ import os
 load_dotenv()
 
 # 优先从环境变量读取密钥，否则回退到文件（兼容已有数据）
-KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "encryption.key")
+_BACKEND_SRC = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+KEY_FILE = os.path.join(_BACKEND_SRC, "account_service", "encryption.key")
 
 def load_or_generate_key() -> bytes:
     """加载或生成加密密钥"""

@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 
 from framework.auth import AuthUser, get_current_user
-from account_service.service import get_account_service
+from framework.trading import get_account_service
 from framework.balance import fetch_address_value
 
 router = APIRouter(prefix="/api/account", tags=["accounts"])
