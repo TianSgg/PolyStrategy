@@ -102,14 +102,9 @@ class SweepRiskMonitor:
         if not self._active or self._triggered:
             return
 
-        if best_bid is not None and best_ask is not None:
-            current_mid = (best_bid + best_ask) / 2
-        elif best_bid is not None:
-            current_mid = best_bid
-        elif best_ask is not None:
-            current_mid = best_ask
-        else:
-            return
+        bid = best_bid if best_bid is not None else Decimal("0")
+        ask = best_ask if best_ask is not None else Decimal("1")
+        current_mid = (bid + ask) / 2
 
         if self.threshold is None:
             return

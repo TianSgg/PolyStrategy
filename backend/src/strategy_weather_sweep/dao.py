@@ -216,6 +216,7 @@ class WeatherSweepEventDAO:
         owner_user_id: Optional[int] = None,
         config_id: Optional[int] = None,
         owner_user_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -233,6 +234,9 @@ class WeatherSweepEventDAO:
         if config_id is not None:
             conditions.append("config_id = %s")
             params.append(config_id)
+        if search:
+            conditions.append("event_slug LIKE %s")
+            params.append(f"%{search}%")
 
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = f"""

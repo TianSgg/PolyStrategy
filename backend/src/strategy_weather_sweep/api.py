@@ -94,6 +94,7 @@ async def delete_config(config_id: int, request: Request, current_user: AuthUser
 @router.get("/events")
 async def list_events(
     config_id: Optional[int] = Query(default=None),
+    search: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: AuthUser = Depends(get_current_user),
@@ -101,6 +102,7 @@ async def list_events(
     summaries = _event_dao.list_event_summaries(
         owner_user_ids=current_user.visible_user_ids(),
         config_id=config_id,
+        search=search,
         limit=limit,
         offset=offset,
     )

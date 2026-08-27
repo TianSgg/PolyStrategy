@@ -63,6 +63,7 @@ class SweepTrade:
         self.state = "entry_working"
         self.position_shares = Decimal("0")
         self.entry_order_id: Optional[str] = None
+        self.exit_order_id: Optional[str] = None
         self._entry_timer: Optional[asyncio.Task] = None
         self._tick_verified = False
         self._tick_size = Decimal("0.01")
@@ -80,7 +81,40 @@ class SweepTrade:
 
     async def enter(self, signal: Signal) -> None:
         orderbook_snapshot = signal.payload.get("orderbook_snapshot", {})
-        await self.risk.start(token_id=self.token_id, orderbook_snapshot=orderbook_snapshot)
+
+        fixed_shares = Decimal(self._config.get("fixed_entry_shares", "100"))
+        buy_price = Decimal("0.99")
+        available = self._executor.available_cash
+        max_shares = int(available / buy_price) if buy_price > 0 else 0
+        actual_shares = min(fixed_shares, Decimal(str(max_shares)))
+
+        if actual_shares <= 0:
+            logger.warning("No available cash for %s, closing", self.token_id[:10])
+            if self._el:
+                self._el.start_event(
+                    signal_id=signal.signal_id,
+                    token_id=signal.token_id,
+                    market_slug=signal.market_slug,
+                    event_slug=signal.payload.get("event_slug"),
+                )
+                self._el.log_step("buy_failed", {
+                    "reason": "no_cash",
+                    "requested_size": str(fixed_shares),
+                    "available_cash": str(available),
+                }, phase="entry")
+            self._close("buy_failed", phase="entry")
+            return
+
+        order_task = asyncio.create_task(self._executor.place_order(
+            token_id=self.token_id,
+            side="BUY",
+            price=str(buy_price),
+            size=str(actual_shares),
+        ))
+        risk_task = asyncio.create_task(
+            self.risk.start(token_id=self.token_id, orderbook_snapshot=orderbook_snapshot)
+        )
+        result, _ = await asyncio.gather(order_task, risk_task)
 
         if self._el:
             self._el.start_event(
@@ -99,30 +133,6 @@ class SweepTrade:
                 "risk_ref_mid": str(self.risk.reference_mid),
                 "risk_threshold": str(self.risk.threshold),
             }, phase="entry")
-
-        fixed_shares = Decimal(self._config.get("fixed_entry_shares", "100"))
-        buy_price = Decimal("0.99")
-        available = self._executor.available_cash
-        max_shares = int(available / buy_price) if buy_price > 0 else 0
-        actual_shares = min(fixed_shares, Decimal(str(max_shares)))
-
-        if actual_shares <= 0:
-            logger.warning("No available cash for %s, closing", self.token_id[:10])
-            if self._el:
-                self._el.log_step("buy_failed", {
-                    "reason": "no_cash",
-                    "requested_size": str(fixed_shares),
-                    "available_cash": str(available),
-                }, phase="entry")
-            self._close("buy_failed", phase="entry")
-            return
-
-        result = await self._executor.place_order(
-            token_id=self.token_id,
-            side="BUY",
-            price=str(buy_price),
-            size=str(actual_shares),
-        )
         self.entry_order_id = result.order_id
 
         if result.status in ("failed", "insufficient_balance"):
@@ -153,7 +163,7 @@ class SweepTrade:
                     "fill_price": str(buy_price),
                 }, phase="entry")
 
-        entry_wait_ms = int(self._config.get("entry_wait_ms", 30000))
+        entry_wait_ms = int(self._config.get("entry_wait_ms", 1200000))
         self._entry_timer = asyncio.create_task(
             self._entry_timeout(entry_wait_ms / 1000.0)
         )
@@ -193,6 +203,8 @@ class SweepTrade:
                 }, phase="monitor")
 
             result = await self.tick_verifier.verify(self.token_id)
+            if self.state not in ("entry_working", "exit_working"):
+                return
             if result.confirmed:
                 self._tick_verified = True
                 if self._el:
@@ -203,42 +215,71 @@ class SweepTrade:
                 await self._tick_exit()
 
     async def _tick_exit(self) -> None:
-        await self.risk.stop()
-
         if self.position_shares <= 0:
+            await self.risk.stop()
             self._close("tick_exit", phase="exit")
             return
 
+        self.state = "exit_working"
         sell_price = Decimal("1") - self._tick_size
+        max_sell_retries = 3
 
-        result = await self._executor.place_order(
-            token_id=self.token_id,
-            side="SELL",
-            price=str(sell_price),
-            size=str(self.position_shares),
-            check_balance=False,
-        )
+        for attempt in range(1, max_sell_retries + 1):
+            if self.state == "closed":
+                return
 
-        if self._el:
-            self._el.log_step("sell_placed", {
-                "order_id": result.order_id,
-                "price": str(sell_price),
-                "size": str(self.position_shares),
-                "reason": "tick_exit",
-            }, phase="exit")
+            result = await self._executor.place_order(
+                token_id=self.token_id,
+                side="SELL",
+                price=str(sell_price),
+                size=str(self.position_shares),
+                check_balance=False,
+            )
 
-        if result.status == "filled":
-            filled = Decimal(result.filled_size)
-            self.position_shares -= filled
             if self._el:
-                self._el.log_step("sell_filled", {
+                self._el.log_step("sell_placed", {
                     "order_id": result.order_id,
-                    "filled_size": str(filled),
-                    "fill_price": str(sell_price),
-                    "remaining_position": str(self.position_shares),
+                    "price": str(sell_price),
+                    "size": str(self.position_shares),
+                    "reason": "tick_exit",
+                    "attempt": attempt,
                 }, phase="exit")
 
-        self._close("tick_exit", phase="exit")
+            if result.status == "filled":
+                filled = Decimal(result.filled_size)
+                self.position_shares -= filled
+                if self._el:
+                    self._el.log_step("sell_filled", {
+                        "order_id": result.order_id,
+                        "filled_size": str(filled),
+                        "fill_price": str(sell_price),
+                        "remaining_position": str(self.position_shares),
+                    }, phase="exit")
+
+            if result.status == "live":
+                self.exit_order_id = result.order_id
+                return
+
+            if result.status == "filled" and self.position_shares <= 0:
+                await self.risk.stop()
+                self._close("tick_exit", phase="exit")
+                return
+
+            if result.status == "failed" and attempt < max_sell_retries:
+                if self._el:
+                    self._el.log_step("sell_retry", {
+                        "attempt": attempt,
+                        "status": result.status,
+                    }, phase="exit")
+                await asyncio.sleep(1)
+
+        await self.risk.stop()
+        if self._el:
+            self._el.log_step("sell_give_up", {
+                "attempts": max_sell_retries,
+                "remaining_position": str(self.position_shares),
+            }, phase="exit")
+        self._close("sell_failed", phase="exit")
 
     # ==================== Risk Exit ====================
 
@@ -246,6 +287,7 @@ class SweepTrade:
         if self.state == "closed":
             return
 
+        prev_state = self.state
         self.state = "risk_exiting"
 
         if self._entry_timer and not self._entry_timer.done():
@@ -256,8 +298,9 @@ class SweepTrade:
                 "reference_mid": str(self.risk.reference_mid),
                 "threshold": str(self.risk.threshold),
                 "stop_loss_ratio": self._config.get("stop_loss_ratio", "0.50"),
-                "state_at_trigger": self.state,
+                "state_at_trigger": prev_state,
                 "pending_buy": self.entry_order_id,
+                "pending_sell": self.exit_order_id,
                 "position_shares": str(self.position_shares),
             }, phase="exit_risk")
 
@@ -269,6 +312,15 @@ class SweepTrade:
                     "success": cancelled,
                 }, phase="exit_risk")
             self.entry_order_id = None
+
+        if self.exit_order_id:
+            cancelled = await self._executor.cancel_order(self.exit_order_id)
+            if self._el:
+                self._el.log_step("risk_cancel_sell", {
+                    "order_id": self.exit_order_id,
+                    "success": cancelled,
+                }, phase="exit_risk")
+            self.exit_order_id = None
 
         if self.position_shares > 0:
             result = await self._executor.place_order(
@@ -318,33 +370,14 @@ class SweepTrade:
                 }, phase="exit_force")
             self.entry_order_id = None
 
-        if self.position_shares > 0:
-            sell_price = Decimal("1") - self._tick_size
-            result = await self._executor.place_order(
-                token_id=self.token_id,
-                side="SELL",
-                price=str(sell_price),
-                size=str(self.position_shares),
-                check_balance=False,
-            )
+        if self.exit_order_id:
+            cancelled = await self._executor.cancel_order(self.exit_order_id)
             if self._el:
-                self._el.log_step("force_sell_placed", {
-                    "order_id": result.order_id,
-                    "price": str(sell_price),
-                    "size": str(self.position_shares),
-                    "tick_size": str(self._tick_size),
+                self._el.log_step("sell_cancelled", {
+                    "order_id": self.exit_order_id,
+                    "success": cancelled,
                 }, phase="exit_force")
-
-            if result.status == "filled":
-                filled = Decimal(result.filled_size)
-                self.position_shares -= filled
-                if self._el:
-                    self._el.log_step("force_sell_filled", {
-                        "order_id": result.order_id,
-                        "filled_size": str(filled),
-                        "fill_price": str(sell_price),
-                        "remaining_position": str(self.position_shares),
-                    }, phase="exit_force")
+            self.exit_order_id = None
 
         self._close("force_exit", phase="exit_force")
 

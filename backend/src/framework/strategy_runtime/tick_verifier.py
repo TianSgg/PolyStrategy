@@ -30,16 +30,22 @@ class TickVerifier:
     def __init__(
         self,
         market_data: Optional[MarketData] = None,
-        max_retries: int = 3,
         backoff_ms: int = 1000,
+        max_backoff_ms: int = 5000,
+        max_duration_s: int = 1800,
     ) -> None:
         self._market_data = market_data or MarketData()
-        self._max_retries = max_retries
         self._backoff_ms = backoff_ms
+        self._max_backoff_ms = max_backoff_ms
+        self._max_duration_s = max_duration_s
 
     async def verify(self, token_id: str) -> TickVerifyResult:
-        """执行校验，失败时指数退避重试。"""
-        for attempt in range(1, self._max_retries + 1):
+        """持续校验直到 HTTP 确认 tick_size=0.001，最长 30 分钟。"""
+        import time
+        deadline = time.monotonic() + self._max_duration_s
+        attempt = 0
+        while time.monotonic() < deadline:
+            attempt += 1
             try:
                 tick_size = await self._market_data.get_tick_size(token_id)
                 actual = Decimal(str(tick_size)) if tick_size else None
@@ -48,18 +54,21 @@ class TickVerifier:
                     return TickVerifyResult(confirmed=True, actual_tick=actual)
 
                 logger.info(
-                    "Tick check attempt %d/%d: token=%s tick=%s (expected %s)",
-                    attempt, self._max_retries, token_id[:8], actual, TARGET_TICK,
+                    "Tick check attempt %d: token=%s tick=%s (expected %s)",
+                    attempt, token_id[:8], actual, TARGET_TICK,
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(
-                    "Tick check error attempt %d/%d: %s", attempt, self._max_retries, e
+                    "Tick check error attempt %d: %s", attempt, e
                 )
-                if attempt == self._max_retries:
-                    return TickVerifyResult(confirmed=False, error=str(e))
 
-            if attempt < self._max_retries:
-                backoff = self._backoff_ms * (2 ** (attempt - 1)) / 1000.0
-                await asyncio.sleep(backoff)
+            backoff = min(
+                self._backoff_ms * (2 ** (attempt - 1)),
+                self._max_backoff_ms,
+            ) / 1000.0
+            await asyncio.sleep(backoff)
 
-        return TickVerifyResult(confirmed=False, actual_tick=None)
+        logger.warning("Tick verify timeout after %ds: token=%s", self._max_duration_s, token_id[:8])
+        return TickVerifyResult(confirmed=False, error="timeout")
