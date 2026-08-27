@@ -24,15 +24,15 @@ from framework.consul import consul_lifespan
 
 logger = logging.getLogger(__name__)
 
-SERVICE_NAME = os.getenv("SERVICE_NAME", "auth-service")
+SERVICE_NAME = os.getenv("SERVICE_NAME", "polystrategy-auth")
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8010"))
 
 CONSUL_TAGS = [
     "traefik.enable=true",
-    "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)",
-    "traefik.http.routers.auth.entrypoints=web",
-    "traefik.http.routers.auth-forward.rule=PathPrefix(`/auth/verify`)",
-    "traefik.http.routers.auth-forward.entrypoints=web",
+    "traefik.http.routers.polystrategy-auth.rule=PathPrefix(`/api/auth`)",
+    "traefik.http.routers.polystrategy-auth.entrypoints=web",
+    "traefik.http.routers.polystrategy-auth-forward.rule=PathPrefix(`/auth/verify`)",
+    "traefik.http.routers.polystrategy-auth-forward.entrypoints=web",
 ]
 
 

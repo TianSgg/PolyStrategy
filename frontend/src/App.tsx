@@ -3,6 +3,7 @@ import Account from './pages/Account'
 import CopyTrading from './pages/CopyTrading'
 import Login from './pages/Login'
 import WeatherMonitor from './pages/WeatherMonitor'
+import WeatherCityAdmin from './pages/WeatherCityAdmin'
 import StrategyDashboard from './pages/StrategyDashboard'
 import UserManagement from './pages/UserManagement'
 import StatusBar from './components/StatusBar'
@@ -11,7 +12,7 @@ import { ToastContainer } from './components/Toast'
 import { apiFetch, setUnauthorizedHandler } from './api'
 import { useBalance } from './contexts/BalanceContext'
 
-type Page = 'account' | 'copytrading' | 'users' | 'weather' | 'dashboard'
+type Page = 'account' | 'copytrading' | 'users' | 'weather' | 'weather-cities' | 'dashboard'
 type AuthUser = { id: number; username: string; role: 'root' | 'user'; enabled: boolean }
 
 const DARK_MODE_STORAGE_KEY = 'weathertaker:dark-mode'
@@ -157,7 +158,7 @@ function App() {
 
           <button
             onClick={() => setCurrentPage('weather')}
-            style={currentPage === 'weather' ? theme.navItemActive : theme.navItem}
+            style={['weather', 'weather-cities'].includes(currentPage) ? theme.navItemActive : theme.navItem}
           >
             <span style={styles.navIcon}>🌤</span>
             天气监控
@@ -204,7 +205,10 @@ function App() {
           <UserManagement darkMode={darkMode} currentRole={authUser.role} currentUserId={authUser.id} />
         </div>
         <div style={{ display: currentPage === 'weather' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-          <WeatherMonitor darkMode={darkMode} visible={currentPage === 'weather'} />
+          <WeatherMonitor darkMode={darkMode} visible={currentPage === 'weather'} onManageCities={authUser.role === 'root' ? () => setCurrentPage('weather-cities') : undefined} />
+        </div>
+        <div style={{ display: currentPage === 'weather-cities' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
+          <WeatherCityAdmin darkMode={darkMode} onBack={() => setCurrentPage('weather')} />
         </div>
         <div style={{ display: currentPage === 'dashboard' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <StrategyDashboard darkMode={darkMode} />

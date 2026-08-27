@@ -4,11 +4,13 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
+from framework.auth.dependencies import require_root
 from signal_weather.types import WeatherSignalRecord
 from signal_weather.service import WeatherService
 
@@ -230,3 +232,77 @@ async def weather_signal_counts_live(request: Request) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ─── Admin CRUD ────────────────────────────────────────────────────────────────
+
+class CityAdminRequest(BaseModel):
+    city_name: str
+    city_slug: str
+    timezone: str
+    has_highest_market: bool = False
+    has_lowest_market: bool = False
+    monitor_highest: bool = False
+    monitor_lowest: bool = False
+    enabled: bool = True
+    sort_order: int = 0
+
+
+def _validate_city(body: CityAdminRequest) -> None:
+    try:
+        ZoneInfo(body.timezone)
+    except (ZoneInfoNotFoundError, KeyError):
+        raise HTTPException(400, f"Invalid IANA timezone: {body.timezone}")
+    if body.monitor_highest and not body.has_highest_market:
+        raise HTTPException(400, "monitor_highest requires has_highest_market")
+    if body.monitor_lowest and not body.has_lowest_market:
+        raise HTTPException(400, "monitor_lowest requires has_lowest_market")
+
+
+@router.get("/cities/admin")
+async def list_cities_admin(request: Request, _=Depends(require_root)):
+    cities = await _service(request).dao.list_all()
+    return {"cities": cities}
+
+
+@router.post("/cities/admin", status_code=201)
+async def create_city(body: CityAdminRequest, request: Request, _=Depends(require_root)):
+    _validate_city(body)
+    dao = _service(request).dao
+    existing = await dao.list_all()
+    if any(c["city_slug"] == body.city_slug for c in existing):
+        raise HTTPException(409, f"city_slug '{body.city_slug}' already exists")
+    city_id = await dao.insert(body.model_dump())
+    city = await dao.get_by_id(city_id)
+    return {"city": city}
+
+
+@router.put("/cities/admin/{city_id}")
+async def update_city(city_id: int, body: CityAdminRequest, request: Request, _=Depends(require_root)):
+    _validate_city(body)
+    dao = _service(request).dao
+    existing = await dao.get_by_id(city_id)
+    if not existing:
+        raise HTTPException(404, "City not found")
+    all_cities = await dao.list_all()
+    if any(c["city_slug"] == body.city_slug and c["id"] != city_id for c in all_cities):
+        raise HTTPException(409, f"city_slug '{body.city_slug}' already exists")
+    await dao.update(city_id, body.model_dump())
+    city = await dao.get_by_id(city_id)
+    return {"city": city}
+
+
+@router.delete("/cities/admin/{city_id}")
+async def delete_city(city_id: int, request: Request, _=Depends(require_root)):
+    dao = _service(request).dao
+    existing = await dao.get_by_id(city_id)
+    if not existing:
+        raise HTTPException(404, "City not found")
+    await dao.delete(city_id)
+    return {"deleted": True}
+
+
+@router.post("/cities/reload")
+async def reload_cities(request: Request, _=Depends(require_root)):
+    await _service(request).reload_cities()
+    return {"status": "reloaded"}

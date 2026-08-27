@@ -42,6 +42,7 @@ type LiveBooks = Record<string, Record<string, unknown>>
 interface Props {
   darkMode: boolean
   visible?: boolean
+  onManageCities?: () => void
 }
 
 function directionLabel(direction: string) {
@@ -67,7 +68,7 @@ function localTime(timezone: string | null): string {
   }
 }
 
-export default function WeatherMonitor({ darkMode, visible }: Props) {
+export default function WeatherMonitor({ darkMode, visible, onManageCities }: Props) {
   const [cities, setCities] = useState<City[]>([])
   const [keyword, setKeyword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -262,6 +263,9 @@ export default function WeatherMonitor({ darkMode, visible }: Props) {
           <div className="wm-subtitle">{updatedAt ? `更新于: ${updatedAt}` : ''}</div>
         </div>
         <div className="wm-header-actions">
+          {onManageCities && (
+            <button className="wm-btn" onClick={onManageCities}>城市管理</button>
+          )}
           <span className={`wm-conn ${liveConnected ? 'connected' : 'disconnected'}`}>
             {liveConnected ? '实时' : '已断开'}
           </span>

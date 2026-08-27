@@ -86,7 +86,7 @@ async def signal_websocket(ws: WebSocket):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "signal-weather"}
+    return {"status": "ok", "service": SERVICE_NAME}
 
 
 if __name__ == "__main__":

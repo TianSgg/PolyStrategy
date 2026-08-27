@@ -117,7 +117,16 @@ export default function WeatherNotifications({ limit }: Props) {
                   {item.temperature_label && <span>{item.temperature_label}</span>}
                   {item.outcome && <span>{item.outcome.toUpperCase()}</span>}
                 </div>
-                {item.event_slug && <p className="wm-cell-sub">{item.event_slug}</p>}
+                {item.event_slug && (
+                  <p className="wm-cell-sub">
+                    <a
+                      href={`https://polymarket.com/event/${encodeURIComponent(item.event_slug)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="wm-event-link"
+                    >{item.event_slug}</a>
+                  </p>
+                )}
                 {item.reason && <p>原因: {item.reason}</p>}
                 <div className="wm-notification-ts">{formatTimestamp(item.occurred_at)}</div>
                 <button className="wm-btn-link" onClick={() => toggleMessage(item.id)} style={{ marginTop: 4, padding: '2px 0' }}>

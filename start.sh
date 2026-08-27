@@ -19,6 +19,13 @@ mkdir -p "$PID_DIR"
 
 export ENV="${ENV:-dev}"
 
+# 加载 backend/.env 中的环境变量（数据库密码、Consul Token 等）
+if [ -f "$BACKEND_DIR/.env" ]; then
+    set -a
+    source "$BACKEND_DIR/.env"
+    set +a
+fi
+
 # 使用当前环境的 Python（确保先 conda activate 正确环境）
 PYTHON="$(which python)"
 echo "Using Python: $PYTHON"
@@ -44,15 +51,18 @@ start_backend_service() {
     local pid_file="$PID_DIR/$name.pid"
 
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-        echo "  [$name] already running (pid=$(cat "$pid_file"), port=$port)"
-        return
+        kill "$(cat "$pid_file")" 2>/dev/null || true
+        sleep 0.3
+        kill -0 "$(cat "$pid_file")" 2>/dev/null && kill -9 "$(cat "$pid_file")" 2>/dev/null
+        rm -f "$pid_file"
     fi
 
     local cmd
     cmd="cd '$BACKEND_DIR/src' && $extra_env PYTHONPATH='$BACKEND_DIR/src' $PYTHON -m $module"
 
-    # 服务自行写日志到 logs/<service_name>/，这里只捕获启动失败的 stderr
-    bash -c "nohup bash -c \"$cmd\" > /dev/null 2>&1 & echo \$! > '$pid_file'"
+    local log_dir="$ROOT_DIR/logs/$name"
+    mkdir -p "$log_dir"
+    bash -c "nohup bash -c \"$cmd\" >> '$log_dir/app.log' 2>> '$log_dir/error.log' & echo \$! > '$pid_file'"
 
     sleep 0.3
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
@@ -68,8 +78,10 @@ start_frontend() {
     mkdir -p "$log_dir"
 
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-        echo "  [frontend] already running (pid=$(cat "$pid_file"), port=5173)"
-        return
+        kill "$(cat "$pid_file")" 2>/dev/null || true
+        sleep 0.3
+        kill -0 "$(cat "$pid_file")" 2>/dev/null && kill -9 "$(cat "$pid_file")" 2>/dev/null
+        rm -f "$pid_file"
     fi
 
     bash -c "cd '$FRONTEND_DIR' && nohup npx vite --port 5173 --host >> '$log_dir/app.log' 2>&1 & echo \$! > '$pid_file'"

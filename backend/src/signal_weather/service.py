@@ -132,6 +132,28 @@ class WeatherService:
         await self._warm_signal_cache()
         self._rollover_task = asyncio.create_task(self._rollover_loop(), name="weather-local-date-rollover")
 
+    async def reload_cities(self) -> None:
+        new_cities = await self.dao.list_enabled()
+        if self._rollover_task:
+            self._rollover_task.cancel()
+            await asyncio.gather(self._rollover_task, return_exceptions=True)
+        await self.coordinator.stop()
+        self.cities = new_cities
+        self._city_by_name = {city.name: city for city in new_cities}
+        self.coordinator = WeatherEngine(
+            new_cities,
+            WeatherDiscovery(self.market_client),
+            self._on_weather_event,
+            on_broadcast=self._broadcast_event,
+        )
+        await self.coordinator.start()
+        self._signal_counts.clear()
+        self._signal_cache.clear()
+        await self.refresh_signal_counts()
+        await self._warm_signal_cache()
+        self._rollover_task = asyncio.create_task(self._rollover_loop(), name="weather-local-date-rollover")
+        logger.info("Weather cities reloaded: %d enabled cities", len(new_cities))
+
     async def stop(self) -> None:
         if self._rollover_task:
             self._rollover_task.cancel()

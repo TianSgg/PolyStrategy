@@ -281,17 +281,9 @@ def run_auth_migrations(hash_fn) -> int:
             )
         """)
         root_id = _ensure_root(cursor, hash_fn)
-        for table in ("accounts", "leaders", "copy_trading_configs"):
-            _add_owner_column(cursor, table)
-            cursor.execute(f"UPDATE {table} SET owner_user_id = %s WHERE owner_user_id IS NULL", (root_id,))
-        _ensure_leader_owner_unique(cursor)
+        _add_owner_column(cursor, "accounts")
+        cursor.execute("UPDATE accounts SET owner_user_id = %s WHERE owner_user_id IS NULL", (root_id,))
         _ensure_global_unique_index(cursor, "accounts", "idx_wallet_address", "wallet_address")
-        _ensure_global_unique_index(
-            cursor,
-            "copy_trading_configs",
-            "idx_leader_follower",
-            "leader_proxy_wallet, follower_proxy_wallet",
-        )
         conn.commit()
         logger.info("[Auth] Auth migrations complete; bootstrap root id=%s", root_id)
         return root_id

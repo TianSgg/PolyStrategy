@@ -33,7 +33,7 @@ class ConsulRegistration:
         health_path: str = "/health",
         service_id: Optional[str] = None,
         address: Optional[str] = None,
-        ttl_seconds: int = 15,
+        ttl_seconds: int = 5,
     ):
         self.service_name = service_name
         self.service_id = service_id or os.getenv("SERVICE_ID", f"{service_name}-{port}")

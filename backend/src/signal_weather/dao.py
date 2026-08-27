@@ -35,6 +35,79 @@ class WeatherCityRepository:
             raise RuntimeError("weather_cities has no enabled monitoring city")
         return cities
 
+    async def list_all(self) -> list[dict]:
+        query = """
+            SELECT id, city_name, city_slug, timezone,
+                   has_highest_market, has_lowest_market,
+                   monitor_highest, monitor_lowest,
+                   enabled, sort_order
+            FROM weather_cities
+            ORDER BY sort_order ASC, id ASC
+        """
+        async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
+            await cursor.execute(query)
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_by_id(self, city_id: int) -> dict | None:
+        query = """
+            SELECT id, city_name, city_slug, timezone,
+                   has_highest_market, has_lowest_market,
+                   monitor_highest, monitor_lowest,
+                   enabled, sort_order
+            FROM weather_cities WHERE id = %s
+        """
+        async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
+            await cursor.execute(query, (city_id,))
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def insert(self, data: dict) -> int:
+        query = """
+            INSERT INTO weather_cities
+                (city_name, city_slug, timezone, has_highest_market, has_lowest_market,
+                 monitor_highest, monitor_lowest, enabled, sort_order)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        values = (
+            data["city_name"], data["city_slug"], data["timezone"],
+            int(data.get("has_highest_market", False)),
+            int(data.get("has_lowest_market", False)),
+            int(data.get("monitor_highest", False)),
+            int(data.get("monitor_lowest", False)),
+            int(data.get("enabled", True)),
+            data.get("sort_order", 0),
+        )
+        async with self._pool.acquire() as connection, connection.cursor() as cursor:
+            await cursor.execute(query, values)
+            return cursor.lastrowid
+
+    async def update(self, city_id: int, data: dict) -> bool:
+        fields = []
+        values: list[Any] = []
+        for col in ("city_name", "city_slug", "timezone", "has_highest_market",
+                    "has_lowest_market", "monitor_highest", "monitor_lowest",
+                    "enabled", "sort_order"):
+            if col in data:
+                fields.append(f"{col} = %s")
+                val = data[col]
+                if col in ("has_highest_market", "has_lowest_market",
+                           "monitor_highest", "monitor_lowest", "enabled"):
+                    val = int(val)
+                values.append(val)
+        if not fields:
+            return False
+        values.append(city_id)
+        query = f"UPDATE weather_cities SET {', '.join(fields)} WHERE id = %s"
+        async with self._pool.acquire() as connection, connection.cursor() as cursor:
+            await cursor.execute(query, tuple(values))
+            return cursor.rowcount > 0
+
+    async def delete(self, city_id: int) -> bool:
+        async with self._pool.acquire() as connection, connection.cursor() as cursor:
+            await cursor.execute("DELETE FROM weather_cities WHERE id = %s", (city_id,))
+            return cursor.rowcount > 0
+
     @staticmethod
     def _to_city(row: Mapping[str, object]) -> WeatherCity:
         name = str(row.get("city_name") or "").strip()

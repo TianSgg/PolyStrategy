@@ -46,14 +46,14 @@ async def lifespan(app: FastAPI):
     service_port = int(os.getenv("LEADER_SIGNAL_PORT", "8002"))
     consul_tags = [
         "traefik.enable=true",
-        "traefik.http.routers.signal-leader.rule=PathPrefix(`/api/signals`)",
-        "traefik.http.routers.signal-leader.entrypoints=web",
-        "traefik.http.routers.signal-leader.middlewares=forward-auth@file",
+        "traefik.http.routers.polystrategy-signal-leader.rule=PathPrefix(`/api/signals`)",
+        "traefik.http.routers.polystrategy-signal-leader.entrypoints=web",
+        "traefik.http.routers.polystrategy-signal-leader.middlewares=forward-auth@file",
     ]
 
     logger.info("Leader signal service started on port %s", service_port)
 
-    async with consul_lifespan("signal-leader", service_port, tags=consul_tags):
+    async with consul_lifespan("polystrategy-signal-leader", service_port, tags=consul_tags):
         yield
 
 
@@ -69,7 +69,7 @@ async def signal_websocket(ws: WebSocket):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "signal-leader"}
+    return {"status": "ok", "service": "polystrategy-signal-leader"}
 
 
 @app.post("/api/signals/leader-buy")

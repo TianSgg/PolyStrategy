@@ -21,14 +21,14 @@ from framework.consul import consul_lifespan
 
 logger = logging.getLogger(__name__)
 
-SERVICE_NAME = os.getenv("SERVICE_NAME", "account-service")
+SERVICE_NAME = os.getenv("SERVICE_NAME", "polystrategy-account")
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8011"))
 
 CONSUL_TAGS = [
     "traefik.enable=true",
-    "traefik.http.routers.account.rule=PathPrefix(`/api/account`)",
-    "traefik.http.routers.account.entrypoints=web",
-    "traefik.http.routers.account.middlewares=forward-auth@file",
+    "traefik.http.routers.polystrategy-account.rule=PathPrefix(`/api/account`)",
+    "traefik.http.routers.polystrategy-account.entrypoints=web",
+    "traefik.http.routers.polystrategy-account.middlewares=forward-auth@file",
 ]
 
 
