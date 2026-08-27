@@ -4,7 +4,6 @@ import Login from './pages/Login'
 import WeatherMonitor from './pages/WeatherMonitor'
 import WeatherCityAdmin from './pages/WeatherCityAdmin'
 import StrategyDashboard from './pages/StrategyDashboard'
-import SweepTradeEvents from './pages/SweepTradeEvents'
 import SweepTrades from './pages/SweepTrades'
 import UserManagement from './pages/UserManagement'
 import StatusBar from './components/StatusBar'
@@ -13,7 +12,7 @@ import { ToastContainer } from './components/Toast'
 import { apiFetch, setUnauthorizedHandler } from './api'
 import { useBalance } from './contexts/BalanceContext'
 
-type Page = 'account' | 'users' | 'weather' | 'weather-cities' | 'dashboard' | 'trades' | 'trade-events'
+type Page = 'account' | 'users' | 'weather' | 'weather-cities' | 'dashboard' | 'trades'
 type AuthUser = { id: number; username: string; role: 'root' | 'user'; enabled: boolean }
 
 const DARK_MODE_STORAGE_KEY = 'weathertaker:dark-mode'
@@ -126,7 +125,7 @@ function App() {
           {/* 策略（可展开） */}
           <button
             onClick={() => setStrategyExpanded(!strategyExpanded)}
-            style={['dashboard', 'trades', 'trade-events'].includes(currentPage) && !strategyExpanded
+            style={['dashboard', 'trades'].includes(currentPage) && !strategyExpanded
               ? theme.navItemActive : theme.navItem}
           >
             <span style={styles.navIcon}>🎯</span>
@@ -152,14 +151,7 @@ function App() {
                 style={currentPage === 'trades' ? theme.navItemActive : theme.navItem}
               >
                 <span style={styles.navIcon}>📊</span>
-                交易总览
-              </button>
-              <button
-                onClick={() => setCurrentPage('trade-events')}
-                style={currentPage === 'trade-events' ? theme.navItemActive : theme.navItem}
-              >
-                <span style={styles.navIcon}>📜</span>
-                执行流水
+                交易记录
               </button>
             </div>
           )}
@@ -220,9 +212,6 @@ function App() {
         </div>
         <div style={{ display: currentPage === 'trades' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <SweepTrades darkMode={darkMode} />
-        </div>
-        <div style={{ display: currentPage === 'trade-events' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-          <SweepTradeEvents darkMode={darkMode} />
         </div>
       </div>
     </div>
