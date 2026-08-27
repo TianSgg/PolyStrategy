@@ -8,8 +8,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from asyncmy.cursors import DictCursor
 
-from signal_weather.types import WeatherCity
-from signal_weather.types import WeatherSignalRecord
+from signal_weather_orderbook.types import WeatherCity
+from signal_weather_orderbook.types import WeatherSignalRecord
 
 class WeatherCityRepository:
     """MySQL-backed runtime source for enabled weather monitoring cities."""

@@ -27,7 +27,7 @@ def create_app(
     # 多实例模式参数（新）
     strategy_type: str | None = None,
     config_table: str | None = None,
-    events_table: str = "weather_sweep_events",
+    events_table: str = "strategy_weather_sweep_events",
     executor_factory: Any = None,
     # 单实例模式参数（旧，兼容）
     config: dict[str, Any] | None = None,

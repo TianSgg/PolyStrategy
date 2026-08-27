@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 class WeatherSweepConfigDAO:
-    """weather_sweep_configs CRUD。"""
+    """strategy_weather_sweep_configs CRUD。"""
 
-    TABLE = "weather_sweep_configs"
+    TABLE = "strategy_weather_sweep_configs"
 
     def list_all_enabled(self) -> List[Dict[str, Any]]:
         """加载所有 enabled 的配置（含 proxy_wallet），供实例管理使用。"""
@@ -156,9 +156,9 @@ class WeatherSweepConfigDAO:
 
 
 class WeatherSweepEventDAO:
-    """weather_sweep_events 查询。"""
+    """strategy_weather_sweep_events 查询。"""
 
-    TABLE = "weather_sweep_events"
+    TABLE = "strategy_weather_sweep_events"
 
     def list_events(
         self,

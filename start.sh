@@ -37,8 +37,8 @@ BACKEND_SERVICES=(
     # 名称|模块|端口|额外环境变量
     "auth|auth_service.app|8010|"
     "account|account_service.app|8011|"
-    "signal_weather|signal_weather.app|8001|"
-    "strategy_sweep|strategy_weather_sweep.app|8003|"
+    "signal_weather_orderbook|signal_weather_orderbook.app|8001|"
+    "strategy_weather_sweep|strategy_weather_sweep.app|8003|"
 )
 
 # ─── 工具函数 ────────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ from time import time
 from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
-from signal_weather.types import MarketCandidate, WeatherAsset, WeatherCity, WeatherEvent
+from signal_weather_orderbook.types import MarketCandidate, WeatherAsset, WeatherCity, WeatherEvent
 from .market_websocket import SharedMarketWebSocket
 from .orderbook import LocalOrderBook
 from .polymarket_client import PolymarketMarketClient

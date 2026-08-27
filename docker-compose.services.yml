@@ -47,42 +47,42 @@ services:
       - polystrategy
     restart: unless-stopped
 
-  signal-weather:
+  signal-weather-orderbook:
     build:
       <<: *common-build
       args:
-        SERVICE_MODULE: signal_weather.app
-    container_name: polystrategy-signal-weather
+        SERVICE_MODULE: signal_weather_orderbook.app
+    container_name: polystrategy-signal-weather-orderbook
     ports:
       - "8001:8001"
     environment:
       <<: *common-env
-      SERVICE_NAME: signal-weather
+      SERVICE_NAME: signal-weather-orderbook
       SERVICE_PORT: "8001"
       WEATHER_SIGNAL_PORT: "8001"
     networks:
       - polystrategy
     restart: unless-stopped
 
-  strategy-sweep:
+  strategy-weather-sweep:
     build:
       <<: *common-build
       args:
         SERVICE_MODULE: strategy_weather_sweep.app
-    container_name: polystrategy-strategy-sweep
+    container_name: polystrategy-strategy-weather-sweep
     ports:
       - "8003:8003"
     environment:
       <<: *common-env
-      SERVICE_NAME: strategy-sweep
+      SERVICE_NAME: strategy-weather-sweep
       SERVICE_PORT: "8003"
       STRATEGY_SWEEP_PORT: "8003"
-      WEATHER_SIGNAL_WS_URL: ws://polystrategy-signal-weather:8001/ws/signal
+      WEATHER_SIGNAL_WS_URL: ws://polystrategy-signal-weather-orderbook:8001/ws/signal
     networks:
       - polystrategy
     restart: unless-stopped
     depends_on:
-      - signal-weather
+      - signal-weather-orderbook
 
 networks:
   polystrategy:

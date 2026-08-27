@@ -2,7 +2,7 @@
 
 用法:
     from framework.logging import setup_logging
-    setup_logging("signal_weather")
+    setup_logging("signal_weather_orderbook")
 """
 from __future__ import annotations
 

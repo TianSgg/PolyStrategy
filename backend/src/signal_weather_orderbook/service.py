@@ -10,10 +10,10 @@ from zoneinfo import ZoneInfo
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from signal_weather.dao import WeatherDao
-from signal_weather.internal.weather_engine import WeatherEngine, WeatherDiscovery
-from signal_weather.internal.polymarket_client import PolymarketMarketClient
-from signal_weather.types import WeatherCity, WeatherEvent, WeatherSignalRecord
+from signal_weather_orderbook.dao import WeatherDao
+from signal_weather_orderbook.internal.weather_engine import WeatherEngine, WeatherDiscovery
+from signal_weather_orderbook.internal.polymarket_client import PolymarketMarketClient
+from signal_weather_orderbook.types import WeatherCity, WeatherEvent, WeatherSignalRecord
 
 logger = logging.getLogger(__name__)
 

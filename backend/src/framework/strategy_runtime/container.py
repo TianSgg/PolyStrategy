@@ -34,7 +34,7 @@ class StrategyContainer:
         strategy_class: type[BaseStrategy],
         signal_sources: list[SignalSourceConfig],
         instance_manager: InstanceManager,
-        events_table: str = "weather_sweep_events",
+        events_table: str = "strategy_weather_sweep_events",
         executor_factory: Any = None,
         orderbook_ws: Any = None,
     ) -> None:

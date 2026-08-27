@@ -1,4 +1,4 @@
-"""策略执行事件日志写入器 — 将 step 记录到 weather_sweep_events 表。"""
+"""策略执行事件日志写入器 — 将 step 记录到 strategy_weather_sweep_events 表。"""
 from __future__ import annotations
 
 import json
@@ -16,7 +16,7 @@ class EventLogger:
     """记录一次策略执行（event）中的多个 step。
 
     用法:
-        el = EventLogger(table="weather_sweep_events", ...)
+        el = EventLogger(table="strategy_weather_sweep_events", ...)
         el.start_event(signal_id=..., token_id=..., ...)
         el.log_step("signal_received", {...})
         el.log_step("buy_placed", {...})

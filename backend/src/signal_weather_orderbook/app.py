@@ -24,9 +24,9 @@ _env = os.getenv("ENV", "dev")
 load_dotenv(_backend_dir / f".env.{_env}", override=True)
 
 from framework.logging import setup_logging
-setup_logging("signal_weather")
+setup_logging("signal_weather_orderbook")
 from framework.db import MYSQL_CONFIG
-from signal_weather.internal.config_loader import load_service_config
+from signal_weather_orderbook.internal.config_loader import load_service_config
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,10 @@ from fastapi import FastAPI, WebSocket
 import aiohttp
 import asyncmy
 
-from signal_weather.api import router as weather_router
-from signal_weather.dao import WeatherDao
-from signal_weather.internal.polymarket_client import PolymarketMarketClient
-from signal_weather.service import WeatherService
+from signal_weather_orderbook.api import router as weather_router
+from signal_weather_orderbook.dao import WeatherDao
+from signal_weather_orderbook.internal.polymarket_client import PolymarketMarketClient
+from signal_weather_orderbook.service import WeatherService
 
 SERVICE_CONFIG = load_service_config(Path(__file__).parent)
 SERVICE_NAME = SERVICE_CONFIG["service"]["name"]

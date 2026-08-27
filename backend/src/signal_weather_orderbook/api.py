@@ -11,8 +11,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from framework.auth.dependencies import require_root
-from signal_weather.types import WeatherSignalRecord
-from signal_weather.service import WeatherService
+from signal_weather_orderbook.types import WeatherSignalRecord
+from signal_weather_orderbook.service import WeatherService
 
 router = APIRouter(prefix="/api/weather", tags=["weather-orderbook"])
 

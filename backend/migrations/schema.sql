@@ -71,7 +71,7 @@ CREATE TABLE weather_cities (
 COMMENT='天气城市监听配置';
 
 -- ============================================================
--- 天气信号记录（原 signal_weather_events）
+-- 天气信号记录 (signal_weather_orderbook)
 -- ============================================================
 CREATE TABLE weather_orderbook_signals (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -167,7 +167,7 @@ INSERT INTO weather_cities (
 -- ============================================================
 -- 策略配置: Weather Sweep
 -- ============================================================
-CREATE TABLE weather_sweep_configs (
+CREATE TABLE strategy_weather_sweep_configs (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   owner_user_id INT NOT NULL,
   account_id INT NOT NULL,
@@ -198,7 +198,7 @@ COMMENT='Weather Sweep 策略配置（一个配置 = 一个实例）';
 -- ============================================================
 -- Weather Sweep 执行事件日志（一个 event = 多个 step）
 -- ============================================================
-CREATE TABLE weather_sweep_events (
+CREATE TABLE strategy_weather_sweep_events (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 
   -- ① 配置相关

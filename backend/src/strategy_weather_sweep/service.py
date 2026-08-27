@@ -411,7 +411,7 @@ class SweepTrade:
 class SweepStrategy:
     """策略实例：管理多笔并行交易，按 token_id 去重。"""
 
-    EVENTS_TABLE = "weather_sweep_events"
+    EVENTS_TABLE = "strategy_weather_sweep_events"
 
     # ==================== 工厂方法 ====================
 
