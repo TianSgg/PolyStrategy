@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from framework.auth import AuthUser, get_current_user
-from strategy_weather_sweep.dao import WeatherSweepConfigDAO, WeatherSweepEventDAO
+from strategy_weather_sweep.dao import WeatherSweepConfigDAO, WeatherSweepEventDAO, WeatherSweepTradeDAO
 from strategy_weather_sweep.type import CreateConfigRequest, UpdateConfigRequest
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,7 @@ router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
 _config_dao = WeatherSweepConfigDAO()
 _event_dao = WeatherSweepEventDAO()
+_trade_dao = WeatherSweepTradeDAO()
 
 
 # ─── Configs CRUD ───
@@ -117,6 +118,41 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
     if not current_user.can_view(steps[0]["owner_user_id"]):
         raise HTTPException(status_code=404, detail="Event not found")
     return {"event_id": event_id, "steps": steps}
+
+
+# ─── Trades (摘要) ───
+
+
+@router.get("/trades")
+async def list_trades(
+    status: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    owner_ids = current_user.visible_user_ids()
+    trades = _trade_dao.list_trades(
+        owner_user_ids=owner_ids,
+        status=status,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    total = _trade_dao.count_trades(
+        owner_user_ids=owner_ids,
+        status=status,
+        search=search,
+    )
+    return {"trades": trades, "total": total}
+
+
+@router.get("/trades/{event_id}")
+async def get_trade(event_id: str, current_user: AuthUser = Depends(get_current_user)):
+    trade = _trade_dao.get_by_event_id(event_id)
+    if not trade or not current_user.can_view(trade["owner_user_id"]):
+        raise HTTPException(status_code=404, detail="Trade not found")
+    return {"trade": trade}
 
 
 # ─── Internal helpers ───

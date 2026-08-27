@@ -1,0 +1,356 @@
+import { useState, useEffect, useCallback } from 'react'
+import { apiFetch } from '../api'
+
+interface Trade {
+  id: number
+  event_id: string
+  config_id: number
+  owner_user_id: number
+  proxy_wallet: string
+  signal_id: string | null
+  token_id: string | null
+  market_slug: string | null
+  event_slug: string | null
+  city: string | null
+  direction: string | null
+  status: 'entry_working' | 'exit_working' | 'closed'
+  close_reason: string | null
+  entry_price: string | null
+  entry_shares: string | null
+  entry_cost: string | null
+  exit_price: string | null
+  exit_shares: string | null
+  exit_revenue: string | null
+  pnl: string | null
+  pnl_pct: string | null
+  duration_ms: number | null
+  started_at: string
+  closed_at: string | null
+}
+
+interface EventStep {
+  id: number
+  event_id: string
+  phase: string
+  step: string
+  sequence_no: number
+  detail: Record<string, any>
+  occurred_at: string
+}
+
+interface Props {
+  darkMode: boolean
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  entry_working: '入场中',
+  exit_working: '出场中',
+  closed: '已平仓',
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  entry_working: '#3b82f6',
+  exit_working: '#f59e0b',
+  closed: '#64748b',
+}
+
+const PHASE_COLORS: Record<string, string> = {
+  entry: '#3b82f6',
+  monitor: '#8b5cf6',
+  exit: '#22c55e',
+  exit_risk: '#ef4444',
+  exit_force: '#f59e0b',
+}
+
+const PHASE_LABELS: Record<string, string> = {
+  entry: '入场',
+  monitor: '监控',
+  exit: '退出',
+  exit_risk: '风控退出',
+  exit_force: '强制退出',
+}
+
+const PAGE_SIZE = 30
+
+export default function SweepTrades({ darkMode }: Props) {
+  const [trades, setTrades] = useState<Trade[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [statusFilter, setStatusFilter] = useState<string>('')
+  const [search, setSearch] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [page, setPage] = useState(0)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [steps, setSteps] = useState<EventStep[]>([])
+  const [stepsLoading, setStepsLoading] = useState(false)
+
+  const fetchTrades = useCallback(async () => {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (statusFilter) params.set('status', statusFilter)
+      if (search) params.set('search', search)
+      params.set('limit', String(PAGE_SIZE))
+      params.set('offset', String(page * PAGE_SIZE))
+      const res = await apiFetch(`/api/strategy/trades?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        setTrades(data.trades || [])
+        setTotal(data.total || 0)
+      }
+    } catch (e) {
+      console.error('Failed to fetch trades', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [statusFilter, search, page])
+
+  useEffect(() => { fetchTrades() }, [fetchTrades])
+
+  const handleSearch = () => {
+    setPage(0)
+    setSearch(searchInput.trim())
+  }
+
+  const handleExpand = async (eventId: string) => {
+    if (expandedId === eventId) {
+      setExpandedId(null)
+      setSteps([])
+      return
+    }
+    setExpandedId(eventId)
+    setStepsLoading(true)
+    try {
+      const res = await apiFetch(`/api/strategy/events/${eventId}`)
+      if (res.ok) {
+        const data = await res.json()
+        setSteps(data.steps || [])
+      }
+    } catch (e) {
+      console.error('Failed to fetch steps', e)
+    } finally {
+      setStepsLoading(false)
+    }
+  }
+
+  const formatTime = (ts: string | null) => {
+    if (!ts) return '--'
+    return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  }
+
+  const formatDuration = (ms: number | null) => {
+    if (!ms) return '--'
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    if (ms < 3600000) return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`
+    return `${Math.floor(ms / 3600000)}h${Math.floor((ms % 3600000) / 60000)}m`
+  }
+
+  const pnlColor = (pnl: string | null) => {
+    if (!pnl) return textSecondary
+    const v = parseFloat(pnl)
+    if (v > 0) return '#22c55e'
+    if (v < 0) return '#ef4444'
+    return textSecondary
+  }
+
+  const bg = darkMode ? '#0f172a' : '#f8fafc'
+  const cardBg = darkMode ? '#1e293b' : '#ffffff'
+  const border = darkMode ? '#334155' : '#e2e8f0'
+  const textPrimary = darkMode ? '#f8fafc' : '#0f172a'
+  const textSecondary = darkMode ? '#94a3b8' : '#64748b'
+
+  const tabStyle = (active: boolean): React.CSSProperties => ({
+    padding: '6px 16px',
+    borderRadius: '6px',
+    border: `1px solid ${active ? '#2563eb' : border}`,
+    background: active ? '#2563eb' : 'transparent',
+    color: active ? '#fff' : textSecondary,
+    fontSize: '13px',
+    cursor: 'pointer',
+    fontWeight: active ? 600 : 400,
+  })
+
+  const totalPages = Math.ceil(total / PAGE_SIZE)
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: '24px', background: bg }}>
+      {/* Header */}
+      <h2 style={{ margin: '0 0 16px', fontSize: '20px', fontWeight: 600, color: textPrimary }}>
+        交易总览
+      </h2>
+
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <button onClick={() => { setStatusFilter(''); setPage(0) }} style={tabStyle(!statusFilter)}>全部</button>
+        <button onClick={() => { setStatusFilter('entry_working'); setPage(0) }} style={tabStyle(statusFilter === 'entry_working')}>入场中</button>
+        <button onClick={() => { setStatusFilter('exit_working'); setPage(0) }} style={tabStyle(statusFilter === 'exit_working')}>出场中</button>
+        <button onClick={() => { setStatusFilter('closed'); setPage(0) }} style={tabStyle(statusFilter === 'closed')}>已平仓</button>
+        <div style={{ flex: 1 }} />
+        <input
+          value={searchInput}
+          onChange={e => setSearchInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleSearch()}
+          placeholder="搜索 event_slug..."
+          style={{
+            padding: '6px 12px', borderRadius: '6px', border: `1px solid ${border}`,
+            background: darkMode ? '#334155' : '#f1f5f9', color: textPrimary, fontSize: '13px', width: '200px',
+          }}
+        />
+        <button onClick={handleSearch} style={{ padding: '6px 14px', borderRadius: '6px', border: 'none', background: '#2563eb', color: '#fff', fontSize: '13px', cursor: 'pointer' }}>
+          搜索
+        </button>
+      </div>
+
+      {/* Stats */}
+      <div style={{ fontSize: '12px', color: textSecondary, marginBottom: '12px' }}>
+        共 {total} 笔交易
+        {search && <span> | 筛选: <span style={{ color: textPrimary }}>{search}</span></span>}
+      </div>
+
+      {/* Trade List */}
+      {loading ? (
+        <div style={{ color: textSecondary, padding: '40px', textAlign: 'center' }}>加载中...</div>
+      ) : trades.length === 0 ? (
+        <div style={{ color: textSecondary, padding: '40px', textAlign: 'center' }}>暂无交易记录</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {trades.map(t => (
+            <div key={t.event_id}>
+              <div
+                onClick={() => handleExpand(t.event_id)}
+                style={{
+                  background: expandedId === t.event_id ? (darkMode ? '#334155' : '#eff6ff') : cardBg,
+                  borderRadius: '8px',
+                  padding: '12px 16px',
+                  border: `1px solid ${expandedId === t.event_id ? '#3b82f6' : border}`,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {/* Row 1: status + market + time */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                  <span style={{
+                    fontSize: '11px', padding: '2px 8px', borderRadius: '4px', fontWeight: 500,
+                    background: `${STATUS_COLORS[t.status]}20`,
+                    color: STATUS_COLORS[t.status],
+                  }}>
+                    {STATUS_LABELS[t.status]}
+                  </span>
+                  {t.close_reason && (
+                    <span style={{ fontSize: '11px', color: textSecondary }}>
+                      ({t.close_reason})
+                    </span>
+                  )}
+                  <span style={{ fontSize: '13px', fontWeight: 600, color: textPrimary, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {t.event_slug || t.market_slug || t.event_id.slice(0, 8)}
+                  </span>
+                  <span style={{ fontSize: '12px', color: textSecondary }}>{formatTime(t.started_at)}</span>
+                </div>
+
+                {/* Row 2: city + direction + entry/exit + pnl + duration */}
+                <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: textSecondary, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {t.city && <span>{t.city} {t.direction === 'highest' ? '↑' : t.direction === 'lowest' ? '↓' : ''}</span>}
+                  <span>买入: {t.entry_price ? `$${t.entry_price} x ${t.entry_shares}` : '--'}</span>
+                  <span>卖出: {t.exit_price ? `$${t.exit_price} x ${t.exit_shares}` : '--'}</span>
+                  {t.pnl !== null && (
+                    <span style={{ fontWeight: 600, color: pnlColor(t.pnl) }}>
+                      PnL: {parseFloat(t.pnl) > 0 ? '+' : ''}{parseFloat(t.pnl).toFixed(4)}
+                      {t.pnl_pct && ` (${parseFloat(t.pnl_pct) > 0 ? '+' : ''}${parseFloat(t.pnl_pct).toFixed(2)}%)`}
+                    </span>
+                  )}
+                  <span>耗时: {formatDuration(t.duration_ms)}</span>
+                </div>
+              </div>
+
+              {/* Expanded: step timeline */}
+              {expandedId === t.event_id && (
+                <div style={{
+                  background: darkMode ? '#0f172a' : '#f8fafc',
+                  border: `1px solid ${border}`,
+                  borderTop: 'none',
+                  borderRadius: '0 0 8px 8px',
+                  padding: '12px 16px',
+                  marginTop: '-2px',
+                }}>
+                  {stepsLoading ? (
+                    <div style={{ color: textSecondary, textAlign: 'center', padding: '12px' }}>加载详情...</div>
+                  ) : steps.length === 0 ? (
+                    <div style={{ color: textSecondary, textAlign: 'center', padding: '12px' }}>无步骤记录</div>
+                  ) : (
+                    <div style={{ position: 'relative', paddingLeft: '24px' }}>
+                      <div style={{
+                        position: 'absolute', left: '8px', top: '4px', bottom: '4px',
+                        width: '2px', background: darkMode ? '#475569' : '#cbd5e1',
+                      }} />
+                      {steps.map((step, idx) => (
+                        <div key={step.id || idx} style={{ position: 'relative', marginBottom: '14px' }}>
+                          <div style={{
+                            position: 'absolute', left: '-20px', top: '6px',
+                            width: '10px', height: '10px', borderRadius: '50%',
+                            background: PHASE_COLORS[step.phase] || '#64748b',
+                            border: `2px solid ${darkMode ? '#1e293b' : '#ffffff'}`,
+                          }} />
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '3px' }}>
+                            <span style={{
+                              fontSize: '11px', padding: '1px 6px', borderRadius: '3px',
+                              background: `${PHASE_COLORS[step.phase] || '#64748b'}20`,
+                              color: PHASE_COLORS[step.phase] || '#64748b',
+                              fontWeight: 500,
+                            }}>
+                              {PHASE_LABELS[step.phase] || step.phase}
+                            </span>
+                            <span style={{ fontSize: '13px', fontWeight: 600, color: textPrimary }}>{step.step}</span>
+                            <span style={{ fontSize: '11px', color: textSecondary, marginLeft: 'auto' }}>
+                              #{step.sequence_no} &middot; {formatTime(step.occurred_at)}
+                            </span>
+                          </div>
+                          {step.detail && Object.keys(step.detail).length > 0 && (
+                            <div style={{
+                              fontSize: '11px', color: textSecondary,
+                              background: darkMode ? '#1e293b' : '#f1f5f9',
+                              padding: '6px 10px', borderRadius: '5px',
+                              fontFamily: 'monospace', wordBreak: 'break-all', lineHeight: '1.5',
+                            }}>
+                              {Object.entries(step.detail).map(([k, v]) => (
+                                <div key={k}>
+                                  <span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: <span style={{ color: textPrimary }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {!loading && total > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '20px' }}>
+          <button
+            onClick={() => setPage(p => Math.max(0, p - 1))}
+            disabled={page === 0}
+            style={{ padding: '6px 16px', borderRadius: '6px', border: `1px solid ${border}`, background: 'transparent', color: page === 0 ? textSecondary : textPrimary, fontSize: '13px', cursor: page === 0 ? 'not-allowed' : 'pointer', opacity: page === 0 ? 0.5 : 1 }}
+          >
+            上一页
+          </button>
+          <span style={{ fontSize: '13px', color: textSecondary, lineHeight: '32px' }}>
+            {page + 1} / {totalPages || 1}
+          </span>
+          <button
+            onClick={() => setPage(p => p + 1)}
+            disabled={page >= totalPages - 1}
+            style={{ padding: '6px 16px', borderRadius: '6px', border: `1px solid ${border}`, background: 'transparent', color: page >= totalPages - 1 ? textSecondary : textPrimary, fontSize: '13px', cursor: page >= totalPages - 1 ? 'not-allowed' : 'pointer', opacity: page >= totalPages - 1 ? 0.5 : 1 }}
+          >
+            下一页
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}

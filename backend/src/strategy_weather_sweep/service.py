@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
@@ -29,6 +30,7 @@ from framework.strategy_runtime.event_logger import EventLogger
 from framework.strategy_runtime.interfaces import Signal
 from framework.strategy_runtime.order_executor import OrderExecutor
 from framework.strategy_runtime.tick_verifier import TickVerifier
+from strategy_weather_sweep.dao import WeatherSweepTradeDAO
 from strategy_weather_sweep.internal.risk_monitor import SweepRiskMonitor
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ class SweepTrade:
         orderbook_ws: Any,
         event_logger: Optional[EventLogger],
         on_closed: Callable[[str], None],
+        trade_dao: Optional[WeatherSweepTradeDAO] = None,
     ) -> None:
         self.token_id = token_id
         self.market_slug = market_slug
@@ -59,6 +62,7 @@ class SweepTrade:
         self._orderbook_ws = orderbook_ws
         self._el = event_logger
         self._on_closed = on_closed
+        self._trade_dao = trade_dao
 
         self.state = "entry_working"
         self.position_shares = Decimal("0")
@@ -68,6 +72,8 @@ class SweepTrade:
         self._tick_verified = False
         self._tick_size = Decimal("0.01")
         self._event_start_ms = int(time.time() * 1000)
+        self._entry_cost = Decimal("0")
+        self._exit_revenue = Decimal("0")
 
         self.risk = SweepRiskMonitor(
             orderbook_ws=orderbook_ws,
@@ -133,6 +139,7 @@ class SweepTrade:
                 "risk_ref_mid": str(self.risk.reference_mid),
                 "risk_threshold": str(self.risk.threshold),
             }, phase="entry")
+            self._insert_trade_summary(signal)
         self.entry_order_id = result.order_id
 
         if result.status in ("failed", "insufficient_balance"):
@@ -154,6 +161,7 @@ class SweepTrade:
         if result.status == "filled":
             filled = Decimal(result.filled_size)
             self.position_shares += filled
+            self._entry_cost += filled * buy_price
             self.entry_order_id = None
             if self._el:
                 self._el.log_step("buy_filled", {
@@ -162,6 +170,13 @@ class SweepTrade:
                     "total_position": str(self.position_shares),
                     "fill_price": str(buy_price),
                 }, phase="entry")
+            self._update_trade_summary({
+                "entry_price": str(buy_price),
+                "entry_shares": str(self.position_shares),
+                "entry_cost": str(self._entry_cost),
+                "entry_order_id": result.order_id,
+                "entered_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            })
 
         entry_wait_ms = int(self._config.get("entry_wait_ms", 1200000))
         self._entry_timer = asyncio.create_task(
@@ -187,6 +202,7 @@ class SweepTrade:
             self._close("timeout_no_fill", phase="entry")
         else:
             self.state = "exit_working"
+            self._update_trade_summary({"status": "exit_working"})
 
     # ==================== Monitor & Exit ====================
 
@@ -248,6 +264,7 @@ class SweepTrade:
             if result.status == "filled":
                 filled = Decimal(result.filled_size)
                 self.position_shares -= filled
+                self._exit_revenue += filled * sell_price
                 if self._el:
                     self._el.log_step("sell_filled", {
                         "order_id": result.order_id,
@@ -255,6 +272,13 @@ class SweepTrade:
                         "fill_price": str(sell_price),
                         "remaining_position": str(self.position_shares),
                     }, phase="exit")
+                self._update_trade_summary({
+                    "exit_price": str(sell_price),
+                    "exit_shares": str(filled),
+                    "exit_revenue": str(self._exit_revenue),
+                    "exit_order_id": result.order_id,
+                    "exited_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                })
 
             if result.status == "live":
                 self.exit_order_id = result.order_id
@@ -340,6 +364,7 @@ class SweepTrade:
             if result.status == "filled":
                 filled = Decimal(result.filled_size)
                 self.position_shares -= filled
+                self._exit_revenue += filled * Decimal("0.01")
 
         self._close("stop_loss", phase="exit_risk")
 
@@ -391,16 +416,61 @@ class SweepTrade:
     # ==================== Helpers ====================
 
     def _close(self, reason: str, phase: str = "exit") -> None:
+        duration_ms = int(time.time() * 1000) - self._event_start_ms if self._event_start_ms else 0
         if self._el:
-            duration_ms = int(time.time() * 1000) - self._event_start_ms if self._event_start_ms else 0
             self._el.log_step("event_closed", {
                 "reason": reason,
                 "total_position": str(self.position_shares),
                 "duration_ms": duration_ms,
             }, phase=phase)
             self._el.end_event()
+
+        pnl = None
+        pnl_pct = None
+        if self._entry_cost > 0 and self._exit_revenue > 0:
+            pnl = self._exit_revenue - self._entry_cost
+            pnl_pct = (pnl / self._entry_cost * 100).quantize(Decimal("0.01"))
+
+        self._update_trade_summary({
+            "status": "closed",
+            "close_reason": reason,
+            "pnl": str(pnl) if pnl is not None else None,
+            "pnl_pct": str(pnl_pct) if pnl_pct is not None else None,
+            "duration_ms": duration_ms,
+            "closed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        })
+
         self.state = "closed"
         self._on_closed(self.token_id)
+
+    def _insert_trade_summary(self, signal: Signal) -> None:
+        if not self._trade_dao or not self._el or not self._el.event_id:
+            return
+        try:
+            self._trade_dao.insert({
+                "event_id": self._el.event_id,
+                "config_id": self._el._config_id,
+                "owner_user_id": self._el._owner_user_id,
+                "proxy_wallet": self._el._proxy_wallet,
+                "signal_id": signal.signal_id,
+                "token_id": signal.token_id,
+                "market_slug": signal.market_slug,
+                "event_slug": signal.payload.get("event_slug"),
+                "city": signal.payload.get("city"),
+                "direction": signal.payload.get("direction"),
+                "status": "entry_working",
+                "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            })
+        except Exception:
+            logger.exception("Failed to insert trade summary")
+
+    def _update_trade_summary(self, data: dict[str, Any]) -> None:
+        if not self._trade_dao or not self._el or not self._el.event_id:
+            return
+        try:
+            self._trade_dao.update_by_event_id(self._el.event_id, data)
+        except Exception:
+            logger.exception("Failed to update trade summary")
 
 
 # ============================================================
@@ -437,6 +507,7 @@ class SweepStrategy:
         instance._config_snapshot = config_data.get("params")
         instance._draining = False
         instance._trades: dict[str, SweepTrade] = {}
+        instance._trade_dao = WeatherSweepTradeDAO()
         return instance
 
     # ==================== Signal Dispatch ====================
@@ -467,6 +538,7 @@ class SweepStrategy:
             orderbook_ws=self._orderbook_ws,
             event_logger=el,
             on_closed=self._remove_trade,
+            trade_dao=self._trade_dao,
         )
         self._trades[signal.token_id] = trade
         await trade.enter(signal)

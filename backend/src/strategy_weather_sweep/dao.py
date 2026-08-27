@@ -269,3 +269,108 @@ class WeatherSweepEventDAO:
         if isinstance(d.get("config_snapshot"), str):
             d["config_snapshot"] = json.loads(d["config_snapshot"])
         return d
+
+
+class WeatherSweepTradeDAO:
+    """strategy_weather_sweep_trades 读写。"""
+
+    TABLE = "strategy_weather_sweep_trades"
+
+    def insert(self, data: Dict[str, Any]) -> int:
+        columns = list(data.keys())
+        placeholders = ", ".join(["%s"] * len(columns))
+        col_str = ", ".join(columns)
+        sql = f"INSERT INTO {self.TABLE} ({col_str}) VALUES ({placeholders})"
+        params = [data[c] for c in columns]
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+            conn.commit()
+            return cur.lastrowid
+
+    def update_by_event_id(self, event_id: str, data: Dict[str, Any]) -> bool:
+        if not data:
+            return False
+        sets = [f"{k} = %s" for k in data.keys()]
+        params = list(data.values())
+        params.append(event_id)
+        sql = f"UPDATE {self.TABLE} SET {', '.join(sets)} WHERE event_id = %s"
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+            conn.commit()
+            return cur.rowcount > 0
+
+    def list_trades(
+        self,
+        *,
+        owner_user_ids: Optional[List[int]] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 30,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        conditions: List[str] = []
+        params: List[Any] = []
+
+        if owner_user_ids is not None:
+            placeholders = ",".join(["%s"] * len(owner_user_ids))
+            conditions.append(f"owner_user_id IN ({placeholders})")
+            params.extend(owner_user_ids)
+        if status:
+            conditions.append("status = %s")
+            params.append(status)
+        if search:
+            conditions.append("event_slug LIKE %s")
+            params.append(f"%{search}%")
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"""
+            SELECT * FROM {self.TABLE}
+            WHERE {where}
+            ORDER BY started_at DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    def count_trades(
+        self,
+        *,
+        owner_user_ids: Optional[List[int]] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> int:
+        conditions: List[str] = []
+        params: List[Any] = []
+
+        if owner_user_ids is not None:
+            placeholders = ",".join(["%s"] * len(owner_user_ids))
+            conditions.append(f"owner_user_id IN ({placeholders})")
+            params.extend(owner_user_ids)
+        if status:
+            conditions.append("status = %s")
+            params.append(status)
+        if search:
+            conditions.append("event_slug LIKE %s")
+            params.append(f"%{search}%")
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"SELECT COUNT(*) FROM {self.TABLE} WHERE {where}"
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone()[0]
+
+    def get_by_event_id(self, event_id: str) -> Optional[Dict[str, Any]]:
+        sql = f"SELECT * FROM {self.TABLE} WHERE event_id = %s"
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (event_id,))
+                columns = [desc[0] for desc in cur.description]
+                row = cur.fetchone()
+                return dict(zip(columns, row)) if row else None

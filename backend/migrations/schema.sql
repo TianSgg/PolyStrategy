@@ -257,3 +257,60 @@ CREATE TABLE strategy_account_ledger (
   KEY idx_ledger_run (run_id, occurred_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='策略资金账本';
+
+-- ============================================================
+-- Weather Sweep 交易摘要（每笔交易一行，实时更新状态和盈亏）
+-- ============================================================
+CREATE TABLE strategy_weather_sweep_trades (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+  -- 关联
+  event_id CHAR(36) NOT NULL,
+  config_id BIGINT UNSIGNED NOT NULL,
+  owner_user_id INT NOT NULL,
+  proxy_wallet VARCHAR(128) NOT NULL,
+
+  -- 市场信息
+  signal_id VARCHAR(512) NULL,
+  token_id VARCHAR(128) NULL,
+  market_slug VARCHAR(255) NULL,
+  event_slug VARCHAR(255) NULL,
+  city VARCHAR(100) NULL,
+  direction VARCHAR(16) NULL,
+
+  -- 状态
+  status ENUM('entry_working', 'exit_working', 'closed') NOT NULL DEFAULT 'entry_working',
+  close_reason VARCHAR(64) NULL,
+
+  -- 入场
+  entry_price DECIMAL(10,4) NULL,
+  entry_shares DECIMAL(20,4) NULL,
+  entry_cost DECIMAL(20,6) NULL,
+  entry_order_id VARCHAR(128) NULL,
+  entered_at DATETIME(3) NULL,
+
+  -- 出场
+  exit_price DECIMAL(10,4) NULL,
+  exit_shares DECIMAL(20,4) NULL,
+  exit_revenue DECIMAL(20,6) NULL,
+  exit_order_id VARCHAR(128) NULL,
+  exited_at DATETIME(3) NULL,
+
+  -- 盈亏
+  pnl DECIMAL(20,6) NULL,
+  pnl_pct DECIMAL(8,4) NULL,
+
+  -- 时间
+  duration_ms INT UNSIGNED NULL,
+  started_at DATETIME(3) NOT NULL,
+  closed_at DATETIME(3) NULL,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_event_id (event_id),
+  KEY idx_config_status (config_id, status),
+  KEY idx_owner (owner_user_id, closed_at DESC),
+  KEY idx_event_slug (event_slug, started_at DESC),
+  KEY idx_status (status),
+  KEY idx_closed_at (closed_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Weather Sweep 交易摘要';
