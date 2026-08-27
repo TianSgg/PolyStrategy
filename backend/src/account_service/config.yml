@@ -1,13 +1,27 @@
+# ═══════════════════════════════════════════════════════════════
+# account_service 服务配置
+# ═══════════════════════════════════════════════════════════════
+
 service:
+  # Consul 注册的服务名称
   name: account-service
+  # 服务监听端口
   port: 8011
 
 consul:
+  # Traefik 标签: 控制反向代理的路由规则
   tags:
+    # 启用 Traefik 对此服务的自动发现
     - "traefik.enable=true"
+    # 路由规则: 匹配 /api/account 和 /api/market 前缀的请求
+    # /api/account: 账户 CRUD、余额、持仓
+    # /api/market: Polymarket 行情代理查询
     - "traefik.http.routers.account.rule=PathPrefix(`/api/account`) || PathPrefix(`/api/market`)"
     - "traefik.http.routers.account.entrypoints=web"
+    # 中间件: 所有请求先经过 forward-auth 鉴权
     - "traefik.http.routers.account.middlewares=forward-auth@file"
+  # Consul 健康检查路径
   health_path: /health
 
+# 依赖的其他服务
 dependencies: []

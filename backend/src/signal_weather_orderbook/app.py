@@ -20,8 +20,7 @@ if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
 _backend_dir = Path(__file__).resolve().parent.parent.parent
-_env = os.getenv("ENV", "dev")
-load_dotenv(_backend_dir / f".env.{_env}", override=True)
+load_dotenv(_backend_dir / ".env", override=True)
 
 from framework.logging import setup_logging
 setup_logging("signal_weather_orderbook")

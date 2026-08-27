@@ -17,8 +17,6 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 PID_DIR="$ROOT_DIR/.pids"
 mkdir -p "$PID_DIR"
 
-export ENV="${ENV:-dev}"
-
 # 加载 backend/.env 中的环境变量（数据库密码、Consul Token 等）
 if [ -f "$BACKEND_DIR/.env" ]; then
     set -a

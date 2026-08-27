@@ -1,14 +1,27 @@
+# ═══════════════════════════════════════════════════════════════
+# auth_service 服务配置
+# ═══════════════════════════════════════════════════════════════
+
 service:
+  # Consul 注册的服务名称
   name: auth-service
+  # 服务监听端口
   port: 8010
 
 consul:
+  # Traefik 标签: 控制反向代理的路由规则
   tags:
+    # 启用 Traefik 对此服务的自动发现
     - "traefik.enable=true"
+    # 路由规则: 匹配 /api/auth 前缀的请求 (登录、注册、用户管理)
     - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
     - "traefik.http.routers.auth.entrypoints=web"
+    # ForwardAuth 路由: Traefik 将鉴权请求转发到 /auth/verify
+    # 其他服务配置 forward-auth@file 中间件时，Traefik 会调用此路径验证 JWT
     - "traefik.http.routers.auth-forward.rule=PathPrefix(`/auth/verify`)"
     - "traefik.http.routers.auth-forward.entrypoints=web"
+  # Consul 健康检查路径
   health_path: /health
 
+# 依赖的其他服务 (auth 是基础服务，无依赖)
 dependencies: []

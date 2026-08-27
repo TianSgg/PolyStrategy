@@ -1,10 +1,21 @@
+# ═══════════════════════════════════════════════════════════════
+# strategy_weather_sweep 服务配置
+# ═══════════════════════════════════════════════════════════════
+
 service:
+  # Consul 注册的服务名称 (Traefik 通过此名称发现服务)
   name: polystrategy-strategy-weather-sweep
+  # 服务监听端口
   port: 8003
 
 consul:
+  # Traefik 标签: 控制反向代理的路由规则
   tags:
+    # 启用 Traefik 对此服务的自动发现
     - "traefik.enable=true"
+    # 路由规则: 匹配 /api/strategy 前缀的请求转发到此服务
     - "traefik.http.routers.polystrategy-strategy-weather-sweep.rule=PathPrefix(`/api/strategy`)"
+    # 入口点: web (即 Traefik 的 HTTP 端口，通常 80)
     - "traefik.http.routers.polystrategy-strategy-weather-sweep.entrypoints=web"
+    # 中间件: 所有请求先经过 forward-auth 鉴权 (由 Traefik dynamic config 定义)
     - "traefik.http.routers.polystrategy-strategy-weather-sweep.middlewares=forward-auth@file"

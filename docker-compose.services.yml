@@ -6,8 +6,9 @@ x-common-env: &common-env
   MYSQL_USER: ${MYSQL_USER:-root}
   MYSQL_PASSWORD: ${MYSQL_PASSWORD}
   MYSQL_DATABASE: ${MYSQL_DATABASE:-polystrategy}
-  CONSUL_HTTP_ADDR: http://polystrategy-consul:8500
-  ENV: ${ENV:-dev}
+  CONSUL_HTTP_ADDR: ${CONSUL_HTTP_ADDR:-http://host.docker.internal:8500}
+  CONSUL_HTTP_TOKEN: ${CONSUL_HTTP_TOKEN:-}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY}
   AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-dev-secret-change-in-production}
 
 x-common-build: &common-build
@@ -21,11 +22,12 @@ services:
       args:
         SERVICE_MODULE: auth_service.app
     container_name: polystrategy-auth
+    env_file: backend/.env
     ports:
       - "8010:8010"
     environment:
       <<: *common-env
-      SERVICE_NAME: auth-service
+      SERVICE_NAME: polystrategy-auth
       SERVICE_PORT: "8010"
     networks:
       - polystrategy
@@ -37,15 +39,18 @@ services:
       args:
         SERVICE_MODULE: account_service.app
     container_name: polystrategy-account
+    env_file: backend/.env
     ports:
       - "8011:8011"
     environment:
       <<: *common-env
-      SERVICE_NAME: account-service
+      SERVICE_NAME: polystrategy-account
       SERVICE_PORT: "8011"
     networks:
       - polystrategy
     restart: unless-stopped
+    depends_on:
+      - auth-service
 
   signal-weather-orderbook:
     build:
@@ -53,16 +58,18 @@ services:
       args:
         SERVICE_MODULE: signal_weather_orderbook.app
     container_name: polystrategy-signal-weather-orderbook
+    env_file: backend/.env
     ports:
       - "8001:8001"
     environment:
       <<: *common-env
-      SERVICE_NAME: signal-weather-orderbook
+      SERVICE_NAME: polystrategy-signal-weather-orderbook
       SERVICE_PORT: "8001"
-      WEATHER_SIGNAL_PORT: "8001"
     networks:
       - polystrategy
     restart: unless-stopped
+    depends_on:
+      - auth-service
 
   strategy-weather-sweep:
     build:
@@ -70,13 +77,13 @@ services:
       args:
         SERVICE_MODULE: strategy_weather_sweep.app
     container_name: polystrategy-strategy-weather-sweep
+    env_file: backend/.env
     ports:
       - "8003:8003"
     environment:
       <<: *common-env
-      SERVICE_NAME: strategy-weather-sweep
+      SERVICE_NAME: polystrategy-strategy-weather-sweep
       SERVICE_PORT: "8003"
-      STRATEGY_SWEEP_PORT: "8003"
       WEATHER_SIGNAL_WS_URL: ws://polystrategy-signal-weather-orderbook:8001/ws/signal
     networks:
       - polystrategy
