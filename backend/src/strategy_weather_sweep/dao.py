@@ -307,6 +307,7 @@ class WeatherSweepTradeDAO:
         owner_user_ids: Optional[List[int]] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        proxy_wallet: Optional[str] = None,
         limit: int = 30,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -317,6 +318,9 @@ class WeatherSweepTradeDAO:
             placeholders = ",".join(["%s"] * len(owner_user_ids))
             conditions.append(f"owner_user_id IN ({placeholders})")
             params.extend(owner_user_ids)
+        if proxy_wallet:
+            conditions.append("proxy_wallet = %s")
+            params.append(proxy_wallet.lower())
         if status:
             conditions.append("status = %s")
             params.append(status)
@@ -344,6 +348,7 @@ class WeatherSweepTradeDAO:
         owner_user_ids: Optional[List[int]] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        proxy_wallet: Optional[str] = None,
     ) -> int:
         conditions: List[str] = []
         params: List[Any] = []
@@ -352,6 +357,9 @@ class WeatherSweepTradeDAO:
             placeholders = ",".join(["%s"] * len(owner_user_ids))
             conditions.append(f"owner_user_id IN ({placeholders})")
             params.extend(owner_user_ids)
+        if proxy_wallet:
+            conditions.append("proxy_wallet = %s")
+            params.append(proxy_wallet.lower())
         if status:
             conditions.append("status = %s")
             params.append(status)

@@ -127,6 +127,7 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
 async def list_trades(
     status: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
+    proxy_wallet: Optional[str] = Query(default=None),
     limit: int = Query(default=30, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: AuthUser = Depends(get_current_user),
@@ -136,6 +137,7 @@ async def list_trades(
         owner_user_ids=owner_ids,
         status=status,
         search=search,
+        proxy_wallet=proxy_wallet,
         limit=limit,
         offset=offset,
     )
@@ -143,6 +145,7 @@ async def list_trades(
         owner_user_ids=owner_ids,
         status=status,
         search=search,
+        proxy_wallet=proxy_wallet,
     )
     return {"trades": trades, "total": total}
 

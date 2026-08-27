@@ -40,6 +40,8 @@ interface EventStep {
 
 interface Props {
   darkMode: boolean
+  proxyWallet?: string
+  onBack?: () => void
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -72,7 +74,7 @@ const PHASE_LABELS: Record<string, string> = {
 
 const PAGE_SIZE = 30
 
-export default function SweepTrades({ darkMode }: Props) {
+export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
   const [trades, setTrades] = useState<Trade[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -88,6 +90,7 @@ export default function SweepTrades({ darkMode }: Props) {
     setLoading(true)
     try {
       const params = new URLSearchParams()
+      if (proxyWallet) params.set('proxy_wallet', proxyWallet)
       if (statusFilter) params.set('status', statusFilter)
       if (search) params.set('search', search)
       params.set('limit', String(PAGE_SIZE))
@@ -103,7 +106,7 @@ export default function SweepTrades({ darkMode }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, search, page])
+  }, [statusFilter, search, page, proxyWallet])
 
   useEffect(() => { fetchTrades() }, [fetchTrades])
 
@@ -175,9 +178,17 @@ export default function SweepTrades({ darkMode }: Props) {
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '24px', background: bg }}>
       {/* Header */}
-      <h2 style={{ margin: '0 0 16px', fontSize: '20px', fontWeight: 600, color: textPrimary }}>
-        交易总览
-      </h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '0 0 16px' }}>
+        {onBack && (
+          <button onClick={onBack} style={{
+            background: 'transparent', border: `1px solid ${border}`, borderRadius: '6px',
+            padding: '4px 10px', cursor: 'pointer', color: textSecondary, fontSize: '13px',
+          }}>← 返回</button>
+        )}
+        <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 600, color: textPrimary }}>
+          交易记录
+        </h2>
+      </div>
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center', flexWrap: 'wrap' }}>

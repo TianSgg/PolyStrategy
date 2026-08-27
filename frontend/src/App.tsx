@@ -4,7 +4,6 @@ import Login from './pages/Login'
 import WeatherMonitor from './pages/WeatherMonitor'
 import WeatherCityAdmin from './pages/WeatherCityAdmin'
 import StrategyDashboard from './pages/StrategyDashboard'
-import SweepTrades from './pages/SweepTrades'
 import UserManagement from './pages/UserManagement'
 import StatusBar from './components/StatusBar'
 import ChangePasswordModal from './components/ChangePasswordModal'
@@ -12,7 +11,7 @@ import { ToastContainer } from './components/Toast'
 import { apiFetch, setUnauthorizedHandler } from './api'
 import { useBalance } from './contexts/BalanceContext'
 
-type Page = 'account' | 'users' | 'weather' | 'weather-cities' | 'dashboard' | 'trades'
+type Page = 'account' | 'users' | 'weather' | 'weather-cities' | 'dashboard'
 type AuthUser = { id: number; username: string; role: 'root' | 'user'; enabled: boolean }
 
 const DARK_MODE_STORAGE_KEY = 'weathertaker:dark-mode'
@@ -125,7 +124,7 @@ function App() {
           {/* 策略（可展开） */}
           <button
             onClick={() => setStrategyExpanded(!strategyExpanded)}
-            style={['dashboard', 'trades'].includes(currentPage) && !strategyExpanded
+            style={currentPage === 'dashboard' && !strategyExpanded
               ? theme.navItemActive : theme.navItem}
           >
             <span style={styles.navIcon}>🎯</span>
@@ -145,13 +144,6 @@ function App() {
               >
                 <span style={styles.navIcon}>🌡</span>
                 Weather Sweep
-              </button>
-              <button
-                onClick={() => setCurrentPage('trades')}
-                style={currentPage === 'trades' ? theme.navItemActive : theme.navItem}
-              >
-                <span style={styles.navIcon}>📊</span>
-                交易记录
               </button>
             </div>
           )}
@@ -209,9 +201,6 @@ function App() {
         </div>
         <div style={{ display: currentPage === 'dashboard' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <StrategyDashboard darkMode={darkMode} />
-        </div>
-        <div style={{ display: currentPage === 'trades' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-          <SweepTrades darkMode={darkMode} />
         </div>
       </div>
     </div>

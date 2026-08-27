@@ -17,14 +17,14 @@ class AccountDao:
             sql = """SELECT id, owner_user_id, name, wallet_address, proxy_wallet,
                             builder_api_key, builder_code, signature_type,
                             relayer_api_key, created_at
-                     FROM accounts"""
+                     FROM accounts WHERE deleted_at IS NULL"""
             params: tuple = ()
             if owner_user_ids is not None:
                 placeholders = ",".join(["%s"] * len(owner_user_ids))
-                sql += f" WHERE owner_user_id IN ({placeholders})"
+                sql += f" AND owner_user_id IN ({placeholders})"
                 params = tuple(owner_user_ids)
             elif owner_user_id is not None:
-                sql += " WHERE owner_user_id = %s"
+                sql += " AND owner_user_id = %s"
                 params = (owner_user_id,)
             cursor.execute(sql, params)
             columns = [col[0] for col in cursor.description]
@@ -46,7 +46,7 @@ class AccountDao:
                           encrypted_private_key, builder_api_key,
                           encrypted_builder_secret, encrypted_builder_passphrase,
                           builder_code, signature_type, relayer_api_key
-                   FROM accounts WHERE id = %s""",
+                   FROM accounts WHERE id = %s AND deleted_at IS NULL""",
                 (account_id,)
             )
             row = cursor.fetchone()
@@ -149,7 +149,7 @@ class AccountDao:
                           encrypted_private_key, builder_api_key,
                           encrypted_builder_secret, encrypted_builder_passphrase,
                           builder_code, signature_type, relayer_api_key
-                   FROM accounts WHERE proxy_wallet = %s""",
+                   FROM accounts WHERE proxy_wallet = %s AND deleted_at IS NULL""",
                 (proxy_wallet.lower(),)
             )
             row = cursor.fetchone()
@@ -166,7 +166,7 @@ class AccountDao:
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "SELECT COUNT(*) FROM accounts WHERE proxy_wallet = %s AND owner_user_id = %s",
+                "SELECT COUNT(*) FROM accounts WHERE proxy_wallet = %s AND owner_user_id = %s AND deleted_at IS NULL",
                 (proxy_wallet.lower(), owner_user_id),
             )
             return cursor.fetchone()[0] > 0
@@ -175,12 +175,12 @@ class AccountDao:
 
     @staticmethod
     def delete(proxy_wallet: str) -> bool:
-        """根据 proxy_wallet 删除账户"""
+        """软删除账户（保留交易记录可查）"""
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "DELETE FROM accounts WHERE proxy_wallet = %s",
+                f"UPDATE accounts SET deleted_at = {UTC8_DB_NOW_SQL} WHERE proxy_wallet = %s AND deleted_at IS NULL",
                 (proxy_wallet.lower(),)
             )
             conn.commit()

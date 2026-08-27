@@ -38,6 +38,7 @@ CREATE TABLE accounts (
   signature_type TINYINT NOT NULL DEFAULT 2,
   created_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
   updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
+  deleted_at DATETIME(3) DEFAULT NULL,
   UNIQUE KEY idx_wallet_address (wallet_address),
   INDEX idx_accounts_owner_user_id (owner_user_id)
 );
