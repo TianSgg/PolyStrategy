@@ -47,27 +47,11 @@ services:
       - polystrategy
     restart: unless-stopped
 
-  strategy-config-service:
-    build:
-      <<: *common-build
-      args:
-        SERVICE_MODULE: strategy_config_service.app
-    container_name: polystrategy-strategy-config
-    ports:
-      - "8012:8012"
-    environment:
-      <<: *common-env
-      SERVICE_NAME: strategy-config-service
-      SERVICE_PORT: "8012"
-    networks:
-      - polystrategy
-    restart: unless-stopped
-
   signal-weather:
     build:
       <<: *common-build
       args:
-        SERVICE_MODULE: signal_weather_orderbook.app
+        SERVICE_MODULE: signal_weather.app
     container_name: polystrategy-signal-weather
     ports:
       - "8001:8001"
@@ -76,23 +60,6 @@ services:
       SERVICE_NAME: signal-weather
       SERVICE_PORT: "8001"
       WEATHER_SIGNAL_PORT: "8001"
-    networks:
-      - polystrategy
-    restart: unless-stopped
-
-  signal-leader:
-    build:
-      <<: *common-build
-      args:
-        SERVICE_MODULE: signal_leader_activity.app
-    container_name: polystrategy-signal-leader
-    ports:
-      - "8002:8002"
-    environment:
-      <<: *common-env
-      SERVICE_NAME: signal-leader
-      SERVICE_PORT: "8002"
-      LEADER_SIGNAL_PORT: "8002"
     networks:
       - polystrategy
     restart: unless-stopped
@@ -116,46 +83,6 @@ services:
     restart: unless-stopped
     depends_on:
       - signal-weather
-
-  strategy-leader:
-    build:
-      <<: *common-build
-      args:
-        SERVICE_MODULE: strategy_leader.app
-    container_name: polystrategy-strategy-leader
-    ports:
-      - "8004:8004"
-    environment:
-      <<: *common-env
-      SERVICE_NAME: strategy-leader
-      SERVICE_PORT: "8004"
-      LEADER_SIGNAL_WS_URL: ws://polystrategy-signal-leader:8002/ws/signal
-    networks:
-      - polystrategy
-    restart: unless-stopped
-    depends_on:
-      - signal-leader
-
-  strategy-sweep-leader:
-    build:
-      <<: *common-build
-      args:
-        SERVICE_MODULE: strategy_sweep_leader.app
-    container_name: polystrategy-strategy-sweep-leader
-    ports:
-      - "8005:8005"
-    environment:
-      <<: *common-env
-      SERVICE_NAME: strategy-sweep-leader
-      SERVICE_PORT: "8005"
-      WEATHER_SIGNAL_WS_URL: ws://polystrategy-signal-weather:8001/ws/signal
-      LEADER_SIGNAL_WS_URL: ws://polystrategy-signal-leader:8002/ws/signal
-    networks:
-      - polystrategy
-    restart: unless-stopped
-    depends_on:
-      - signal-weather
-      - signal-leader
 
 networks:
   polystrategy:

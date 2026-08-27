@@ -154,7 +154,7 @@ class AuthDao:
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
-            for table in ("accounts", "leaders", "copy_trading_configs"):
+            for table in ("accounts",):
                 cursor.execute(
                     f"UPDATE {table} SET owner_user_id = %s WHERE owner_user_id = %s",
                     (to_user_id, user_id),
@@ -206,20 +206,6 @@ def _add_owner_column(cursor, table: str):
     if cursor.fetchone()[0] == 0:
         cursor.execute(f"CREATE INDEX {index_name} ON {table} (owner_user_id)")
 
-
-def _ensure_leader_owner_unique(cursor):
-    cursor.execute(
-        """SELECT COUNT(*) FROM information_schema.STATISTICS
-           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leaders' AND INDEX_NAME = 'idx_proxy_wallet'"""
-    )
-    if cursor.fetchone()[0] > 0:
-        cursor.execute("DROP INDEX idx_proxy_wallet ON leaders")
-    cursor.execute(
-        """SELECT COUNT(*) FROM information_schema.STATISTICS
-           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leaders' AND INDEX_NAME = 'idx_leaders_owner_proxy'"""
-    )
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("CREATE UNIQUE INDEX idx_leaders_owner_proxy ON leaders (owner_user_id, proxy_wallet)")
 
 
 def _ensure_global_unique_index(cursor, table: str, index_name: str, columns: str):

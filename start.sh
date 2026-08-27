@@ -38,10 +38,7 @@ BACKEND_SERVICES=(
     "auth|auth_service.app|8010|"
     "account|account_service.app|8011|"
     "signal_weather|signal_weather.app|8001|"
-    "signal_leader|signal_leader.app|8002|"
     "strategy_sweep|strategy_weather_sweep.app|8003|"
-    "strategy_leader|strategy_leader.app|8004|"
-    "strategy_sweep_leader|strategy_sweep_leader.app|8005|"
 )
 
 # ─── 工具函数 ────────────────────────────────────────────────────────────────

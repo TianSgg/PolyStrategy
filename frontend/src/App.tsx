@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
 import Account from './pages/Account'
-import CopyTrading from './pages/CopyTrading'
 import Login from './pages/Login'
 import WeatherMonitor from './pages/WeatherMonitor'
 import WeatherCityAdmin from './pages/WeatherCityAdmin'
@@ -13,7 +12,7 @@ import { ToastContainer } from './components/Toast'
 import { apiFetch, setUnauthorizedHandler } from './api'
 import { useBalance } from './contexts/BalanceContext'
 
-type Page = 'account' | 'copytrading' | 'users' | 'weather' | 'weather-cities' | 'dashboard' | 'trade-events'
+type Page = 'account' | 'users' | 'weather' | 'weather-cities' | 'dashboard' | 'trade-events'
 type AuthUser = { id: number; username: string; role: 'root' | 'user'; enabled: boolean }
 
 const DARK_MODE_STORAGE_KEY = 'weathertaker:dark-mode'
@@ -126,7 +125,7 @@ function App() {
           {/* 策略（可展开） */}
           <button
             onClick={() => setStrategyExpanded(!strategyExpanded)}
-            style={['copytrading', 'dashboard', 'trade-events'].includes(currentPage) && !strategyExpanded
+            style={['dashboard', 'trade-events'].includes(currentPage) && !strategyExpanded
               ? theme.navItemActive : theme.navItem}
           >
             <span style={styles.navIcon}>🎯</span>
@@ -140,13 +139,6 @@ function App() {
           </button>
           {strategyExpanded && (
             <div style={styles.subNav}>
-              <button
-                onClick={() => setCurrentPage('copytrading')}
-                style={currentPage === 'copytrading' ? theme.navItemActive : theme.navItem}
-              >
-                <span style={styles.navIcon}>📋</span>
-                跟单策略
-              </button>
               <button
                 onClick={() => setCurrentPage('dashboard')}
                 style={currentPage === 'dashboard' ? theme.navItemActive : theme.navItem}
@@ -205,9 +197,6 @@ function App() {
             refreshKey={balanceRefreshKey}
             onAccountsLoaded={setAccountsList}
           />
-        </div>
-        <div style={{ display: currentPage === 'copytrading' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-          <CopyTrading darkMode={darkMode} visible={currentPage === 'copytrading'} />
         </div>
         <div style={{ display: currentPage === 'users' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
           <UserManagement darkMode={darkMode} currentRole={authUser.role} currentUserId={authUser.id} />
