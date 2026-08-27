@@ -9,7 +9,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-CONSUL_HTTP_ADDR = os.getenv("CONSUL_HTTP_ADDR", "http://localhost:8500")
+_consul_port = os.getenv("CONSUL_HTTP_PORT", "8500")
+CONSUL_HTTP_ADDR = os.getenv("CONSUL_HTTP_ADDR", f"http://localhost:{_consul_port}")
 CONSUL_HTTP_TOKEN = os.getenv("CONSUL_HTTP_TOKEN", "")
 
 
