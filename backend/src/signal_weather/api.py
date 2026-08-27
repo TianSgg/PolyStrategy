@@ -245,7 +245,6 @@ class CityAdminRequest(BaseModel):
     monitor_highest: bool = False
     monitor_lowest: bool = False
     enabled: bool = True
-    sort_order: int = 0
 
 
 def _validate_city(body: CityAdminRequest) -> None:

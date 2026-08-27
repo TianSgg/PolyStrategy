@@ -24,7 +24,7 @@ class WeatherCityRepository:
                    monitor_highest, monitor_lowest
             FROM weather_cities
             WHERE enabled = 1
-            ORDER BY sort_order ASC, id ASC
+            ORDER BY city_slug ASC
         """
         async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
             await cursor.execute(query)
@@ -40,9 +40,9 @@ class WeatherCityRepository:
             SELECT id, city_name, city_slug, timezone,
                    has_highest_market, has_lowest_market,
                    monitor_highest, monitor_lowest,
-                   enabled, sort_order
+                   enabled
             FROM weather_cities
-            ORDER BY sort_order ASC, id ASC
+            ORDER BY city_slug ASC
         """
         async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
             await cursor.execute(query)
@@ -54,7 +54,7 @@ class WeatherCityRepository:
             SELECT id, city_name, city_slug, timezone,
                    has_highest_market, has_lowest_market,
                    monitor_highest, monitor_lowest,
-                   enabled, sort_order
+                   enabled
             FROM weather_cities WHERE id = %s
         """
         async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
@@ -66,8 +66,8 @@ class WeatherCityRepository:
         query = """
             INSERT INTO weather_cities
                 (city_name, city_slug, timezone, has_highest_market, has_lowest_market,
-                 monitor_highest, monitor_lowest, enabled, sort_order)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 monitor_highest, monitor_lowest, enabled)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """
         values = (
             data["city_name"], data["city_slug"], data["timezone"],
@@ -76,7 +76,6 @@ class WeatherCityRepository:
             int(data.get("monitor_highest", False)),
             int(data.get("monitor_lowest", False)),
             int(data.get("enabled", True)),
-            data.get("sort_order", 0),
         )
         async with self._pool.acquire() as connection, connection.cursor() as cursor:
             await cursor.execute(query, values)
@@ -87,7 +86,7 @@ class WeatherCityRepository:
         values: list[Any] = []
         for col in ("city_name", "city_slug", "timezone", "has_highest_market",
                     "has_lowest_market", "monitor_highest", "monitor_lowest",
-                    "enabled", "sort_order"):
+                    "enabled"):
             if col in data:
                 fields.append(f"{col} = %s")
                 val = data[col]

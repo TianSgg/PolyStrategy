@@ -11,7 +11,6 @@ interface City {
   monitor_highest: number
   monitor_lowest: number
   enabled: number
-  sort_order: number
 }
 
 interface FormData {
@@ -23,7 +22,6 @@ interface FormData {
   monitor_highest: boolean
   monitor_lowest: boolean
   enabled: boolean
-  sort_order: number
 }
 
 const emptyForm: FormData = {
@@ -35,7 +33,6 @@ const emptyForm: FormData = {
   monitor_highest: false,
   monitor_lowest: false,
   enabled: true,
-  sort_order: 0,
 }
 
 const SLUG_TIMEZONE_MAP: Record<string, string> = {
@@ -184,7 +181,6 @@ export default function WeatherCityAdmin({ darkMode, onBack }: Props) {
       monitor_highest: !!city.monitor_highest,
       monitor_lowest: !!city.monitor_lowest,
       enabled: !!city.enabled,
-      sort_order: city.sort_order,
     })
     setModalOpen(true)
   }
@@ -286,7 +282,7 @@ export default function WeatherCityAdmin({ darkMode, onBack }: Props) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
             <thead>
               <tr style={{ borderBottom: `2px solid ${border}` }}>
-                {['城市', 'Slug', '时区', '高温市场', '低温市场', '监听高温', '监听低温', '状态', '排序', '操作'].map(h => (
+                {['城市', 'Slug', '时区', '高温市场', '低温市场', '监听高温', '监听低温', '状态', '操作'].map(h => (
                   <th key={h} style={{ padding: '10px 8px', textAlign: 'left', color: muted, fontWeight: 600 }}>{h}</th>
                 ))}
               </tr>
@@ -306,7 +302,6 @@ export default function WeatherCityAdmin({ darkMode, onBack }: Props) {
                       {city.enabled ? '启用' : '停用'}
                     </span>
                   </td>
-                  <td style={cellStyle}>{city.sort_order}</td>
                   <td style={cellStyle}>
                     <button onClick={() => openEdit(city)} style={smallBtn(darkMode)}>编辑</button>{' '}
                     <button onClick={() => handleDelete(city)} style={{ ...smallBtn(darkMode), color: '#ef4444' }}>删除</button>
@@ -340,9 +335,6 @@ export default function WeatherCityAdmin({ darkMode, onBack }: Props) {
             </FormField>
             <FormField label="时区" darkMode={darkMode}>
               <input value={form.timezone} onChange={e => setForm({ ...form, timezone: e.target.value })} style={inputStyle(darkMode)} placeholder="由 slug 自动填充" />
-            </FormField>
-            <FormField label="排序值" darkMode={darkMode}>
-              <input type="number" value={form.sort_order} onChange={e => setForm({ ...form, sort_order: parseInt(e.target.value) || 0 })} style={inputStyle(darkMode)} />
             </FormField>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, margin: '16px 0' }}>
