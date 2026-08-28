@@ -6,11 +6,27 @@
 
 ---
 
-## 1. 存储模型
+## 1. 设计原则：三层分离
 
-### 1.1 events 表（流水）
+每笔交易（trade）从信号到达到关闭，产生若干 step。step 分为三层，每层语义固定、职责单一：
 
-一笔交易（trade）从信号到达到关闭，产生若干 step，每条 step 一行：
+| 层 | 买入 step | 卖出 step | 职责 |
+|----|-----------|-----------|------|
+| **挂单结果** | `order_placed` / `order_failed` | `sell_order_placed` / `sell_order_failed` | CLOB 是否接受了订单 |
+| **成交通知** | `buy_filled` | `sell_filled` | 发生了一次成交（不管来源） |
+| **阶段终态** | `entry_complete` / `entry_timeout` | `sell_complete` / `sell_timeout` | 入场/退出阶段结束 |
+
+关键规则：
+
+- 挂单和成交是独立的 step。即使 `place_order` 返回 `matched` 全部成交，也写成"挂单 + 成交"两条，不合并。
+- 每个阶段一定以终态 step 收尾。入场阶段以 `entry_complete`（满仓）或 `entry_timeout`（超时撤单）结束。
+- 所有成交量都在 `buy_filled` / `sell_filled` 里，不散落在挂单 step 中。统计成交只查一个 step name。
+
+---
+
+## 2. 存储模型
+
+### 2.1 events 表（流水）
 
 ```
 strategy_weather_sweep_events
@@ -22,9 +38,9 @@ strategy_weather_sweep_events
   occurred_at     DATETIME(3)   -- UTC 毫秒
 ```
 
-同一个 `event_id` 的所有 step 按.sequence_no 递增，可通过 `WHERE event_id = ? ORDER BY sequence_no` 回放完整生命周期。
+同一个 `event_id` 的所有 step 按 `sequence_no` 递增，可通过 `WHERE event_id = ? ORDER BY sequence_no` 回放完整生命周期。
 
-### 1.2 trades 表（摘要）
+### 2.2 trades 表（摘要）
 
 每笔交易一行，随 events 写入实时更新，供前端列表展示和盈亏统计：
 
@@ -37,13 +53,13 @@ strategy_weather_sweep_trades
   pnl, pnl_pct, duration_ms, close_reason, started_at, closed_at
 ```
 
-写入时机：`signal_received` 时 INSERT；后续每个关键 step 更新对应字段；`event_closed` 时最终更新 pnl 和 closed_at。
+写入时机：`signal_received` 时 INSERT；后续每个成交 step 更新对应字段；终态 step 更新 status；`event_closed` 时最终更新 pnl 和 closed_at。
 
 ---
 
-## 2. 公共结构
+## 3. 公共结构
 
-### 2.1 时间字段
+### 3.1 时间字段
 
 | 字段 | 格式 | 说明 |
 |------|------|------|
@@ -53,7 +69,7 @@ strategy_weather_sweep_trades
 `offset_ms` 的基准是信号源产生信号的时间，而非本地代码进入 `enter()` 的时间。
 这样从信号产生到每一步的完整延迟链路都可以观测。
 
-### 2.2 BBO 快照
+### 3.2 BBO 快照
 
 出现在 `pre_bbo`（下单前盘口）和 `aft_bbo`（下单后盘口）中：
 
@@ -75,9 +91,9 @@ strategy_weather_sweep_trades
 | utc | 快照时刻 |
 | offset_ms | 相对信号源时间戳的偏移 |
 
-### 2.3 order 对象
+### 3.3 order 对象
 
-出现在 `buy_placed`、`buy_failed`、`sell_placed` 等下单 step 中：
+出现在 `order_placed`、`order_failed`、`sell_order_placed` 等挂单 step 中：
 
 ```json
 {
@@ -85,15 +101,14 @@ strategy_weather_sweep_trades
   "side": "BUY",
   "price": "0.99",
   "size": "20.0000",
-  "filled_size": "12.0000",
   "utc": "2026-08-28T04:16:16.430",
   "offset_ms": 186
 }
 ```
 
-`filled_size` 仅在 `status: "partial"` 时出现，表示 API 返回时已成交的数量。`size` 是原始委托量，`size - filled_size` 是剩余挂单量。
+`order.size` 是原始委托量。CLOB API 返回的 `takingAmount` / `makingAmount` 原样记录在挂单 step 的 `clob_status` / `clob_taking` / `clob_making` 字段中，供调试对比。
 
-### 2.4 fill 成交记录
+### 3.4 fill 成交记录
 
 出现在 `buy_filled`、`sell_filled` 中，每次成交一条：
 
@@ -113,18 +128,14 @@ strategy_weather_sweep_trades
 | filled_size | 本次成交量 |
 | fill_price | 成交价格 |
 | total_position | 成交后累计持仓（买入）或剩余持仓（卖出） |
-| source | `clob_response`（下单 API 立即返回的成交）/ `ws_user`（User WS 后续推送的成交） |
+| source | `clob_response`（下单 API 返回的成交）/ `ws_user`（User WS 推送的后续成交） |
 | trade_id | Polymarket trade 事件 ID，仅 `ws_user` 来源有值，用于去重 |
-
-`source` 区分两种成交来源：
-- `clob_response`：`place_order()` 返回 `matched`，在 API 响应里就知道成交量
-- `ws_user`：订单 `live` 后，Polymarket User WS 推送的 trade 事件
 
 ---
 
-## 3. 买入阶段（entry）
+## 4. 买入阶段（entry）
 
-### 3.1 signal_received
+### 4.1 signal_received
 
 收到信号，开始入场流程。detail 记录信号元数据和风控参数。
 
@@ -144,9 +155,50 @@ strategy_weather_sweep_trades
 
 trades 表：INSERT 一行，`status = entry_working`。
 
-### 3.2 buy_failed
+### 4.2 order_placed
 
-下单失败。有两种子场景：
+CLOB 接受了订单。不管 API 返回 matched（全部成交）、部分成交还是 live（完全挂单），只要订单被接受就写这一条。
+
+```json
+{
+  "order": {
+    "order_id": "abc123-...",
+    "side": "BUY",
+    "price": "0.99",
+    "size": "20.0000",
+    "utc": "2026-08-28T04:16:16.430",
+    "offset_ms": 186
+  },
+  "clob_status": "matched",
+  "clob_taking": "20.0000",
+  "clob_making": "0",
+  "pre_bbo": { "...": "下单前盘口" },
+  "aft_bbo": { "...": "下单后盘口" }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| order.order_id | CLOB 分配的订单 ID |
+| clob_status | CLOB 原始返回状态：`matched` / `live` / `delayed` |
+| clob_taking | CLOB 返回的 takingAmount（taker 成交量） |
+| clob_making | CLOB 返回的 makingAmount（maker 成交量） |
+| pre_bbo | 下单前盘口快照 |
+| aft_bbo | 下单后盘口快照 |
+
+`clob_status` 的含义：
+
+| clob_status | 含义 | 后续成交 step | 是否启动超时 |
+|-------------|------|---------------|-------------|
+| `matched` + taking = size | 全部成交 | 1 条 `buy_filled`（source=clob_response） | 否 |
+| `matched` + taking < size | 部分成交，剩余挂单 | 1 条 `buy_filled`（source=clob_response）+ 后续可能多条 ws_user | 是 |
+| `live` | 完全未成交，全部挂单 | 后续 0~N 条 `buy_filled`（source=ws_user） | 是 |
+
+不管哪种情况，成交量都不在这个 step 里更新 position——那是 `buy_filled` 的职责。`clob_taking` 仅作为调试对照。
+
+### 4.3 order_failed
+
+下单被 CLOB 拒绝或网络异常。订单没有被接受，没有 order_id。
 
 **本地余额不足（no_cash / insufficient_balance）** — 不会发送请求，无 BBO 快照：
 
@@ -165,30 +217,6 @@ trades 表：INSERT 一行，`status = entry_working`。
   "status": "failed",
   "error": "unexpected CLOB status: error | {\"error_msg\": \"...\"}",
   "order": {
-    "order_id": "abc123-...",
-    "side": "BUY",
-    "price": "0.99",
-    "size": "20.0000",
-    "utc": "2026-08-28T04:16:16.430",
-    "offset_ms": 186
-  },
-  "pre_bbo": { "best_bid": 0.70, "best_bid_size": 18, "best_ask": 0.85, "best_ask_size": 10, "utc": "...", "offset_ms": 120 },
-  "aft_bbo": { "best_bid": 0.70, "best_bid_size": 18, "best_ask": 0.85, "best_ask_size": 10, "utc": "...", "offset_ms": 186 }
-}
-```
-
-trades 表：UPDATE `status = closed, close_reason = buy_failed, closed_at = ...`。
-紧接着写 `event_closed`，生命周期结束。
-
-### 3.3 buy_placed
-
-下单成功提交到 CLOB。`status` 区分全部成交、部分成交和完全挂单：
-
-```json
-{
-  "status": "filled",
-  "order": {
-    "order_id": "abc123-...",
     "side": "BUY",
     "price": "0.99",
     "size": "20.0000",
@@ -200,23 +228,15 @@ trades 表：UPDATE `status = closed, close_reason = buy_failed, closed_at = ...
 }
 ```
 
-| status 值 | 含义 | 后续 |
------------|------|------|
-| `filled` | 立即全部成交 | 紧接着写 `buy_filled`（source=clob_response），不启动超时定时器，直接进入 monitor |
-| `partial` | 部分成交，剩余挂单 | 紧接着写 `buy_filled`（source=clob_response，记录已成交部分），**同时启动超时定时器**，监听 User WS 等待剩余成交 |
-| `live` | 完全未成交，全部挂单 | 启动超时定时器，监听 User WS 成交事件 |
+trades 表：UPDATE `status = closed, close_reason = buy_failed, closed_at = ...`。
+紧接着写 `event_closed`，生命周期结束。
 
-`partial` 和 `live` 的后续行为一致——都有挂单在盘口上等待，区别仅在于 `partial` 在 `buy_placed` 时已经成交了一部分，会多出一条 `buy_filled`。
-
-CLOB API 返回 `status: "matched"` 但 `takingAmount < 原始委托量` 时即为部分成交。`order.size` 记录原始委托量，`order.filled_size` 记录已成交部分，两者之差是剩余挂单量。
-
-### 3.4 buy_filled
+### 4.4 buy_filled
 
 每次成交一条。来源有两种：
-- `clob_response` — `place_order` 返回时已成交（status=matched 或 partial），在 API 响应里就知道成交量
-- `ws_user` — 订单 live 后，User WS 推送的后续成交
 
-一个 live/partial 订单可能被多次部分吃单，产生多条 `buy_filled`。
+- `clob_response` — `place_order` 返回 matched（全部或部分），在 API 响应里就知道成交量
+- `ws_user` — 订单 live/partial 后，User WS 推送的后续成交
 
 ```json
 {
@@ -232,9 +252,9 @@ CLOB API 返回 `status: "matched"` 但 `takingAmount < 原始委托量` 时即�
 trades 表：每次 `buy_filled` UPDATE `entry_shares`（累计）和 `entry_cost`（累计）。
 首次成交时额外 UPDATE `entry_price` 和 `entered_at`。
 
-### 3.5 entry_complete
+### 4.5 entry_complete
 
-仅 live 订单在超时前全部成交时出现。取消超时定时器，进入 monitor 阶段。
+入场阶段终态：超时前全部成交。取消超时定时器，进入 monitor 阶段。
 
 ```json
 {
@@ -255,9 +275,9 @@ trades 表：每次 `buy_filled` UPDATE `entry_shares`（累计）和 `entry_cos
 
 trades 表：UPDATE `status = exit_working`。
 
-### 3.6 entry_timeout
+### 4.6 entry_timeout
 
-超时触发，撤销未成交的买单。之后根据持仓决定走向。
+入场阶段终态：超时触发，撤销未成交的买单。
 
 ```json
 {
@@ -281,21 +301,40 @@ trades 表：UPDATE `status = exit_working`。
 
 ---
 
-## 4. 买入场景完整示例
+## 5. 买入场景完整示例
 
-### 场景 1：下单直接全部成交
+### 场景 1：下单全部成交
 
-`place_order` 返回 `matched`，不经过 live 阶段。
+`place_order` 返回 `matched`，`takingAmount = 委托量`。
 
 | seq | step | detail 关键字段 |
 |-----|------|----------------|
 | 1 | signal_received | `{signal_id, token_id, ..., utc, risk_ref_mid}` |
-| 2 | buy_placed | `{status: "filled", order: {order_id, price, size}, pre_bbo, aft_bbo}` |
+| 2 | order_placed | `{order: {order_id, price, size: "20"}, clob_status: "matched", clob_taking: "20", pre_bbo, aft_bbo}` |
 | 3 | buy_filled | `{order_id, filled_size: "20", fill_price: "0.99", total_position: "20", source: "clob_response"}` |
+| 4 | entry_complete | `{order_id, total_filled: "20", fill_count: 1, elapsed_ms: 0}` |
 
 trades 表：INSERT → UPDATE entry_* → UPDATE status=exit_working
 
-之后直接进入 monitor/exit 阶段。不启动超时定时器。
+之后进入 monitor/exit 阶段。不启动超时定时器。
+
+### 场景 1b：下单部分成交，剩余挂单等待
+
+`place_order` 返回 `matched` 但 `takingAmount < 委托量`。一部分立即成交，剩余挂在盘口上。
+
+下面展示"部分成交 + 后续 WS 成交 + 超时"的序列（剩余部分也可能在超时前全部成交，变为 `entry_complete`）：
+
+| seq | step | detail 关键字段 |
+|-----|------|----------------|
+| 1 | signal_received | `{signal_id, ...}` |
+| 2 | order_placed | `{order: {order_id, price, size: "20"}, clob_status: "matched", clob_taking: "12", pre_bbo, aft_bbo}` |
+| 3 | buy_filled | `{order_id, filled_size: "12", fill_price: "0.99", total_position: "12", source: "clob_response"}` |
+| 4 | buy_filled | `{order_id, filled_size: "5", fill_price: "0.99", total_position: "17", source: "ws_user", trade_id: "t1"}` |
+| 5 | entry_timeout | `{wait_ms: 1200000, cancelled_order_id: "abc", final_position: "17", unfilled_size: "3"}` |
+
+trades 表：INSERT → UPDATE entry_shares=12 → UPDATE entry_shares=17 → UPDATE status=exit_working
+
+与场景 3b 的区别：第一条 `buy_filled` 的 source 是 `clob_response`（API 返回时已成交），而非 `ws_user`。
 
 ### 场景 2：下单失败
 
@@ -304,7 +343,7 @@ trades 表：INSERT → UPDATE entry_* → UPDATE status=exit_working
 | seq | step | detail 关键字段 |
 |-----|------|----------------|
 | 1 | signal_received | `{signal_id, ...}` |
-| 2 | buy_failed | `{status: "failed", error: "...", order: {...}, pre_bbo, aft_bbo}` |
+| 2 | order_failed | `{status: "failed", error: "...", order: {...}, pre_bbo, aft_bbo}` |
 | 3 | event_closed | `{reason: "buy_failed", total_position: "0", duration_ms: 186}` |
 
 trades 表：INSERT → UPDATE status=closed, close_reason=buy_failed
@@ -316,7 +355,7 @@ trades 表：INSERT → UPDATE status=closed, close_reason=buy_failed
 | seq | step | detail 关键字段 |
 |-----|------|----------------|
 | 1 | signal_received | `{signal_id, ...}` |
-| 2 | buy_placed | `{status: "live", order: {order_id, price, size}, pre_bbo, aft_bbo}` |
+| 2 | order_placed | `{order: {order_id, price, size: "20"}, clob_status: "live", clob_taking: "0", pre_bbo, aft_bbo}` |
 | 3 | entry_timeout | `{wait_ms: 1200000, cancelled_order_id: "abc", final_position: "0", unfilled_size: "20"}` |
 | 4 | event_closed | `{reason: "timeout_no_fill", total_position: "0", duration_ms: 1200186}` |
 
@@ -327,49 +366,41 @@ trades 表：INSERT → UPDATE status=closed, close_reason=timeout_no_fill
 | seq | step | detail 关键字段 |
 |-----|------|----------------|
 | 1 | signal_received | `{signal_id, ...}` |
-| 2 | buy_placed | `{status: "live", order: {order_id, price, size}, pre_bbo, aft_bbo}` |
+| 2 | order_placed | `{order: {order_id, price, size: "20"}, clob_status: "live", clob_taking: "0", pre_bbo, aft_bbo}` |
 | 3 | buy_filled | `{order_id, filled_size: "8", total_position: "8", source: "ws_user", trade_id: "t1"}` |
 | 4 | buy_filled | `{order_id, filled_size: "7", total_position: "15", source: "ws_user", trade_id: "t2"}` |
 | 5 | entry_timeout | `{wait_ms: 1200000, cancelled_order_id: "abc", final_position: "15", unfilled_size: "5"}` |
 
 trades 表：INSERT → UPDATE entry_shares=8 → UPDATE entry_shares=15 → UPDATE status=exit_working
 
-final_position > 0，进入 monitor/exit 阶段。
-
 ### 场景 4：live + 超时前全部成交
 
 | seq | step | detail 关键字段 |
 |-----|------|----------------|
 | 1 | signal_received | `{signal_id, ...}` |
-| 2 | buy_placed | `{status: "live", order: {order_id, price, size}, pre_bbo, aft_bbo}` |
+| 2 | order_placed | `{order: {order_id, price, size: "20"}, clob_status: "live", clob_taking: "0", pre_bbo, aft_bbo}` |
 | 3 | buy_filled | `{order_id, filled_size: "12", total_position: "12", source: "ws_user", trade_id: "t1"}` |
 | 4 | buy_filled | `{order_id, filled_size: "8", total_position: "20", source: "ws_user", trade_id: "t2"}` |
-| 5 | entry_complete | `{order_id, total_filled: "20", total_position: "20", fill_count: 2, elapsed_ms: 4500}` |
+| 5 | entry_complete | `{order_id, total_filled: "20", fill_count: 2, elapsed_ms: 4500}` |
 
 trades 表：INSERT → UPDATE entry_shares=12 → UPDATE entry_shares=20, entered_at → UPDATE status=exit_working
-
-取消超时定时器，进入 monitor/exit 阶段。
 
 ### 五场景区分要点
 
 | 区分维度 | 场景 1 | 场景 1b | 场景 2 | 场景 3a | 场景 3b | 场景 4 |
 |----------|--------|---------|--------|---------|---------|---------|
-| buy_placed.status | filled | partial | (无) | live | live | live |
-| buy_failed 出现 | 否 | 否 | 是 | 否 | 否 | 否 |
+| 挂单 step | order_placed | order_placed | order_failed | order_placed | order_placed | order_placed |
+| clob_status | matched | matched | (无) | live | live | live |
 | buy_filled.source | clob_response | clob_response+ws_user | (无) | (无) | ws_user | ws_user |
 | buy_filled 条数 | 1 | 1+ | 0 | 0 | 2 | 2 |
-| entry_complete 出现 | 否 | 否 | 否 | 否 | 否 | 是 |
-| entry_timeout 出现 | 否 | 是 | 否 | 是 | 是 | 否 |
+| 阶段终态 | entry_complete | entry_timeout | (直接 event_closed) | entry_timeout | entry_timeout | entry_complete |
 | 走向 | monitor | exit | 结束 | 结束 | exit | monitor |
-
-场景 1b 的 `buy_filled` 至少 1 条（clob_response），后续可能有 0~N 条 ws_user。
-走向取决于超时时持仓是否 > 0：有持仓则进 exit，无持仓则结束（但实际中 partial 已经有成交，所以一定进 exit）。
 
 ---
 
-## 5. Monitor 阶段
+## 6. Monitor 阶段
 
-### 5.1 tick_detected
+### 6.1 tick_detected
 
 WS 检测到 tick size 变化（价格精度变为 0.001）。
 
@@ -380,7 +411,7 @@ WS 检测到 tick size 变化（价格精度变为 0.001）。
 }
 ```
 
-### 5.2 tick_verified
+### 6.2 tick_verified
 
 通过 REST API 确认 tick size 变化属实。
 
@@ -393,15 +424,14 @@ WS 检测到 tick size 变化（价格精度变为 0.001）。
 
 ---
 
-## 6. 卖出阶段（exit）
+## 7. 卖出阶段（exit）
 
-### 6.1 sell_placed
+### 7.1 sell_order_placed
 
-提交卖单。`status` 区分全部成交、部分成交和完全挂单：
+CLOB 接受了卖单。结构同 `order_placed`，加 `reason` 和 `attempt`。
 
 ```json
 {
-  "status": "filled",
   "order": {
     "order_id": "def456-...",
     "side": "SELL",
@@ -410,22 +440,44 @@ WS 检测到 tick size 变化（价格精度变为 0.001）。
     "utc": "2026-08-28T04:18:00.000",
     "offset_ms": 85000
   },
+  "clob_status": "matched",
+  "clob_taking": "20.0000",
+  "clob_making": "0",
   "reason": "tick_exit",
+  "attempt": 1,
+  "pre_bbo": { "...": "下单前盘口" },
+  "aft_bbo": { "...": "下单后盘口" }
+}
+```
+
+| clob_status | 含义 | 后续成交 step | 是否启动卖出超时 |
+|-------------|------|---------------|-----------------|
+| `matched` + taking = size | 全部成交 | 1 条 `sell_filled`（source=clob_response） | 否 |
+| `matched` + taking < size | 部分成交，剩余挂单 | 1 条 `sell_filled`（source=clob_response）+ 后续可能多条 ws_user | 是 |
+| `live` | 完全未成交，全部挂单 | 后续 0~N 条 `sell_filled`（source=ws_user） | 是 |
+
+### 7.2 sell_order_failed
+
+卖单被 CLOB 拒绝。写完后进入重试流程（`sell_retry_start`）。
+
+```json
+{
+  "status": "failed",
+  "error": "L1_INSUFFICIENT",
+  "order": {
+    "side": "SELL",
+    "price": "0.999",
+    "size": "20.0000",
+    "utc": "...",
+    "offset_ms": 85000
+  },
   "attempt": 1
 }
 ```
 
-| status 值 | 含义 | 后续 |
-|-----------|------|------|
-| `filled` | 立即全部成交 | 紧接着写 `sell_filled`（source=clob_response），检查是否清仓 |
-| `partial` | 部分成交，剩余挂单 | 紧接着写 `sell_filled`（source=clob_response，记录已成交部分），记录 order_id，等待 User WS 推送剩余成交，启动卖出超时 |
-| `live` | 完全未成交，全部挂单 | 记录 order_id，等待 User WS 成交推送，启动卖出超时 |
-| `failed` | 下单被拒 | 写 `sell_retry_start`，backoff 后重试 |
-
-### 6.2 sell_filled
+### 7.3 sell_filled
 
 每次成交一条。来源同买入：`clob_response`（API 返回时已成交）和 `ws_user`（后续 WS 推送）。
-一个 live/partial 卖单可能被多次部分吃单，产生多条 `sell_filled`。
 
 ```json
 {
@@ -438,22 +490,28 @@ WS 检测到 tick size 变化（价格精度变为 0.001）。
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| filled_size | 本次成交量 |
-| fill_price | 成交价格 |
-| remaining_position | 成交后剩余持仓 |
-| source | `clob_response` / `ws_user` |
-| trade_id | Polymarket trade 事件 ID（仅 ws_user） |
-
 trades 表：每次 `sell_filled` UPDATE `exit_shares`（累计）和 `exit_revenue`（累计）。
 首次成交时额外 UPDATE `exit_price` 和 `exited_at`。
 
-### 6.3 sell_order_timeout
+### 7.4 sell_complete
 
-live 卖单等待成交超时，撤销挂单后重试。与 `sell_retry_start`（下单被拒重试）区分：
-- `sell_retry_start` — `place_order` 返回 `failed`，订单没上去
-- `sell_order_timeout` — 订单成功挂上（live）但成交超时，需要撤单再重试
+卖出阶段终态：全部成交，持仓清零。
+
+```json
+{
+  "order_id": "def456-...",
+  "total_filled": "20.0000",
+  "remaining_position": "0",
+  "fill_count": 2,
+  "elapsed_ms": 3000
+}
+```
+
+之后写 `event_closed`（reason=tick_exit）。
+
+### 7.5 sell_timeout
+
+卖出阶段终态：live/partial 卖单等待成交超时，撤销挂单。
 
 ```json
 {
@@ -471,21 +529,24 @@ live 卖单等待成交超时，撤销挂单后重试。与 `sell_retry_start`�
 | filled_during_wait | 等待期间已成交量（可能部分成交） |
 | remaining_position | 撤单后剩余持仓 |
 
-### 6.4 sell_retry_start
+撤单后重试：写 `sell_order_placed`（attempt + 1）。
 
-`place_order` 返回 `failed`，开始重试。
+### 7.6 sell_retry_start
+
+`place_order` 返回 `failed`，开始 backoff 重试。与 `sell_timeout` 的区别：
+- `sell_retry_start` — 订单没上去（CLOB 拒绝）
+- `sell_timeout` — 订单成功挂上（live）但成交超时，需要撤单再重试
 
 ```json
 {
   "attempt": 1,
-  "status": "failed",
   "error": "L1_INSUFFICIENT"
 }
 ```
 
-### 6.5 sell_give_up
+### 7.7 sell_give_up
 
-卖出重试总超时，放弃。
+卖出总超时，放弃。
 
 ```json
 {
@@ -496,46 +557,33 @@ live 卖单等待成交超时，撤销挂单后重试。与 `sell_retry_start`�
 }
 ```
 
-### 6.6 sell_complete
-
-卖出全部成交（live 订单在超时前被全部吃掉）。与买入的 `entry_complete` 对称。
-
-```json
-{
-  "order_id": "def456-...",
-  "total_filled": "20.0000",
-  "remaining_position": "0",
-  "fill_count": 2,
-  "elapsed_ms": 3000
-}
-```
-
-之后写 `event_closed`（reason=tick_exit）。
-
-### 6.7 卖出流程状态机
+### 7.8 卖出流程状态机
 
 ```
-sell_placed
-  ├─ filled → sell_filled (source=clob_response)
-  │    ├─ remaining=0 → sell_complete → event_closed
-  │    └─ remaining>0 → 继续卖出剩余
+sell_order_placed
+  ├─ matched (全部) → sell_filled (source=clob_response) → sell_complete → event_closed
+  │
+  ├─ matched (部分) → sell_filled (source=clob_response)
+  │    └─ 剩余挂单等待 WS 成交
+  │         ├─ 全部成交 → sell_filled ... → sell_complete → event_closed
+  │         └─ 超时 → sell_timeout → 撤单 → 重试 sell_order_placed
   │
   ├─ live → 等待 User WS 成交推送（带超时）
   │    ├─ 收到 trade → sell_filled (source=ws_user)
   │    │    ├─ remaining=0 → sell_complete → event_closed
   │    │    └─ remaining>0 → 继续等待
-  │    └─ 超时未全部成交 → sell_order_timeout → 撤单 → 重试 sell_placed
+  │    └─ 超时未全部成交 → sell_timeout → 撤单 → 重试 sell_order_placed
   │
-  └─ failed → sell_retry_start → backoff → 重试 sell_placed
+  └─ failed → sell_retry_start → backoff → 重试 sell_order_placed
 
 总超时到达 → sell_give_up → event_closed (reason=sell_failed)
 ```
 
 ---
 
-## 7. 风控退出阶段（exit_risk）
+## 8. 风控退出阶段（exit_risk）
 
-### 7.1 risk_triggered
+### 8.1 risk_triggered
 
 风控条件触发（mid 价格跌破阈值）。
 
@@ -551,7 +599,7 @@ sell_placed
 }
 ```
 
-### 7.2 risk_cancel_buy / risk_cancel_sell
+### 8.2 risk_cancel_buy / risk_cancel_sell
 
 风控撤销挂单。
 
@@ -562,35 +610,37 @@ sell_placed
 }
 ```
 
-### 7.3 risk_force_sell
+### 8.3 risk_sell_order_placed
 
-风控以最低价强制卖出。结构同 `sell_placed`，price 固定 0.01。
+风控以最低价强制卖出。结构同 `sell_order_placed`，price 固定 0.01，reason 固定 `stop_loss`。
 
 ```json
 {
-  "status": "filled",
   "order": {
     "order_id": "ghi789-...",
     "side": "SELL",
     "price": "0.01",
     "size": "20.0000",
-    "utc": "2026-08-28T04:20:00.000",
+    "utc": "...",
     "offset_ms": 200000
   },
+  "clob_status": "matched",
+  "clob_taking": "20.0000",
+  "reason": "stop_loss",
   "attempt": 1
 }
 ```
 
-风控卖出也可能出现 live 和部分成交，step 流程同正常卖出（`sell_filled` / `sell_order_timeout` / `sell_complete`），
+风控卖出也可能出现 live/partial，step 流程同正常卖出（`sell_filled` / `sell_timeout` / `sell_complete`），
 只是 phase 标为 `exit_risk`，close reason 为 `stop_loss`。
 
 ---
 
-## 8. 强制退出阶段（exit_force）
+## 9. 强制退出阶段（exit_force）
 
 配置被禁用或参数变更时触发，立即撤销所有挂单。
 
-### 8.1 force_exit
+### 9.1 force_exit
 
 ```json
 {
@@ -607,7 +657,7 @@ sell_placed
 | config_changed | 配置参数变更 |
 | container_shutdown | 容器关闭 |
 
-### 8.2 buy_cancelled / sell_cancelled
+### 9.2 buy_cancelled / sell_cancelled
 
 ```json
 {
@@ -620,9 +670,9 @@ sell_placed
 
 ---
 
-## 9. 关闭
+## 10. 关闭
 
-### 9.1 event_closed
+### 10.1 event_closed
 
 事件最终关闭。一定是最后一个 step。
 
@@ -649,9 +699,9 @@ trades 表：最终 UPDATE `status = closed, close_reason = reason, pnl = ..., p
 
 ---
 
-## 10. User WS 成交检测
+## 11. User WS 成交检测
 
-### 10.1 连接
+### 11.1 连接
 
 ```
 wss://ws-subscriptions-clob.polymarket.com/ws/user
@@ -672,7 +722,7 @@ wss://ws-subscriptions-clob.polymarket.com/ws/user
 
 心跳：每 10 秒发文本帧 `PING`，服务端回 `PONG`。
 
-### 10.2 事件类型
+### 11.2 事件类型
 
 **Order 事件**（`event_type: "order"`）— 订单状态变更：
 
@@ -686,21 +736,21 @@ wss://ws-subscriptions-clob.polymarket.com/ws/user
 
 **Trade 事件**（`event_type: "trade"`）— 具体成交流水：
 
-关键字段：`taker_order_id`、`size`（本次成交量）、`price`（成交价）、`side`、`trader_side`（TAKER / MAKER）、`status`（MATCHED → MINED → CONFIRMED 终态）。
+关键字段：`taker_order_id`、`size`（本次成交量）、`price`（成交价）、`side`、`trader_side`（TAKER / MAKER）、`status`（MATCHED -> MINED -> CONFIRMED 终态）。
 
-### 10.3 与 event log 的关系
+### 11.3 与 event log 的关系
 
-- Trade 事件 → 每次成交推一条，写入 `buy_filled` / `sell_filled` step，source = `ws_user`
-- Order UPDATE 事件 → `size_matched` 是累计值，用于判断满仓（`size_matched == original_size` → `entry_complete` / `sell_complete`）
-- `place_order` 返回 `matched` 时的成交 → 写 `buy_filled` / `sell_filled`，source = `clob_response`，不依赖 WS
+- Trade 事件 -> 每次成交推一条，写入 `buy_filled` / `sell_filled` step，source = `ws_user`
+- `place_order` 返回 matched 时的成交 -> 写 `buy_filled` / `sell_filled`，source = `clob_response`，不依赖 WS
+- Order UPDATE 事件 -> `size_matched` 是累计值，用于判断满仓（`size_matched == original_size` -> `entry_complete` / `sell_complete`）
 
-### 10.4 去重
+### 11.4 去重
 
-`place_order` 返回 `matched` 时已记录成交量，随后 WS 会推送同一条 trade。
+`place_order` 返回 matched 时已记录成交量，随后 WS 会推送同一条 trade。
 用 `_order_post_filled: Dict[str, Decimal]` 按 order_id 记录已通过 API 响应计入的成交量，
-WS trade 到达时按量扣除，避免重复计算 position（参见 [ws-trade-dedup.md](ws-trade-dedup.md)）。
+WS trade 到达时按量扣除，避免重复计算 position（参见 ws-trade-dedup.md）。
 
-### 10.5 重连恢复
+### 11.5 重连恢复
 
 WS 断连期间可能错过成交事件。重连后需要：
 1. 调用 `get_open_orders()` 获取所有挂单的当前 `size_matched`
@@ -709,7 +759,7 @@ WS 断连期间可能错过成交事件。重连后需要：
 
 ---
 
-## 11. trades 表写入时机汇总
+## 12. trades 表写入时机汇总
 
 | step | trades 表操作 |
 |------|---------------|
@@ -719,7 +769,7 @@ WS 断连期间可能错过成交事件。重连后需要：
 | entry_complete | UPDATE: status=exit_working |
 | entry_timeout (有仓位) | UPDATE: status=exit_working |
 | entry_timeout (无仓位) | UPDATE: status=closed, close_reason=timeout_no_fill, closed_at |
-| buy_failed | UPDATE: status=closed, close_reason=buy_failed, closed_at |
+| order_failed | UPDATE: status=closed, close_reason=buy_failed, closed_at |
 | sell_filled (首次) | UPDATE: exit_price, exit_shares, exit_revenue, exit_order_id, exited_at |
 | sell_filled (后续) | UPDATE: exit_shares (累计), exit_revenue (累计) |
 | sell_complete | (无额外操作，等待 event_closed) |
@@ -730,23 +780,23 @@ pnl 计算：`pnl = exit_revenue - entry_cost`，`pnl_pct = pnl / entry_cost * 1
 
 ---
 
-## 12. 完整生命周期示例
+## 13. 完整生命周期示例
 
-### 12.1 典型成功交易（live 买入 + tick 卖出）
+### 13.1 典型成功交易（live 买入 + tick 卖出）
 
 ```
-seq  phase       step              detail 关键字段
-1    entry       signal_received   {signal_id, token_id, utc, risk_ref_mid}
-2    entry       buy_placed        {status: "live", order: {order_id, price: "0.99", size: "20"}, pre_bbo, aft_bbo}
-3    entry       buy_filled        {filled_size: "12", total_position: "12", source: "ws_user", trade_id: "t1"}
-4    entry       buy_filled        {filled_size: "8", total_position: "20", source: "ws_user", trade_id: "t2"}
-5    entry       entry_complete    {total_filled: "20", fill_count: 2, elapsed_ms: 4500}
-6    monitor     tick_detected     {tick_size: "0.001"}
-7    monitor     tick_verified     {confirmed: true}
-8    exit        sell_placed       {status: "filled", order: {order_id, price: "0.999", size: "20"}, attempt: 1}
-9    exit        sell_filled       {filled_size: "20", remaining_position: "0", source: "clob_response"}
-10   exit        sell_complete     {total_filled: "20", fill_count: 1, elapsed_ms: 0}
-11   exit        event_closed      {reason: "tick_exit", total_position: "0", duration_ms: 85000}
+seq  phase       step                detail 关键字段
+1    entry       signal_received     {signal_id, token_id, utc, risk_ref_mid}
+2    entry       order_placed        {order: {order_id, price: "0.99", size: "20"}, clob_status: "live", clob_taking: "0", pre_bbo, aft_bbo}
+3    entry       buy_filled          {filled_size: "12", total_position: "12", source: "ws_user", trade_id: "t1"}
+4    entry       buy_filled          {filled_size: "8", total_position: "20", source: "ws_user", trade_id: "t2"}
+5    entry       entry_complete      {total_filled: "20", fill_count: 2, elapsed_ms: 4500}
+6    monitor     tick_detected       {tick_size: "0.001"}
+7    monitor     tick_verified       {confirmed: true}
+8    exit        sell_order_placed   {order: {order_id, price: "0.999", size: "20"}, clob_status: "matched", clob_taking: "20", reason: "tick_exit", attempt: 1}
+9    exit        sell_filled         {filled_size: "20", remaining_position: "0", source: "clob_response"}
+10   exit        sell_complete       {total_filled: "20", fill_count: 1, elapsed_ms: 0}
+11   exit        event_closed        {reason: "tick_exit", total_position: "0", duration_ms: 85000}
 ```
 
 trades 表最终状态：
@@ -757,16 +807,19 @@ exit_price=0.999, exit_shares=20, exit_revenue=19.98
 pnl=0.18, pnl_pct=0.91, duration_ms=85000
 ```
 
-### 12.2 风控止损
+### 13.2 风控止损
 
 ```
-seq  phase       step              detail 关键字段
-1    entry       signal_received   {signal_id, ...}
-2    entry       buy_placed        {status: "filled", order: {order_id, size: "20"}, pre_bbo, aft_bbo}
-3    entry       buy_filled        {filled_size: "20", source: "clob_response"}
-4    exit_risk   risk_triggered    {reference_mid: "0.75", threshold: "0.375", position_shares: "20"}
-5    exit_risk   risk_force_sell   {status: "filled", order: {price: "0.01", size: "20"}, attempt: 1}
-6    exit_risk   event_closed      {reason: "stop_loss", total_position: "0", duration_ms: 120000}
+seq  phase       step                detail 关键字段
+1    entry       signal_received     {signal_id, ...}
+2    entry       order_placed        {order: {order_id, size: "20"}, clob_status: "matched", clob_taking: "20", pre_bbo, aft_bbo}
+3    entry       buy_filled          {filled_size: "20", source: "clob_response"}
+4    entry       entry_complete      {total_filled: "20", fill_count: 1, elapsed_ms: 0}
+5    exit_risk   risk_triggered      {reference_mid: "0.75", threshold: "0.375", position_shares: "20"}
+6    exit_risk   risk_sell_order_placed {order: {price: "0.01", size: "20"}, clob_status: "matched", clob_taking: "20", reason: "stop_loss", attempt: 1}
+7    exit_risk   sell_filled         {filled_size: "20", remaining_position: "0", source: "clob_response"}
+8    exit_risk   sell_complete       {total_filled: "20", fill_count: 1, elapsed_ms: 0}
+9    exit_risk   event_closed        {reason: "stop_loss", total_position: "0", duration_ms: 120000}
 ```
 
 trades 表：
@@ -777,16 +830,16 @@ exit_price=0.01, exit_shares=20, exit_revenue=0.20
 pnl=-19.60, pnl_pct=-98.99
 ```
 
-### 12.3 强制退出（配置禁用，有持仓）
+### 13.3 强制退出（配置禁用，有持仓）
 
 ```
-seq  phase       step              detail 关键字段
-1    entry       signal_received   {signal_id, ...}
-2    entry       buy_placed        {status: "live", order: {order_id, size: "20"}, pre_bbo, aft_bbo}
-3    entry       buy_filled        {filled_size: "15", total_position: "15", source: "ws_user", trade_id: "t1"}
-4    exit_force  force_exit        {reason: "config_disabled", state_at_exit: "entry_working", position_shares: "15"}
-5    exit_force  buy_cancelled     {order_id: "abc", success: true}
-6    exit_force  event_closed      {reason: "force_exit", total_position: "15", duration_ms: 300000}
+seq  phase       step                detail 关键字段
+1    entry       signal_received     {signal_id, ...}
+2    entry       order_placed        {order: {order_id, size: "20"}, clob_status: "live", clob_taking: "0", pre_bbo, aft_bbo}
+3    entry       buy_filled          {filled_size: "15", total_position: "15", source: "ws_user", trade_id: "t1"}
+4    exit_force  force_exit          {reason: "config_disabled", state_at_exit: "entry_working", position_shares: "15"}
+5    exit_force  buy_cancelled       {order_id: "abc", success: true}
+6    exit_force  event_closed        {reason: "force_exit", total_position: "15", duration_ms: 300000}
 ```
 
 trades 表：
@@ -798,21 +851,3 @@ pnl=null, pnl_pct=null
 ```
 
 持仓 15 shares 保留，未平仓。后续需手动处理或等市场结算。
-### 场景 1b：下单部分成交，剩余挂单等待
-
-`place_order` 返回 `matched` 但 `takingAmount < 原始委托量`。一部分立即成交，剩余挂在盘口上。
-后续行为与 `live` 订单完全一致——启动超时定时器，监听 User WS。
-
-下面展示"部分成交 + 后续 WS 成交 + 超时"的完整序列（剩余部分也可能在超时前全部成交，变为 `entry_complete`，见场景 4）：
-
-| seq | step | detail 关键字段 |
-|-----|------|----------------|
-| 1 | signal_received | `{signal_id, ...}` |
-| 2 | buy_placed | `{status: "partial", order: {order_id, price, size: "20", filled_size: "12"}, pre_bbo, aft_bbo}` |
-| 3 | buy_filled | `{order_id, filled_size: "12", fill_price: "0.99", total_position: "12", source: "clob_response"}` |
-| 4 | buy_filled | `{order_id, filled_size: "5", fill_price: "0.99", total_position: "17", source: "ws_user", trade_id: "t1"}` |
-| 5 | entry_timeout | `{wait_ms: 1200000, cancelled_order_id: "abc", final_position: "17", unfilled_size: "3"}` |
-
-trades 表：INSERT → UPDATE entry_shares=12, entry_cost=11.88 → UPDATE entry_shares=17, entry_cost=16.83 → UPDATE status=exit_working
-
-与场景 3b 的区别：第一条 `buy_filled` 的 source 是 `clob_response`（API 返回时已成交），而非 `ws_user`。
