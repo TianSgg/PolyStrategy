@@ -85,8 +85,31 @@ class SweepTrade:
 
     # ==================== Entry ====================
 
+    def _snapshot_bbo(self, offset_origin_ms: int) -> dict:
+        book = self._orderbook_ws.get_book(self.token_id) if self._orderbook_ws else None
+        now = datetime.now(timezone.utc)
+        elapsed = int((time.time() * 1000) - offset_origin_ms)
+        if book:
+            bids = sorted(book.bids.items(), reverse=True)
+            asks = sorted(book.asks.items())
+            return {
+                "best_bid": bids[0][0] if bids else None,
+                "best_bid_size": bids[0][1] if bids else None,
+                "best_ask": asks[0][0] if asks else None,
+                "best_ask_size": asks[0][1] if asks else None,
+                "utc": now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}",
+                "offset_ms": elapsed,
+            }
+        return {
+            "best_bid": None, "best_bid_size": None,
+            "best_ask": None, "best_ask_size": None,
+            "utc": now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}",
+            "offset_ms": elapsed,
+        }
+
     async def enter(self, signal: Signal) -> None:
         orderbook_snapshot = signal.payload.get("orderbook_snapshot", {})
+        enter_origin_ms = int(time.time() * 1000)
 
         fixed_shares = Decimal(self._config.get("fixed_entry_shares", "100"))
         buy_price = Decimal("0.99")
@@ -111,6 +134,8 @@ class SweepTrade:
             self._close("buy_failed", phase="entry")
             return
 
+        pre_bbo = self._snapshot_bbo(enter_origin_ms)
+
         order_task = asyncio.create_task(self._executor.place_order(
             token_id=self.token_id,
             side="BUY",
@@ -121,6 +146,14 @@ class SweepTrade:
             self.risk.start(token_id=self.token_id, orderbook_snapshot=orderbook_snapshot)
         )
         result, _ = await asyncio.gather(order_task, risk_task)
+
+        now_ret = datetime.now(timezone.utc)
+        order_returned = {
+            "utc": now_ret.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now_ret.microsecond // 1000:03d}",
+            "offset_ms": int((time.time() * 1000) - enter_origin_ms),
+        }
+
+        post_bbo = self._snapshot_bbo(enter_origin_ms)
 
         if self._el:
             self._el.start_event(
@@ -147,6 +180,9 @@ class SweepTrade:
                 self._el.log_step("buy_failed", {
                     "reason": result.status,
                     "requested_size": str(actual_shares),
+                    "pre_bbo": pre_bbo,
+                    "order_returned": order_returned,
+                    "post_bbo": post_bbo,
                 }, phase="entry")
             self._close("buy_failed", phase="entry")
             return
@@ -156,6 +192,10 @@ class SweepTrade:
                 "order_id": result.order_id,
                 "price": str(buy_price),
                 "size": str(actual_shares),
+                "status": result.status,
+                "pre_bbo": pre_bbo,
+                "order_returned": order_returned,
+                "post_bbo": post_bbo,
             }, phase="entry")
 
         if result.status == "filled":
