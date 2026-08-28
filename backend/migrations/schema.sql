@@ -235,32 +235,6 @@ CREATE TABLE strategy_weather_sweep_events (
 COMMENT='Weather Sweep 执行事件日志';
 
 -- ============================================================
--- 资金账本
--- ============================================================
-CREATE TABLE strategy_account_ledger (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  account_id INT NOT NULL,
-  run_id CHAR(36) DEFAULT NULL,
-  order_id CHAR(36) DEFAULT NULL,
-  token_id VARCHAR(128) DEFAULT NULL,
-  entry_type VARCHAR(32) NOT NULL,
-  cash_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
-  shares_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
-  reserved_cash_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
-  reserved_shares_delta DECIMAL(36,18) NOT NULL DEFAULT 0,
-  dedupe_key VARCHAR(256) NOT NULL,
-  occurred_at DATETIME(3) NOT NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  metadata_json JSON DEFAULT NULL,
-
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_ledger_dedupe (dedupe_key),
-  KEY idx_ledger_account_time (account_id, occurred_at),
-  KEY idx_ledger_run (run_id, occurred_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='策略资金账本';
-
--- ============================================================
 -- Weather Sweep 交易摘要（每笔交易一行，实时更新状态和盈亏）
 -- ============================================================
 CREATE TABLE strategy_weather_sweep_trades (

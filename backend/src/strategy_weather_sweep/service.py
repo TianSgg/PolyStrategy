@@ -238,12 +238,19 @@ class SweepTrade:
 
         self.state = "exit_working"
         sell_price = Decimal("1") - self._tick_size
-        max_sell_retries = 3
+        sell_timeout_s = 600
+        sell_backoff_base = 2.0
+        sell_backoff_cap = 60.0
 
-        for attempt in range(1, max_sell_retries + 1):
+        import time as _time
+        deadline = _time.monotonic() + sell_timeout_s
+        attempt = 0
+
+        while _time.monotonic() < deadline:
             if self.state == "closed":
                 return
 
+            attempt += 1
             result = await self._executor.place_order(
                 token_id=self.token_id,
                 side="SELL",
@@ -289,18 +296,21 @@ class SweepTrade:
                 self._close("tick_exit", phase="exit")
                 return
 
-            if result.status == "failed" and attempt < max_sell_retries:
+            if result.status == "failed" and _time.monotonic() < deadline:
+                backoff = min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
                 if self._el:
                     self._el.log_step("sell_retry", {
                         "attempt": attempt,
                         "status": result.status,
+                        "next_retry_sec": backoff,
                     }, phase="exit")
-                await asyncio.sleep(1)
+                await asyncio.sleep(backoff)
 
         await self.risk.stop()
         if self._el:
             self._el.log_step("sell_give_up", {
-                "attempts": max_sell_retries,
+                "attempts": attempt,
+                "timeout_sec": sell_timeout_s,
                 "remaining_position": str(self.position_shares),
             }, phase="exit")
         self._close("sell_failed", phase="exit")
@@ -347,24 +357,35 @@ class SweepTrade:
             self.exit_order_id = None
 
         if self.position_shares > 0:
-            result = await self._executor.place_order(
-                token_id=self.token_id,
-                side="SELL",
-                price="0.01",
-                size=str(self.position_shares),
-                check_balance=False,
-            )
-            if self._el:
-                self._el.log_step("risk_force_sell", {
-                    "order_id": result.order_id,
-                    "price": "0.01",
-                    "size": str(self.position_shares),
-                    "status": result.status,
-                }, phase="exit_risk")
-            if result.status == "filled":
-                filled = Decimal(result.filled_size)
-                self.position_shares -= filled
-                self._exit_revenue += filled * Decimal("0.01")
+            import time as _time
+            risk_deadline = _time.monotonic() + 600
+            risk_attempt = 0
+            while self.position_shares > 0 and _time.monotonic() < risk_deadline:
+                risk_attempt += 1
+                result = await self._executor.place_order(
+                    token_id=self.token_id,
+                    side="SELL",
+                    price="0.01",
+                    size=str(self.position_shares),
+                    check_balance=False,
+                )
+                if self._el:
+                    self._el.log_step("risk_force_sell", {
+                        "order_id": result.order_id,
+                        "price": "0.01",
+                        "size": str(self.position_shares),
+                        "status": result.status,
+                        "attempt": risk_attempt,
+                    }, phase="exit_risk")
+                if result.status == "filled":
+                    filled = Decimal(result.filled_size)
+                    self.position_shares -= filled
+                    self._exit_revenue += filled * Decimal("0.01")
+                elif result.status == "failed" and _time.monotonic() < risk_deadline:
+                    backoff = min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
+                    await asyncio.sleep(backoff)
+                else:
+                    break
 
         self._close("stop_loss", phase="exit_risk")
 
