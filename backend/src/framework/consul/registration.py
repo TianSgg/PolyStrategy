@@ -1,4 +1,4 @@
-"""Consul 服务注册：启动时注册，关闭时注销。"""
+"""Consul 服务注册：启动时注册，关闭时注销，后台定时重注册保活。"""
 import asyncio
 import logging
 import os
@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 _consul_port = os.getenv("CONSUL_HTTP_PORT", "8500")
 CONSUL_HTTP_ADDR = os.getenv("CONSUL_HTTP_ADDR", f"http://localhost:{_consul_port}")
 CONSUL_HTTP_TOKEN = os.getenv("CONSUL_HTTP_TOKEN", "")
+
+_RE_REGISTER_INTERVAL = 300
 
 
 def _get_local_ip() -> str:
@@ -43,7 +45,7 @@ class ConsulRegistration:
         self.health_path = health_path
         self.address = address or os.getenv("SERVICE_ADDRESS") or _get_local_ip()
         self.ttl_seconds = ttl_seconds
-        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._re_register_task: Optional[asyncio.Task] = None
 
     async def register(self):
         payload = {
@@ -56,7 +58,7 @@ class ConsulRegistration:
                 "HTTP": f"http://{self.address}:{self.port}{self.health_path}",
                 "Interval": f"{self.ttl_seconds}s",
                 "Timeout": "5s",
-                "DeregisterCriticalServiceAfter": "60s",
+                "DeregisterCriticalServiceAfter": "5m",
             },
         }
         headers = {"X-Consul-Token": CONSUL_HTTP_TOKEN} if CONSUL_HTTP_TOKEN else {}
@@ -75,10 +77,20 @@ class ConsulRegistration:
         except Exception as e:
             logger.warning(f"[Consul] Register failed (Consul unreachable): {e}")
 
+    async def start_re_register(self):
+        """启动定时重注册任务（每 5 分钟）。"""
+        if self._re_register_task is None or self._re_register_task.done():
+            self._re_register_task = asyncio.create_task(self._re_register_loop())
+
+    async def _re_register_loop(self):
+        while True:
+            await asyncio.sleep(_RE_REGISTER_INTERVAL)
+            await self.register()
+
     async def deregister(self):
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            self._heartbeat_task = None
+        if self._re_register_task:
+            self._re_register_task.cancel()
+            self._re_register_task = None
         headers = {"X-Consul-Token": CONSUL_HTTP_TOKEN} if CONSUL_HTTP_TOKEN else {}
         try:
             async with httpx.AsyncClient() as client:

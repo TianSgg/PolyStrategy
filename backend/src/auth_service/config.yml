@@ -17,9 +17,13 @@ consul:
     - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
     - "traefik.http.routers.auth.entrypoints=web"
     # ForwardAuth 路由: Traefik 将鉴权请求转发到 /auth/verify
-    # 其他服务配置 forward-auth@file 中间件时，Traefik 会调用此路径验证 JWT
+    # 其他服务引用 polystrategy-auth@consulcatalog 中间件时，Traefik 会调用此路径验证 JWT
     - "traefik.http.routers.auth-forward.rule=PathPrefix(`/auth/verify`)"
     - "traefik.http.routers.auth-forward.entrypoints=web"
+    # 声明 forwardAuth 中间件 (供本项目其他服务引用: polystrategy-auth@consulcatalog)
+    - "traefik.http.middlewares.polystrategy-auth.forwardauth.address=http://127.0.0.1:8010/auth/verify"
+    - "traefik.http.middlewares.polystrategy-auth.forwardauth.trustforwardheader=true"
+    - "traefik.http.middlewares.polystrategy-auth.forwardauth.authresponseheaders=X-User-Id,X-User-Role,X-Username"
   # Consul 健康检查路径
   health_path: /health
 

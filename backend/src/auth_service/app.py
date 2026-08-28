@@ -27,12 +27,25 @@ logger = logging.getLogger(__name__)
 SERVICE_NAME = os.getenv("SERVICE_NAME", "polystrategy-auth")
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8010"))
 
+# ForwardAuth 鉴权地址：Traefik 用此地址校验请求身份
+# 本地开发: http://127.0.0.1:8010/auth/verify
+# Docker:   http://polystrategy-auth:8010/auth/verify (容器名)
+AUTH_VERIFY_URL = os.getenv("AUTH_VERIFY_URL", f"http://127.0.0.1:{SERVICE_PORT}/auth/verify")
+
+# Consul 标签：声明路由 + forwardAuth 中间件
+# 中间件名 polystrategy-auth 供本项目其他服务引用 (polystrategy-auth@consulcatalog)
 CONSUL_TAGS = [
     "traefik.enable=true",
+    # ── 业务路由: /api/auth → 本服务 ──
     "traefik.http.routers.polystrategy-auth.rule=PathPrefix(`/api/auth`)",
     "traefik.http.routers.polystrategy-auth.entrypoints=web",
+    # ── ForwardAuth 端点路由: /auth/verify → 本服务 (不加鉴权，Traefik 直接调用) ──
     "traefik.http.routers.polystrategy-auth-forward.rule=PathPrefix(`/auth/verify`)",
     "traefik.http.routers.polystrategy-auth-forward.entrypoints=web",
+    # ── 声明 forwardAuth 中间件 (供本项目其他服务引用) ──
+    f"traefik.http.middlewares.polystrategy-auth.forwardauth.address={AUTH_VERIFY_URL}",
+    "traefik.http.middlewares.polystrategy-auth.forwardauth.trustforwardheader=true",
+    "traefik.http.middlewares.polystrategy-auth.forwardauth.authresponseheaders=X-User-Id,X-User-Role,X-Username",
 ]
 
 

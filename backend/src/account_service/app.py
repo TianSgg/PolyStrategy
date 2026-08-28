@@ -28,7 +28,7 @@ CONSUL_TAGS = [
     "traefik.enable=true",
     "traefik.http.routers.polystrategy-account.rule=PathPrefix(`/api/account`)",
     "traefik.http.routers.polystrategy-account.entrypoints=web",
-    "traefik.http.routers.polystrategy-account.middlewares=forward-auth@file",
+    "traefik.http.routers.polystrategy-account.middlewares=polystrategy-auth@consulcatalog",
 ]
 
 
