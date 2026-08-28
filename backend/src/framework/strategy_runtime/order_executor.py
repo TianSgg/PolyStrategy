@@ -17,12 +17,14 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from framework.trading import place_limit_order, cancel_order as _cancel_order
+from framework.trading.provider import get_client
 from framework.strategy_runtime.interfaces import OrderResult
 from framework.strategy_runtime.balance_poller import BalancePoller, get_or_create_poller
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_GTD_SEC = 1800
+_KEEPALIVE_INTERVAL_SEC = 30
 
 
 def generate_order_id() -> str:
@@ -36,6 +38,7 @@ class OrderExecutor:
         self._proxy_wallet = proxy_wallet
         self._cached_params: Dict[str, Dict[str, Any]] = {}
         self._poller: Optional[BalancePoller] = None
+        self._keepalive_task: Optional[asyncio.Task] = None
 
     def cache_market_params(
         self, token_id: str, tick_size: str, neg_risk: bool
@@ -51,6 +54,32 @@ class OrderExecutor:
         if self._poller is None or self._poller._proxy_wallet != wallet:
             self._poller = await get_or_create_poller(wallet)
         return self._poller
+
+    async def warmup(self) -> None:
+        """预热 HTTP 连接（建立 TCP+TLS）并启动保活任务。"""
+        wallet = self._proxy_wallet.lower()
+        try:
+            await asyncio.to_thread(self._warmup_sync, wallet)
+            logger.info("[OrderExecutor] HTTP connection warmed up for %s", wallet[:8])
+        except Exception as e:
+            logger.warning("[OrderExecutor] Warmup failed: %s", e)
+
+        if self._keepalive_task is None or self._keepalive_task.done():
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+
+    def _warmup_sync(self, wallet: str) -> None:
+        client = get_client(wallet)
+        client.get_server_time()
+
+    async def _keepalive_loop(self) -> None:
+        """每 30s 发一次 /time 请求保持 HTTP 连接热。"""
+        wallet = self._proxy_wallet.lower()
+        while True:
+            await asyncio.sleep(_KEEPALIVE_INTERVAL_SEC)
+            try:
+                await asyncio.to_thread(self._warmup_sync, wallet)
+            except Exception:
+                pass
 
     @property
     def available_cash(self) -> Decimal:

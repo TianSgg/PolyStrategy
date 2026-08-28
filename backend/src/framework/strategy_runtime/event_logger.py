@@ -1,6 +1,8 @@
 """策略执行事件日志写入器 — 将 step 记录到 strategy_weather_sweep_events 表。"""
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 import uuid
@@ -10,6 +12,8 @@ from typing import Any
 from framework.db import get_db
 
 logger = logging.getLogger(__name__)
+
+_write_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="evlog")
 
 
 class EventLogger:
@@ -64,7 +68,7 @@ class EventLogger:
         return self._event_id
 
     def log_step(self, step: str, detail: dict[str, Any], phase: str = "entry") -> None:
-        """记录一个 step 到数据库。
+        """记录一个 step 到数据库（异步写入，不阻塞事件循环）。
 
         phase: entry / monitor / exit / exit_risk / exit_force
         """
@@ -102,12 +106,19 @@ class EventLogger:
         )
 
         try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(_write_pool, self._do_write, sql, params, step, self._event_id)
+        except RuntimeError:
+            self._do_write(sql, params, step, self._event_id)
+
+    def _do_write(self, sql: str, params: tuple, step: str, event_id: str) -> None:
+        try:
             with get_db() as conn:
                 with conn.cursor() as cur:
                     cur.execute(sql, params)
                 conn.commit()
         except Exception:
-            logger.exception("Failed to log step %s for event %s", step, self._event_id)
+            logger.exception("Failed to log step %s for event %s", step, event_id)
 
     def end_event(self) -> None:
         """标记当前 event 结束，重置状态以便复用。"""

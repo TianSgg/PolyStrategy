@@ -556,6 +556,7 @@ class SweepStrategy:
 
         executor = OrderExecutor(proxy_wallet=proxy_wallet)
         await executor.ensure_poller(proxy_wallet)
+        await executor.warmup()
 
         instance = cls()
         instance._config = config_data["params"]

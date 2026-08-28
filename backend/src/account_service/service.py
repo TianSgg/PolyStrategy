@@ -282,6 +282,7 @@ class AccountService:
             signature_type=signature_type,
             funder=proxy_wallet,
             builder_config=builder_config,
+            retry_on_error=True,
         )
 
     def get_or_create_clob_client(self, proxy_wallet: str) -> Optional[ClobClient]:

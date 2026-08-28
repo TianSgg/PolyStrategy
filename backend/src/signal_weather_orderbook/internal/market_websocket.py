@@ -147,8 +147,8 @@ class SharedMarketWebSocket:
             try:
                 async with websockets.connect(
                     MARKET_WS_URL,
-                    ping_interval=None,
-                    ping_timeout=None,
+                    ping_interval=20,
+                    ping_timeout=20,
                     max_size=2 * 1024 * 1024,
                 ) as ws:
                     self._ws = ws
