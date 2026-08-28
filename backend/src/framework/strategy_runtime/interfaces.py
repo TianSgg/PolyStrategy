@@ -66,7 +66,10 @@ class StateStoreProtocol(Protocol):
 @dataclass(frozen=True)
 class OrderResult:
     order_id: str
-    status: str  # "filled", "partial", "live", "failed"
+    status: str  # "filled", "partial", "live", "failed", "insufficient_balance"
     filled_size: str
     filled_price: str | None = None
     error: str | None = None
+    clob_status: str | None = None      # raw CLOB status: "matched", "live", "delayed"
+    clob_taking: str | None = None      # raw takingAmount
+    clob_making: str | None = None      # raw makingAmount

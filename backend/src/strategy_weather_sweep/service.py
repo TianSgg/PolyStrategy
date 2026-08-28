@@ -13,6 +13,11 @@
   4. 无持仓 → 关闭；有持仓 → 等待 tick=0.001
   5. HTTP 校验通过 → SELL@0.999；风控触发 → 强制退出
 
+Event log 三层分离（参见 doc/2026-08-28-event-log-storage-design.md）：
+  挂单结果: order_placed / order_failed
+  成交通知: buy_filled / sell_filled
+  阶段终态: entry_complete / entry_timeout / sell_complete / sell_timeout
+
 强制退出（配置变更/禁用）:
   - 撤销所有未成交买单
   - 已持份额按 1 - tick_size 的价格挂卖单
@@ -75,6 +80,11 @@ class SweepTrade:
         self._entry_cost = Decimal("0")
         self._exit_revenue = Decimal("0")
 
+        # Fill tracking
+        self._order_size = Decimal("0")        # original buy order size
+        self._order_placed_ms = 0              # buy order placed timestamp
+        self._buy_fill_count = 0               # total buy_filled steps
+
         self.risk = SweepRiskMonitor(
             orderbook_ws=orderbook_ws,
             stop_loss_ratio=Decimal(config.get("stop_loss_ratio", "0.60")),
@@ -83,12 +93,17 @@ class SweepTrade:
         )
         self.tick_verifier = TickVerifier()
 
-    # ==================== Entry ====================
+    # ==================== Helpers ====================
+
+    @staticmethod
+    def _utc_str() -> str:
+        now = datetime.now(timezone.utc)
+        return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}"
 
     def _snapshot_bbo(self, offset_origin_ms: int) -> dict:
         book = self._orderbook_ws.get_book(self.token_id) if self._orderbook_ws else None
-        now = datetime.now(timezone.utc)
         elapsed = int((time.time() * 1000) - offset_origin_ms)
+        utc = self._utc_str()
         if book:
             bids = sorted(book.bids.items(), reverse=True)
             asks = sorted(book.asks.items())
@@ -97,15 +112,29 @@ class SweepTrade:
                 "best_bid_size": bids[0][1] if bids else None,
                 "best_ask": asks[0][0] if asks else None,
                 "best_ask_size": asks[0][1] if asks else None,
-                "utc": now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}",
+                "utc": utc,
                 "offset_ms": elapsed,
             }
         return {
             "best_bid": None, "best_bid_size": None,
             "best_ask": None, "best_ask_size": None,
-            "utc": now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}",
+            "utc": utc,
             "offset_ms": elapsed,
         }
+
+    def _order_obj(
+        self, order_id: str, side: str, price: str, size: str, offset_origin_ms: int,
+    ) -> dict:
+        return {
+            "order_id": order_id,
+            "side": side,
+            "price": price,
+            "size": size,
+            "utc": self._utc_str(),
+            "offset_ms": int((time.time() * 1000) - offset_origin_ms),
+        }
+
+    # ==================== Entry ====================
 
     async def enter(self, signal: Signal) -> None:
         orderbook_snapshot = signal.payload.get("orderbook_snapshot", {})
@@ -117,17 +146,32 @@ class SweepTrade:
         max_shares = int(available / buy_price) if buy_price > 0 else 0
         actual_shares = min(fixed_shares, Decimal(str(max_shares)))
 
+        if self._el:
+            self._el.start_event(
+                signal_id=signal.signal_id,
+                token_id=signal.token_id,
+                market_slug=signal.market_slug,
+                event_slug=signal.payload.get("event_slug"),
+            )
+            self._el.log_step("signal_received", {
+                "signal_id": signal.signal_id,
+                "token_id": signal.token_id,
+                "market_slug": signal.market_slug,
+                "event_slug": signal.payload.get("event_slug"),
+                "city": signal.payload.get("city"),
+                "direction": signal.payload.get("direction"),
+                "utc": self._utc_str(),
+                "risk_ref_mid": str(self.risk.reference_mid),
+                "risk_threshold": str(self.risk.threshold),
+            }, phase="entry")
+            self._insert_trade_summary(signal)
+
+        # --- Layer 1: order_failed (no cash) ---
         if actual_shares <= 0:
             logger.warning("No available cash for %s, closing", self.token_id[:10])
             if self._el:
-                self._el.start_event(
-                    signal_id=signal.signal_id,
-                    token_id=signal.token_id,
-                    market_slug=signal.market_slug,
-                    event_slug=signal.payload.get("event_slug"),
-                )
-                self._el.log_step("buy_failed", {
-                    "reason": "no_cash",
+                self._el.log_step("order_failed", {
+                    "status": "no_cash",
                     "requested_size": str(fixed_shares),
                     "available_cash": str(available),
                 }, phase="entry")
@@ -148,96 +192,118 @@ class SweepTrade:
         pre_bbo = self._snapshot_bbo(enter_origin_ms)
 
         result = await order_task
-        now_ret = datetime.now(timezone.utc)
-        order_returned = {
-            "utc": now_ret.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now_ret.microsecond // 1000:03d}",
-            "offset_ms": int((time.time() * 1000) - enter_origin_ms),
-        }
         aft_bbo = self._snapshot_bbo(enter_origin_ms)
 
-        if self._el:
-            self._el.start_event(
-                signal_id=signal.signal_id,
-                token_id=signal.token_id,
-                market_slug=signal.market_slug,
-                event_slug=signal.payload.get("event_slug"),
-            )
-            self._el.log_step("signal_received", {
-                "signal_id": signal.signal_id,
-                "token_id": signal.token_id,
-                "market_slug": signal.market_slug,
-                "event_slug": signal.payload.get("event_slug"),
-                "city": signal.payload.get("city"),
-                "direction": signal.payload.get("direction"),
-                "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}",
-                "risk_ref_mid": str(self.risk.reference_mid),
-                "risk_threshold": str(self.risk.threshold),
-            }, phase="entry")
-            self._insert_trade_summary(signal)
-        self.entry_order_id = result.order_id
+        # Track order metadata for entry_complete
+        self._order_size = actual_shares
+        self._order_placed_ms = int(time.time() * 1000)
 
+        # --- Layer 1: order_failed (CLOB rejected) ---
         if result.status in ("failed", "insufficient_balance"):
             if self._el:
-                self._el.log_step("buy_failed", {
-                    "reason": result.status,
+                self._el.log_step("order_failed", {
+                    "status": result.status,
                     "error": result.error,
-                    "requested_size": str(actual_shares),
+                    "order": self._order_obj(
+                        result.order_id, "BUY", str(buy_price), str(actual_shares), enter_origin_ms,
+                    ),
                     "pre_bbo": pre_bbo,
-                    "order_returned": order_returned,
                     "aft_bbo": aft_bbo,
                 }, phase="entry")
             self._close("buy_failed", phase="entry")
             return
 
+        # --- Layer 1: order_placed (CLOB accepted) ---
+        self.entry_order_id = result.order_id
         if self._el:
-            self._el.log_step("buy_placed", {
-                "order_id": result.order_id,
-                "price": str(buy_price),
-                "size": str(actual_shares),
-                "status": result.status,
+            self._el.log_step("order_placed", {
+                "order": self._order_obj(
+                    result.order_id, "BUY", str(buy_price), str(actual_shares), enter_origin_ms,
+                ),
+                "clob_status": result.clob_status,
+                "clob_taking": result.clob_taking,
+                "clob_making": result.clob_making,
                 "pre_bbo": pre_bbo,
-                "order_returned": order_returned,
                 "aft_bbo": aft_bbo,
             }, phase="entry")
 
-        if result.status == "filled":
+        # --- Layer 2: buy_filled (immediate fill from CLOB response) ---
+        if result.status in ("filled", "partial"):
             filled = Decimal(result.filled_size)
-            self.position_shares += filled
-            self._entry_cost += filled * buy_price
-            self.entry_order_id = None
-            if self._el:
-                self._el.log_step("buy_filled", {
-                    "order_id": result.order_id,
-                    "filled_size": str(filled),
-                    "total_position": str(self.position_shares),
-                    "fill_price": str(buy_price),
-                }, phase="entry")
-            self._update_trade_summary({
-                "entry_price": str(buy_price),
-                "entry_shares": str(self.position_shares),
-                "entry_cost": str(self._entry_cost),
-                "entry_order_id": result.order_id,
-                "entered_at": datetime.now(timezone.utc).replace(tzinfo=None),
-            })
+            if filled > 0:
+                self._record_buy_fill(result.order_id, filled, buy_price, source="clob_response")
 
+        # --- Layer 3: entry_complete (all filled immediately) ---
+        if result.status == "filled":
+            self.entry_order_id = None
+            self._record_entry_complete(result.order_id)
+            return
+
+        # partial or live → start timeout timer
         entry_wait_ms = int(self._config.get("entry_wait_ms", 1200000))
         self._entry_timer = asyncio.create_task(
             self._entry_timeout(entry_wait_ms / 1000.0)
         )
+
+    def _record_buy_fill(
+        self, order_id: str, filled: Decimal, price: Decimal, *,
+        source: str, trade_id: Optional[str] = None,
+    ) -> None:
+        self.position_shares += filled
+        self._entry_cost += filled * price
+        self._buy_fill_count += 1
+
+        if self._el:
+            detail: dict[str, Any] = {
+                "order_id": order_id,
+                "filled_size": str(filled),
+                "fill_price": str(price),
+                "total_position": str(self.position_shares),
+                "source": source,
+            }
+            if trade_id:
+                detail["trade_id"] = trade_id
+            self._el.log_step("buy_filled", detail, phase="entry")
+
+        self._update_trade_summary({
+            "entry_price": str(price),
+            "entry_shares": str(self.position_shares),
+            "entry_cost": str(self._entry_cost),
+            "entry_order_id": order_id,
+            "entered_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        })
+
+    def _record_entry_complete(self, order_id: str) -> None:
+        elapsed_ms = int(time.time() * 1000) - self._order_placed_ms if self._order_placed_ms else 0
+        if self._el:
+            self._el.log_step("entry_complete", {
+                "order_id": order_id,
+                "total_filled": str(self.position_shares),
+                "total_position": str(self.position_shares),
+                "fill_count": self._buy_fill_count,
+                "elapsed_ms": elapsed_ms,
+            }, phase="entry")
+        self._update_trade_summary({"status": "exit_working"})
 
     async def _entry_timeout(self, wait_sec: float) -> None:
         await asyncio.sleep(wait_sec)
         if self.state == "closed":
             return
 
+        cancelled_id = None
         if self.entry_order_id:
+            cancelled_id = self.entry_order_id
             await self._executor.cancel_order(self.entry_order_id)
             self.entry_order_id = None
+
+        unfilled = self._order_size - self.position_shares
 
         if self._el:
             self._el.log_step("entry_timeout", {
                 "wait_ms": int(wait_sec * 1000),
+                "cancelled_order_id": cancelled_id,
                 "final_position": str(self.position_shares),
+                "unfilled_size": str(unfilled),
             }, phase="entry")
 
         if self.position_shares <= 0:
@@ -284,69 +350,87 @@ class SweepTrade:
         sell_backoff_base = 2.0
         sell_backoff_cap = 60.0
 
-        import time as _time
-        deadline = _time.monotonic() + sell_timeout_s
+        deadline = time.monotonic() + sell_timeout_s
         attempt = 0
+        exit_origin_ms = int(time.time() * 1000)
 
-        while _time.monotonic() < deadline:
+        while time.monotonic() < deadline:
             if self.state == "closed":
                 return
 
             attempt += 1
+            sell_size = self.position_shares
             result = await self._executor.place_order(
                 token_id=self.token_id,
                 side="SELL",
                 price=str(sell_price),
-                size=str(self.position_shares),
+                size=str(sell_size),
                 check_balance=False,
             )
 
+            # --- Layer 1: sell_order_failed ---
+            if result.status in ("failed", "insufficient_balance"):
+                if self._el:
+                    self._el.log_step("sell_order_failed", {
+                        "status": result.status,
+                        "error": result.error,
+                        "order": self._order_obj(
+                            result.order_id, "SELL", str(sell_price), str(sell_size), exit_origin_ms,
+                        ),
+                        "attempt": attempt,
+                    }, phase="exit")
+
+                if time.monotonic() < deadline:
+                    backoff = min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
+                    if self._el:
+                        self._el.log_step("sell_retry_start", {
+                            "attempt": attempt,
+                            "error": result.error,
+                        }, phase="exit")
+                    await asyncio.sleep(backoff)
+                continue
+
+            # --- Layer 1: sell_order_placed ---
+            self.exit_order_id = result.order_id
+            sell_fill_count = 0
+            sell_placed_ms = int(time.time() * 1000)
+
             if self._el:
-                self._el.log_step("sell_placed", {
-                    "order_id": result.order_id,
-                    "price": str(sell_price),
-                    "size": str(self.position_shares),
+                self._el.log_step("sell_order_placed", {
+                    "order": self._order_obj(
+                        result.order_id, "SELL", str(sell_price), str(sell_size), exit_origin_ms,
+                    ),
+                    "clob_status": result.clob_status,
+                    "clob_taking": result.clob_taking,
+                    "clob_making": result.clob_making,
                     "reason": "tick_exit",
                     "attempt": attempt,
                 }, phase="exit")
 
-            if result.status == "filled":
+            # --- Layer 2: sell_filled (immediate fill from CLOB response) ---
+            if result.status in ("filled", "partial"):
                 filled = Decimal(result.filled_size)
-                self.position_shares -= filled
-                self._exit_revenue += filled * sell_price
-                if self._el:
-                    self._el.log_step("sell_filled", {
-                        "order_id": result.order_id,
-                        "filled_size": str(filled),
-                        "fill_price": str(sell_price),
-                        "remaining_position": str(self.position_shares),
-                    }, phase="exit")
-                self._update_trade_summary({
-                    "exit_price": str(sell_price),
-                    "exit_shares": str(filled),
-                    "exit_revenue": str(self._exit_revenue),
-                    "exit_order_id": result.order_id,
-                    "exited_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                })
+                if filled > 0:
+                    self._record_sell_fill(
+                        result.order_id, filled, sell_price,
+                        source="clob_response", sell_fill_count=sell_fill_count,
+                    )
+                    sell_fill_count += 1
 
-            if result.status == "live":
-                self.exit_order_id = result.order_id
-                return
+            # --- Layer 3: sell_complete (all filled immediately) ---
+            if result.status == "filled":
+                self.exit_order_id = None
+                if self.position_shares <= 0:
+                    self._record_sell_complete(result.order_id, sell_fill_count, sell_placed_ms)
+                    await self.risk.stop()
+                    self._close("tick_exit", phase="exit")
+                    return
+                # partial was labeled "filled" but position remains — continue selling
+                continue
 
-            if result.status == "filled" and self.position_shares <= 0:
-                await self.risk.stop()
-                self._close("tick_exit", phase="exit")
-                return
-
-            if result.status == "failed" and _time.monotonic() < deadline:
-                backoff = min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
-                if self._el and attempt == 1:
-                    self._el.log_step("sell_retry_start", {
-                        "attempt": attempt,
-                        "status": result.status,
-                        "error": result.error,
-                    }, phase="exit")
-                await asyncio.sleep(backoff)
+            # live → wait for WS fills (TODO: implement User WS fill detection)
+            # For now, return and wait. sell_timeout will be triggered when WS is added.
+            return
 
         await self.risk.stop()
         if self._el:
@@ -357,6 +441,46 @@ class SweepTrade:
                 "last_error": result.error if result else None,
             }, phase="exit")
         self._close("sell_failed", phase="exit")
+
+    def _record_sell_fill(
+        self, order_id: str, filled: Decimal, price: Decimal, *,
+        source: str, sell_fill_count: int = 0, trade_id: Optional[str] = None,
+    ) -> None:
+        self.position_shares -= filled
+        self._exit_revenue += filled * price
+
+        if self._el:
+            detail: dict[str, Any] = {
+                "order_id": order_id,
+                "filled_size": str(filled),
+                "fill_price": str(price),
+                "remaining_position": str(self.position_shares),
+                "source": source,
+            }
+            if trade_id:
+                detail["trade_id"] = trade_id
+            self._el.log_step("sell_filled", detail, phase="exit")
+
+        self._update_trade_summary({
+            "exit_price": str(price),
+            "exit_shares": str(self._exit_revenue / price) if price > 0 else None,
+            "exit_revenue": str(self._exit_revenue),
+            "exit_order_id": order_id,
+            "exited_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        })
+
+    def _record_sell_complete(
+        self, order_id: str, fill_count: int, placed_ms: int,
+    ) -> None:
+        elapsed_ms = int(time.time() * 1000) - placed_ms if placed_ms else 0
+        if self._el:
+            self._el.log_step("sell_complete", {
+                "order_id": order_id,
+                "total_filled": str(self._order_size - self.position_shares),
+                "remaining_position": str(self.position_shares),
+                "fill_count": fill_count,
+                "elapsed_ms": elapsed_ms,
+            }, phase="exit")
 
     # ==================== Risk Exit ====================
 
@@ -400,37 +524,97 @@ class SweepTrade:
             self.exit_order_id = None
 
         if self.position_shares > 0:
-            import time as _time
-            risk_deadline = _time.monotonic() + 600
+            risk_origin_ms = int(time.time() * 1000)
+            risk_deadline = time.monotonic() + 600
             risk_attempt = 0
-            while self.position_shares > 0 and _time.monotonic() < risk_deadline:
+            while self.position_shares > 0 and time.monotonic() < risk_deadline:
                 risk_attempt += 1
+                sell_size = self.position_shares
                 result = await self._executor.place_order(
                     token_id=self.token_id,
                     side="SELL",
                     price="0.01",
-                    size=str(self.position_shares),
+                    size=str(sell_size),
                     check_balance=False,
                 )
-                if self._el and (risk_attempt == 1 or result.status == "filled"):
-                    self._el.log_step("risk_force_sell", {
-                        "order_id": result.order_id,
-                        "price": "0.01",
-                        "size": str(self.position_shares),
-                        "status": result.status,
+
+                if result.status in ("failed", "insufficient_balance"):
+                    if self._el:
+                        self._el.log_step("sell_order_failed", {
+                            "status": result.status,
+                            "error": result.error,
+                            "order": self._order_obj(
+                                result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
+                            ),
+                            "reason": "stop_loss",
+                            "attempt": risk_attempt,
+                        }, phase="exit_risk")
+                    if time.monotonic() < risk_deadline:
+                        backoff = min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
+                        await asyncio.sleep(backoff)
+                    continue
+
+                # sell_order_placed
+                if self._el:
+                    self._el.log_step("risk_sell_order_placed", {
+                        "order": self._order_obj(
+                            result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
+                        ),
+                        "clob_status": result.clob_status,
+                        "clob_taking": result.clob_taking,
+                        "clob_making": result.clob_making,
+                        "reason": "stop_loss",
                         "attempt": risk_attempt,
                     }, phase="exit_risk")
-                if result.status == "filled":
+
+                risk_fill_count = 0
+                if result.status in ("filled", "partial"):
                     filled = Decimal(result.filled_size)
-                    self.position_shares -= filled
-                    self._exit_revenue += filled * Decimal("0.01")
-                elif result.status == "failed" and _time.monotonic() < risk_deadline:
-                    backoff = min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
-                    await asyncio.sleep(backoff)
-                else:
-                    break
+                    if filled > 0:
+                        self._record_sell_fill_risk(
+                            result.order_id, filled, Decimal("0.01"),
+                        )
+                        risk_fill_count += 1
+
+                if result.status == "filled":
+                    if self.position_shares <= 0:
+                        if self._el:
+                            self._el.log_step("sell_complete", {
+                                "order_id": result.order_id,
+                                "total_filled": str(sell_size),
+                                "remaining_position": "0",
+                                "fill_count": risk_fill_count,
+                                "elapsed_ms": 0,
+                            }, phase="exit_risk")
+                        break
+                    continue
+
+                # live → wait (TODO: User WS)
+                break
 
         self._close("stop_loss", phase="exit_risk")
+
+    def _record_sell_fill_risk(
+        self, order_id: str, filled: Decimal, price: Decimal,
+    ) -> None:
+        self.position_shares -= filled
+        self._exit_revenue += filled * price
+
+        if self._el:
+            self._el.log_step("sell_filled", {
+                "order_id": order_id,
+                "filled_size": str(filled),
+                "fill_price": str(price),
+                "remaining_position": str(self.position_shares),
+                "source": "clob_response",
+            }, phase="exit_risk")
+
+        self._update_trade_summary({
+            "exit_price": str(price),
+            "exit_revenue": str(self._exit_revenue),
+            "exit_order_id": order_id,
+            "exited_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        })
 
     # ==================== Force Exit ====================
 
@@ -477,7 +661,7 @@ class SweepTrade:
             self._entry_timer.cancel()
         await self.risk.stop()
 
-    # ==================== Helpers ====================
+    # ==================== Close & Trade Summary ====================
 
     def _close(self, reason: str, phase: str = "exit") -> None:
         duration_ms = int(time.time() * 1000) - self._event_start_ms if self._event_start_ms else 0

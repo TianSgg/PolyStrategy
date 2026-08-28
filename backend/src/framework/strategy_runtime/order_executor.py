@@ -160,7 +160,7 @@ class OrderExecutor:
                 error=str(e),
             )
 
-        parsed = self._parse_result(order_id, result, send_ns)
+        parsed = self._parse_result(order_id, result, send_ns, Decimal(size))
         if parsed.status == "failed":
             asyncio.create_task(poller.refresh())
         return parsed
@@ -176,7 +176,8 @@ class OrderExecutor:
             return False
 
     def _parse_result(
-        self, order_id: str, result: Optional[Dict[str, Any]], send_ns: int
+        self, order_id: str, result: Optional[Dict[str, Any]], send_ns: int,
+        order_size: Decimal,
     ) -> OrderResult:
         latency_ms = (time.monotonic_ns() - send_ns) / 1_000_000
         logger.debug("Order response latency: %.1fms", latency_ms)
@@ -190,15 +191,23 @@ class OrderExecutor:
         raw_status = result.get("status", "")
         clob_order_id = result.get("orderID", order_id)
 
+        taking_str = str(result.get("takingAmount", 0)) if result else None
+        making_str = str(result.get("makingAmount", 0)) if result else None
+
         if raw_status == "matched":
-            taking = Decimal(str(result.get("takingAmount", 0)))
-            making = Decimal(str(result.get("makingAmount", 0)))
+            taking = Decimal(taking_str or 0)
+            making = Decimal(making_str or 0)
             filled = taking if taking > 0 else making
+            # partial = some filled but remaining rests on book
+            is_partial = filled > 0 and filled < order_size
             return OrderResult(
                 order_id=clob_order_id,
-                status="filled",
+                status="partial" if is_partial else "filled",
                 filled_size=str(filled),
                 filled_price=None,
+                clob_status=raw_status,
+                clob_taking=taking_str,
+                clob_making=making_str,
             )
         elif raw_status == "live":
             return OrderResult(
@@ -206,6 +215,9 @@ class OrderExecutor:
                 status="live",
                 filled_size="0",
                 filled_price=None,
+                clob_status=raw_status,
+                clob_taking=taking_str,
+                clob_making=making_str,
             )
         else:
             return OrderResult(
@@ -214,6 +226,9 @@ class OrderExecutor:
                 filled_size="0",
                 filled_price=None,
                 error=f"unexpected CLOB status: {raw_status} | {result}",
+                clob_status=raw_status,
+                clob_taking=taking_str,
+                clob_making=making_str,
             )
 
     def balance_snapshot(self) -> Dict[str, Any]:
