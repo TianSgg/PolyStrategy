@@ -298,11 +298,10 @@ class SweepTrade:
 
             if result.status == "failed" and _time.monotonic() < deadline:
                 backoff = min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
-                if self._el:
-                    self._el.log_step("sell_retry", {
+                if self._el and attempt == 1:
+                    self._el.log_step("sell_retry_start", {
                         "attempt": attempt,
                         "status": result.status,
-                        "next_retry_sec": backoff,
                     }, phase="exit")
                 await asyncio.sleep(backoff)
 
@@ -369,7 +368,7 @@ class SweepTrade:
                     size=str(self.position_shares),
                     check_balance=False,
                 )
-                if self._el:
+                if self._el and (risk_attempt == 1 or result.status == "filled"):
                     self._el.log_step("risk_force_sell", {
                         "order_id": result.order_id,
                         "price": "0.01",
