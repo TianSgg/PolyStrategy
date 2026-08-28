@@ -1,12 +1,12 @@
 version: "3.8"
 
 x-common-env: &common-env
-  MYSQL_HOST: ${MYSQL_HOST:-host.docker.internal}
+  MYSQL_HOST: ${MYSQL_HOST:-127.0.0.1}
   MYSQL_PORT: ${MYSQL_PORT:-3306}
   MYSQL_USER: ${MYSQL_USER:-root}
   MYSQL_PASSWORD: ${MYSQL_PASSWORD}
   MYSQL_DATABASE: ${MYSQL_DATABASE:-polystrategy}
-  CONSUL_HTTP_ADDR: ${CONSUL_HTTP_ADDR:-http://host.docker.internal:8500}
+  CONSUL_HTTP_ADDR: ${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}
   CONSUL_HTTP_TOKEN: ${CONSUL_HTTP_TOKEN:-}
   ENCRYPTION_KEY: ${ENCRYPTION_KEY}
   AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-dev-secret-change-in-production}
@@ -22,15 +22,12 @@ services:
       args:
         SERVICE_MODULE: auth_service.app
     container_name: polystrategy-auth
+    network_mode: host
     env_file: backend/.env
-    ports:
-      - "8010:8010"
     environment:
       <<: *common-env
       SERVICE_NAME: polystrategy-auth
       SERVICE_PORT: "8010"
-    networks:
-      - polystrategy
     restart: unless-stopped
 
   account-service:
@@ -39,15 +36,12 @@ services:
       args:
         SERVICE_MODULE: account_service.app
     container_name: polystrategy-account
+    network_mode: host
     env_file: backend/.env
-    ports:
-      - "8011:8011"
     environment:
       <<: *common-env
       SERVICE_NAME: polystrategy-account
       SERVICE_PORT: "8011"
-    networks:
-      - polystrategy
     restart: unless-stopped
     depends_on:
       - auth-service
@@ -58,15 +52,12 @@ services:
       args:
         SERVICE_MODULE: signal_weather_orderbook.app
     container_name: polystrategy-signal-weather-orderbook
+    network_mode: host
     env_file: backend/.env
-    ports:
-      - "8001:8001"
     environment:
       <<: *common-env
       SERVICE_NAME: polystrategy-signal-weather-orderbook
       SERVICE_PORT: "8001"
-    networks:
-      - polystrategy
     restart: unless-stopped
     depends_on:
       - auth-service
@@ -77,20 +68,26 @@ services:
       args:
         SERVICE_MODULE: strategy_weather_sweep.app
     container_name: polystrategy-strategy-weather-sweep
+    network_mode: host
     env_file: backend/.env
-    ports:
-      - "8003:8003"
     environment:
       <<: *common-env
       SERVICE_NAME: polystrategy-strategy-weather-sweep
       SERVICE_PORT: "8003"
-      WEATHER_SIGNAL_WS_URL: ws://polystrategy-signal-weather-orderbook:8001/ws/signal
-    networks:
-      - polystrategy
+      WEATHER_SIGNAL_WS_URL: ws://127.0.0.1:8001/ws/signal
     restart: unless-stopped
     depends_on:
       - signal-weather-orderbook
 
-networks:
-  polystrategy:
-    external: true
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: polystrategy-frontend
+    network_mode: host
+    environment:
+      API_GATEWAY: 127.0.0.1:${TRAEFIK_ENTRY_PORT:-8000}
+      NGINX_PORT: ${FRONTEND_PORT:-9097}
+    restart: unless-stopped
+    depends_on:
+      - auth-service

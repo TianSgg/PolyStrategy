@@ -68,6 +68,7 @@ start_backend_service() {
 }
 
 start_frontend() {
+    local port="${FRONTEND_PORT:-5173}"
     local pid_file="$PID_DIR/frontend.pid"
     local log_dir="$ROOT_DIR/logs/frontend"
     mkdir -p "$log_dir"
@@ -79,11 +80,11 @@ start_frontend() {
         rm -f "$pid_file"
     fi
 
-    bash -c "cd '$FRONTEND_DIR' && nohup npx vite --port 5173 --host >> '$log_dir/app.log' 2>&1 & echo \$! > '$pid_file'"
+    bash -c "cd '$FRONTEND_DIR' && nohup npx vite --port $port --host >> '$log_dir/app.log' 2>&1 & echo \$! > '$pid_file'"
 
     sleep 0.5
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-        echo "  [frontend] started (pid=$(cat "$pid_file"), port=5173)"
+        echo "  [frontend] started (pid=$(cat "$pid_file"), port=$port)"
     else
         echo "  [frontend] FAILED — check logs/frontend/"
     fi
@@ -161,7 +162,7 @@ case "${1:-start}" in
 
         echo ""
         echo "═══ All services started ═══"
-        echo "  Frontend:   http://localhost:5173"
+        echo "  Frontend:   http://localhost:${FRONTEND_PORT:-5173}"
         echo "  Logs:       $ROOT_DIR/logs/<service_name>/"
         echo ""
         echo "  Note: Consul + Traefik 由 PolyInfra 项目单独管理"
@@ -182,7 +183,7 @@ case "${1:-start}" in
             IFS='|' read -r name _ port _ <<< "$svc"
             status_service "$name" "$port"
         done
-        status_service "frontend" "5173"
+        status_service "frontend" "${FRONTEND_PORT:-5173}"
         echo ""
         ;;
     restart)

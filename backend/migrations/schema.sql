@@ -176,10 +176,11 @@ CREATE TABLE strategy_weather_sweep_configs (
   enabled TINYINT(1) NOT NULL DEFAULT 0,
 
   fixed_entry_shares DECIMAL(20,4) NOT NULL DEFAULT 100.0000,
-  entry_wait_ms INT NOT NULL DEFAULT 30000,
+  entry_wait_ms INT NOT NULL DEFAULT 1200000,
   sweep_outcome_filter VARCHAR(8) NOT NULL DEFAULT 'no',
   signal_source_filter VARCHAR(8) NOT NULL DEFAULT 'all',
   signal_threshold_filter VARCHAR(8) NOT NULL DEFAULT 'all',
+  direction_filter VARCHAR(8) NOT NULL DEFAULT 'all',
   stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
   exit_wait_ms INT NOT NULL DEFAULT 5000,
   tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,

@@ -69,6 +69,7 @@ pyparsing==3.3.2
 pytest==9.0.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+PyYAML==6.0.2
 pytz==2026.1.post1
 pyunormalize==17.0.0
 regex==2026.4.4
