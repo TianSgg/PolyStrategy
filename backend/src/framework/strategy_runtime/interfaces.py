@@ -69,3 +69,4 @@ class OrderResult:
     status: str  # "filled", "partial", "live", "failed"
     filled_size: str
     filled_price: str | None = None
+    error: str | None = None

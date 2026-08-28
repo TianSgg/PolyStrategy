@@ -134,8 +134,6 @@ class SweepTrade:
             self._close("buy_failed", phase="entry")
             return
 
-        pre_bbo = self._snapshot_bbo(enter_origin_ms)
-
         order_task = asyncio.create_task(self._executor.place_order(
             token_id=self.token_id,
             side="BUY",
@@ -145,15 +143,17 @@ class SweepTrade:
         risk_task = asyncio.create_task(
             self.risk.start(token_id=self.token_id, orderbook_snapshot=orderbook_snapshot)
         )
-        result, _ = await asyncio.gather(order_task, risk_task)
 
+        await risk_task
+        pre_bbo = self._snapshot_bbo(enter_origin_ms)
+
+        result = await order_task
         now_ret = datetime.now(timezone.utc)
         order_returned = {
             "utc": now_ret.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now_ret.microsecond // 1000:03d}",
             "offset_ms": int((time.time() * 1000) - enter_origin_ms),
         }
-
-        post_bbo = self._snapshot_bbo(enter_origin_ms)
+        aft_bbo = self._snapshot_bbo(enter_origin_ms)
 
         if self._el:
             self._el.start_event(
@@ -169,6 +169,7 @@ class SweepTrade:
                 "event_slug": signal.payload.get("event_slug"),
                 "city": signal.payload.get("city"),
                 "direction": signal.payload.get("direction"),
+                "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}",
                 "risk_ref_mid": str(self.risk.reference_mid),
                 "risk_threshold": str(self.risk.threshold),
             }, phase="entry")
@@ -179,10 +180,11 @@ class SweepTrade:
             if self._el:
                 self._el.log_step("buy_failed", {
                     "reason": result.status,
+                    "error": result.error,
                     "requested_size": str(actual_shares),
                     "pre_bbo": pre_bbo,
                     "order_returned": order_returned,
-                    "post_bbo": post_bbo,
+                    "aft_bbo": aft_bbo,
                 }, phase="entry")
             self._close("buy_failed", phase="entry")
             return
@@ -195,7 +197,7 @@ class SweepTrade:
                 "status": result.status,
                 "pre_bbo": pre_bbo,
                 "order_returned": order_returned,
-                "post_bbo": post_bbo,
+                "aft_bbo": aft_bbo,
             }, phase="entry")
 
         if result.status == "filled":
@@ -342,6 +344,7 @@ class SweepTrade:
                     self._el.log_step("sell_retry_start", {
                         "attempt": attempt,
                         "status": result.status,
+                        "error": result.error,
                     }, phase="exit")
                 await asyncio.sleep(backoff)
 
@@ -351,6 +354,7 @@ class SweepTrade:
                 "attempts": attempt,
                 "timeout_sec": sell_timeout_s,
                 "remaining_position": str(self.position_shares),
+                "last_error": result.error if result else None,
             }, phase="exit")
         self._close("sell_failed", phase="exit")
 
@@ -477,13 +481,6 @@ class SweepTrade:
 
     def _close(self, reason: str, phase: str = "exit") -> None:
         duration_ms = int(time.time() * 1000) - self._event_start_ms if self._event_start_ms else 0
-        if self._el:
-            self._el.log_step("event_closed", {
-                "reason": reason,
-                "total_position": str(self.position_shares),
-                "duration_ms": duration_ms,
-            }, phase=phase)
-            self._el.end_event()
 
         pnl = None
         pnl_pct = None
@@ -499,6 +496,14 @@ class SweepTrade:
             "duration_ms": duration_ms,
             "closed_at": datetime.now(timezone.utc).replace(tzinfo=None),
         })
+
+        if self._el:
+            self._el.log_step("event_closed", {
+                "reason": reason,
+                "total_position": str(self.position_shares),
+                "duration_ms": duration_ms,
+            }, phase=phase)
+            self._el.end_event()
 
         self.state = "closed"
         self._on_closed(self.token_id)

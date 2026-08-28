@@ -157,6 +157,7 @@ class OrderExecutor:
                 status="failed",
                 filled_size="0",
                 filled_price=None,
+                error=str(e),
             )
 
         parsed = self._parse_result(order_id, result, send_ns)
@@ -182,7 +183,8 @@ class OrderExecutor:
 
         if not result:
             return OrderResult(
-                order_id=order_id, status="failed", filled_size="0", filled_price=None
+                order_id=order_id, status="failed", filled_size="0", filled_price=None,
+                error="empty response from CLOB",
             )
 
         raw_status = result.get("status", "")
@@ -211,6 +213,7 @@ class OrderExecutor:
                 status="failed",
                 filled_size="0",
                 filled_price=None,
+                error=f"unexpected CLOB status: {raw_status} | {result}",
             )
 
     def balance_snapshot(self) -> Dict[str, Any]:

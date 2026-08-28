@@ -16,6 +16,8 @@ services:
     environment:
       SERVICE_NAME: polystrategy-auth
       SERVICE_PORT: "8010"
+    volumes:
+      - ./logs:/logs
     restart: unless-stopped
 
   account-service:
@@ -29,6 +31,8 @@ services:
     environment:
       SERVICE_NAME: polystrategy-account
       SERVICE_PORT: "8011"
+    volumes:
+      - ./logs:/logs
     restart: unless-stopped
     depends_on:
       - auth-service
@@ -44,6 +48,8 @@ services:
     environment:
       SERVICE_NAME: polystrategy-signal-weather-orderbook
       SERVICE_PORT: "8001"
+    volumes:
+      - ./logs:/logs
     restart: unless-stopped
     depends_on:
       - auth-service
@@ -60,6 +66,8 @@ services:
       SERVICE_NAME: polystrategy-strategy-weather-sweep
       SERVICE_PORT: "8003"
       WEATHER_SIGNAL_WS_URL: ws://127.0.0.1:8001/ws/signal
+    volumes:
+      - ./logs:/logs
     restart: unless-stopped
     depends_on:
       - signal-weather-orderbook
