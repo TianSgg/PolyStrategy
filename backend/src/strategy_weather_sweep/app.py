@@ -17,8 +17,8 @@ if _src_dir not in sys.path:
 
 from dotenv import load_dotenv
 
-_backend_dir = Path(__file__).resolve().parent.parent.parent
-load_dotenv(_backend_dir / ".env", override=True)
+_project_root = Path(__file__).resolve().parent.parent.parent.parent
+load_dotenv(_project_root / ".env", override=True)
 
 _config_path = Path(__file__).resolve().parent / "config.yml"
 with open(_config_path) as f:

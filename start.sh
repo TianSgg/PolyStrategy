@@ -17,10 +17,10 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 PID_DIR="$ROOT_DIR/.pids"
 mkdir -p "$PID_DIR"
 
-# 加载 backend/.env 中的环境变量（数据库密码、Consul Token 等）
-if [ -f "$BACKEND_DIR/.env" ]; then
+# 加载根目录 .env 中的环境变量（数据库密码、Consul Token 等）
+if [ -f "$ROOT_DIR/.env" ]; then
     set -a
-    source "$BACKEND_DIR/.env"
+    source "$ROOT_DIR/.env"
     set +a
 fi
 

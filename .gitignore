@@ -20,6 +20,7 @@ __pycache__/
 
 # Env
 .env*
+!.env.example
 .env.development
 .env.dev
 .env.production

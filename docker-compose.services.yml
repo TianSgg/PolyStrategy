@@ -1,16 +1,5 @@
 version: "3.8"
 
-x-common-env: &common-env
-  MYSQL_HOST: ${MYSQL_HOST:-127.0.0.1}
-  MYSQL_PORT: ${MYSQL_PORT:-3306}
-  MYSQL_USER: ${MYSQL_USER:-root}
-  MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-  MYSQL_DATABASE: ${MYSQL_DATABASE:-polystrategy}
-  CONSUL_HTTP_ADDR: ${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}
-  CONSUL_HTTP_TOKEN: ${CONSUL_HTTP_TOKEN:-}
-  ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-dev-secret-change-in-production}
-
 x-common-build: &common-build
   context: ./backend
   dockerfile: Dockerfile
@@ -23,9 +12,8 @@ services:
         SERVICE_MODULE: auth_service.app
     container_name: polystrategy-auth
     network_mode: host
-    env_file: backend/.env
+    env_file: .env
     environment:
-      <<: *common-env
       SERVICE_NAME: polystrategy-auth
       SERVICE_PORT: "8010"
     restart: unless-stopped
@@ -37,9 +25,8 @@ services:
         SERVICE_MODULE: account_service.app
     container_name: polystrategy-account
     network_mode: host
-    env_file: backend/.env
+    env_file: .env
     environment:
-      <<: *common-env
       SERVICE_NAME: polystrategy-account
       SERVICE_PORT: "8011"
     restart: unless-stopped
@@ -53,9 +40,8 @@ services:
         SERVICE_MODULE: signal_weather_orderbook.app
     container_name: polystrategy-signal-weather-orderbook
     network_mode: host
-    env_file: backend/.env
+    env_file: .env
     environment:
-      <<: *common-env
       SERVICE_NAME: polystrategy-signal-weather-orderbook
       SERVICE_PORT: "8001"
     restart: unless-stopped
@@ -69,9 +55,8 @@ services:
         SERVICE_MODULE: strategy_weather_sweep.app
     container_name: polystrategy-strategy-weather-sweep
     network_mode: host
-    env_file: backend/.env
+    env_file: .env
     environment:
-      <<: *common-env
       SERVICE_NAME: polystrategy-strategy-weather-sweep
       SERVICE_PORT: "8003"
       WEATHER_SIGNAL_WS_URL: ws://127.0.0.1:8001/ws/signal
