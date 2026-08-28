@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { apiFetch } from '../api'
+import { useBalance } from '../contexts/BalanceContext'
+import SweepTrades from './SweepTrades'
 
 interface Account {
   id: number
@@ -19,6 +21,7 @@ interface SweepConfig {
   sweep_outcome_filter: string
   signal_source_filter: string
   signal_threshold_filter: string
+  direction_filter: string
   stop_loss_ratio: number
   exit_wait_ms: number
   tick_verify_retries: number
@@ -36,10 +39,11 @@ const DEFAULT_FORM = {
   account_id: 0,
   name: '',
   fixed_entry_shares: 100,
-  entry_wait_ms: 30000,
+  entry_wait_ms: 1200000,
   sweep_outcome_filter: 'no',
   signal_source_filter: 'all',
   signal_threshold_filter: 'all',
+  direction_filter: 'all',
   stop_loss_ratio: 0.6,
   exit_wait_ms: 5000,
   tick_verify_retries: 3,
@@ -47,6 +51,8 @@ const DEFAULT_FORM = {
 }
 
 export default function StrategyDashboard({ darkMode }: Props) {
+  const { accountBalances } = useBalance()
+  const [tab, setTab] = useState<'configs' | 'trades'>('configs')
   const [configs, setConfigs] = useState<SweepConfig[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
@@ -55,6 +61,12 @@ export default function StrategyDashboard({ darkMode }: Props) {
   const [form, setForm] = useState(DEFAULT_FORM)
   const [saving, setSaving] = useState(false)
   const [togglingId, setTogglingId] = useState<number | null>(null)
+  const [expandedConfigId, setExpandedConfigId] = useState<number | null>(null)
+  const [configTrades, setConfigTrades] = useState<any[]>([])
+  const [tradesLoading, setTradesLoading] = useState(false)
+  const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null)
+  const [tradeSteps, setTradeSteps] = useState<any[]>([])
+  const [stepsLoading, setStepsLoading] = useState(false)
 
   const fetchConfigs = async () => {
     try {
@@ -72,10 +84,10 @@ export default function StrategyDashboard({ darkMode }: Props) {
 
   const fetchAccounts = async () => {
     try {
-      const res = await apiFetch('/api/accounts')
+      const res = await apiFetch('/api/account/list')
       if (res.ok) {
         const data = await res.json()
-        setAccounts(data.accounts || [])
+        setAccounts(Array.isArray(data) ? data : data.accounts || [])
       }
     } catch (e) {
       console.error('Failed to fetch accounts', e)
@@ -86,6 +98,57 @@ export default function StrategyDashboard({ darkMode }: Props) {
     fetchConfigs()
     fetchAccounts()
   }, [])
+
+  const handleExpandTrades = async (cfg: SweepConfig) => {
+    if (expandedConfigId === cfg.id) {
+      setExpandedConfigId(null)
+      setConfigTrades([])
+      setExpandedTradeId(null)
+      setTradeSteps([])
+      return
+    }
+    setExpandedConfigId(cfg.id)
+    setExpandedTradeId(null)
+    setTradeSteps([])
+    setTradesLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (cfg.proxy_wallet) params.set('proxy_wallet', cfg.proxy_wallet)
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      params.set('since', since)
+      params.set('limit', '50')
+      const res = await apiFetch(`/api/strategy/trades?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        setConfigTrades(data.trades || [])
+      }
+    } catch (e) {
+      console.error('Failed to fetch trades', e)
+    } finally {
+      setTradesLoading(false)
+    }
+  }
+
+  const handleExpandTrade = async (eventId: string) => {
+    if (expandedTradeId === eventId) {
+      setExpandedTradeId(null)
+      setTradeSteps([])
+      return
+    }
+    setExpandedTradeId(eventId)
+    setStepsLoading(true)
+    try {
+      const res = await apiFetch(`/api/strategy/events/${eventId}`)
+      if (res.ok) {
+        const data = await res.json()
+        setTradeSteps(data.steps || [])
+      }
+    } catch (e) {
+      console.error('Failed to fetch steps', e)
+    } finally {
+      setStepsLoading(false)
+    }
+  }
 
   const handleToggle = async (cfg: SweepConfig) => {
     setTogglingId(cfg.id)
@@ -141,6 +204,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
       sweep_outcome_filter: cfg.sweep_outcome_filter,
       signal_source_filter: cfg.signal_source_filter || 'all',
       signal_threshold_filter: cfg.signal_threshold_filter || 'all',
+      direction_filter: cfg.direction_filter || 'all',
       stop_loss_ratio: cfg.stop_loss_ratio,
       exit_wait_ms: cfg.exit_wait_ms,
       tick_verify_retries: cfg.tick_verify_retries,
@@ -179,25 +243,58 @@ export default function StrategyDashboard({ darkMode }: Props) {
         <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 600, color: textPrimary }}>
           Weather Sweep 策略配置
         </h2>
-        <button
-          onClick={() => { setShowForm(true); setEditingId(null); setForm(DEFAULT_FORM) }}
-          style={{
-            padding: '8px 20px',
-            borderRadius: '8px',
-            border: 'none',
-            background: '#2563eb',
-            color: '#fff',
-            fontSize: '14px',
-            fontWeight: 500,
-            cursor: 'pointer',
-          }}
-        >
-          + 新增配置
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', borderRadius: '8px', border: `1px solid ${border}`, overflow: 'hidden' }}>
+            <button
+              onClick={() => setTab('configs')}
+              style={{
+                padding: '6px 16px', border: 'none', fontSize: '13px', cursor: 'pointer',
+                background: tab === 'configs' ? '#2563eb' : 'transparent',
+                color: tab === 'configs' ? '#fff' : textSecondary,
+                fontWeight: tab === 'configs' ? 600 : 400,
+              }}
+            >
+              策略配置
+            </button>
+            <button
+              onClick={() => setTab('trades')}
+              style={{
+                padding: '6px 16px', border: 'none', fontSize: '13px', cursor: 'pointer',
+                background: tab === 'trades' ? '#2563eb' : 'transparent',
+                color: tab === 'trades' ? '#fff' : textSecondary,
+                fontWeight: tab === 'trades' ? 600 : 400,
+              }}
+            >
+              交易记录
+            </button>
+          </div>
+          {tab === 'configs' && (
+            <button
+              onClick={() => { setShowForm(true); setEditingId(null); setForm(DEFAULT_FORM) }}
+              style={{
+                padding: '8px 20px',
+                borderRadius: '8px',
+                border: 'none',
+                background: '#2563eb',
+                color: '#fff',
+                fontSize: '14px',
+                fontWeight: 500,
+                cursor: 'pointer',
+              }}
+            >
+              + 新增配置
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* Trades Tab */}
+      {tab === 'trades' && (
+        <SweepTrades darkMode={darkMode} />
+      )}
+
       {/* Config List */}
-      {loading ? (
+      {tab === 'configs' && (loading ? (
         <div style={{ color: textSecondary }}>加载中...</div>
       ) : configs.length === 0 ? (
         <div style={{ color: textSecondary, padding: '40px', textAlign: 'center' }}>
@@ -206,11 +303,13 @@ export default function StrategyDashboard({ darkMode }: Props) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {configs.map(cfg => (
-            <div key={cfg.id} style={{
+            <div key={cfg.id}>
+            <div style={{
               background: cardBg,
-              borderRadius: '12px',
+              borderRadius: expandedConfigId === cfg.id ? '12px 12px 0 0' : '12px',
               padding: '20px',
-              border: `1px solid ${border}`,
+              border: `1px solid ${expandedConfigId === cfg.id ? '#3b82f6' : border}`,
+              borderBottom: expandedConfigId === cfg.id ? 'none' : undefined,
               display: 'flex',
               alignItems: 'center',
               gap: '16px',
@@ -257,17 +356,42 @@ export default function StrategyDashboard({ darkMode }: Props) {
                     {cfg.enabled ? '运行中' : '已停止'}
                   </span>
                 </div>
-                <div style={{ fontSize: '13px', color: textSecondary, display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                  <span>账户: {cfg.account_name || `#${cfg.account_id}`}</span>
+                <div style={{ fontSize: '13px', color: textSecondary, display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <a
+                    href={cfg.proxy_wallet ? `https://polymarket.com/profile/${cfg.proxy_wallet}` : '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: '#3b82f6', fontWeight: 500, textDecoration: 'none' }}
+                  >
+                    {cfg.account_name || `#${cfg.account_id}`}
+                    {cfg.proxy_wallet && accountBalances[cfg.proxy_wallet.toLowerCase()]
+                      ? ` ($${accountBalances[cfg.proxy_wallet.toLowerCase()].total_value?.toFixed(2)})`
+                      : ''}
+                  </a>
                   <span>份额: {cfg.fixed_entry_shares}</span>
                   <span>止损: {(cfg.stop_loss_ratio * 100).toFixed(0)}%</span>
-                  <span>过滤: {cfg.sweep_outcome_filter}</span>
-                  <span>v{cfg.params_version}</span>
+                  <span>买入超时: {cfg.entry_wait_ms >= 60000 ? `${(cfg.entry_wait_ms / 60000).toFixed(0)}分钟` : `${cfg.entry_wait_ms / 1000}秒`}</span>
+                  <span>方向: {cfg.direction_filter === 'all' ? '全部' : cfg.direction_filter === 'highest' ? '最高温' : '最低温'}</span>
+                  {cfg.sweep_outcome_filter !== 'no' && <span>outcome: {cfg.sweep_outcome_filter}</span>}
                 </div>
               </div>
 
               {/* Actions */}
               <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                <button
+                  onClick={() => handleExpandTrades(cfg)}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: '6px',
+                    border: `1px solid ${expandedConfigId === cfg.id ? '#3b82f6' : border}`,
+                    background: expandedConfigId === cfg.id ? '#2563eb' : 'transparent',
+                    color: expandedConfigId === cfg.id ? '#fff' : textPrimary,
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  24h 交易
+                </button>
                 <button
                   onClick={() => handleEdit(cfg)}
                   style={{
@@ -298,9 +422,115 @@ export default function StrategyDashboard({ darkMode }: Props) {
                 </button>
               </div>
             </div>
+
+            {/* Expanded trades panel */}
+            {expandedConfigId === cfg.id && (
+              <div style={{
+                background: darkMode ? '#0f172a' : '#f8fafc',
+                border: `1px solid #3b82f6`,
+                borderTop: 'none',
+                borderRadius: '0 0 12px 12px',
+                padding: '16px',
+                maxHeight: '500px',
+                overflow: 'auto',
+              }}>
+                {tradesLoading ? (
+                  <div style={{ color: textSecondary, textAlign: 'center', padding: '12px' }}>加载中...</div>
+                ) : configTrades.length === 0 ? (
+                  <div style={{ color: textSecondary, textAlign: 'center', padding: '12px' }}>暂无交易记录</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {configTrades.map((t: any) => (
+                      <div key={t.event_id}>
+                        <div
+                          onClick={() => handleExpandTrade(t.event_id)}
+                          style={{
+                            padding: '10px 14px',
+                            borderRadius: expandedTradeId === t.event_id ? '8px 8px 0 0' : '8px',
+                            background: expandedTradeId === t.event_id ? (darkMode ? '#334155' : '#eff6ff') : cardBg,
+                            border: `1px solid ${expandedTradeId === t.event_id ? '#3b82f6' : border}`,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px' }}>
+                            <span style={{
+                              fontSize: '11px', padding: '2px 6px', borderRadius: '4px', fontWeight: 500,
+                              background: t.status === 'closed' ? '#64748b20' : t.status === 'exit_working' ? '#f59e0b20' : '#3b82f620',
+                              color: t.status === 'closed' ? '#64748b' : t.status === 'exit_working' ? '#f59e0b' : '#3b82f6',
+                            }}>
+                              {t.status === 'entry_working' ? '入场中' : t.status === 'exit_working' ? '出场中' : '已平仓'}
+                            </span>
+                            {t.close_reason && <span style={{ fontSize: '11px', color: textSecondary }}>({t.close_reason})</span>}
+                            <span style={{ fontWeight: 500, color: textPrimary, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {t.event_slug || t.market_slug || t.event_id.slice(0, 8)}
+                            </span>
+                            {t.city && <span style={{ color: textSecondary }}>{t.city} {t.direction === 'highest' ? '↑' : t.direction === 'lowest' ? '↓' : ''}</span>}
+                            {t.pnl != null && (
+                              <span style={{ fontWeight: 600, color: parseFloat(t.pnl) > 0 ? '#22c55e' : parseFloat(t.pnl) < 0 ? '#ef4444' : textSecondary }}>
+                                {parseFloat(t.pnl) > 0 ? '+' : ''}{parseFloat(t.pnl).toFixed(4)}
+                              </span>
+                            )}
+                            <span style={{ color: textSecondary, fontSize: '11px' }}>
+                              {t.started_at ? new Date(t.started_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Trade steps expand */}
+                        {expandedTradeId === t.event_id && (
+                          <div style={{
+                            background: darkMode ? '#1e293b' : '#ffffff',
+                            border: `1px solid #3b82f6`,
+                            borderTop: 'none',
+                            borderRadius: '0 0 8px 8px',
+                            padding: '12px 16px',
+                          }}>
+                            {stepsLoading ? (
+                              <div style={{ color: textSecondary, textAlign: 'center', padding: '8px' }}>加载详情...</div>
+                            ) : tradeSteps.length === 0 ? (
+                              <div style={{ color: textSecondary, textAlign: 'center', padding: '8px' }}>无步骤记录</div>
+                            ) : (
+                              <div style={{ position: 'relative', paddingLeft: '20px' }}>
+                                <div style={{ position: 'absolute', left: '6px', top: '4px', bottom: '4px', width: '2px', background: darkMode ? '#475569' : '#cbd5e1' }} />
+                                {tradeSteps.map((step: any, idx: number) => {
+                                  const phaseColor = ({ entry: '#3b82f6', monitor: '#8b5cf6', exit: '#22c55e', exit_risk: '#ef4444', exit_force: '#f59e0b' } as any)[step.phase] || '#64748b'
+                                  return (
+                                    <div key={step.id || idx} style={{ position: 'relative', marginBottom: '10px' }}>
+                                      <div style={{ position: 'absolute', left: '-18px', top: '5px', width: '8px', height: '8px', borderRadius: '50%', background: phaseColor, border: `2px solid ${darkMode ? '#1e293b' : '#ffffff'}` }} />
+                                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '2px' }}>
+                                        <span style={{ fontSize: '11px', padding: '1px 5px', borderRadius: '3px', background: `${phaseColor}20`, color: phaseColor, fontWeight: 500 }}>
+                                          {step.phase}
+                                        </span>
+                                        <span style={{ fontSize: '12px', fontWeight: 600, color: textPrimary }}>{step.step}</span>
+                                        <span style={{ fontSize: '10px', color: textSecondary, marginLeft: 'auto' }}>
+                                          {step.occurred_at ? new Date(step.occurred_at).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                                        </span>
+                                      </div>
+                                      {step.detail && Object.keys(step.detail).length > 0 && (
+                                        <div style={{ fontSize: '11px', color: textSecondary, background: darkMode ? '#0f172a' : '#f1f5f9', padding: '4px 8px', borderRadius: '4px', fontFamily: 'monospace', lineHeight: '1.4' }}>
+                                          {Object.entries(step.detail).map(([k, v]) => (
+                                            <div key={k}><span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: {typeof v === 'object' ? JSON.stringify(v) : String(v)}</div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            </div>
           ))}
         </div>
-      )}
+      ))}
 
       {/* Create/Edit Modal */}
       {showForm && (
@@ -429,10 +659,26 @@ export default function StrategyDashboard({ darkMode }: Props) {
                 </select>
               </div>
 
+              {/* Direction Filter */}
+              <div>
+                <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
+                  温度方向
+                </label>
+                <select
+                  value={form.direction_filter}
+                  onChange={e => setForm({ ...form, direction_filter: e.target.value })}
+                  style={inputStyle}
+                >
+                  <option value="all">全部 (最高温+最低温)</option>
+                  <option value="highest">仅最高温</option>
+                  <option value="lowest">仅最低温</option>
+                </select>
+              </div>
+
               {/* Entry Wait */}
               <div>
                 <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
-                  等待成交超时 (ms)
+                  买入超时 (ms)
                 </label>
                 <input
                   type="number"
@@ -442,44 +688,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                 />
               </div>
 
-              {/* Exit Wait */}
-              <div>
-                <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
-                  退出等待 (ms)
-                </label>
-                <input
-                  type="number"
-                  value={form.exit_wait_ms}
-                  onChange={e => setForm({ ...form, exit_wait_ms: Number(e.target.value) })}
-                  style={inputStyle}
-                />
-              </div>
 
-              {/* Tick Verify Retries */}
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
-                    Tick 验证重试
-                  </label>
-                  <input
-                    type="number"
-                    value={form.tick_verify_retries}
-                    onChange={e => setForm({ ...form, tick_verify_retries: Number(e.target.value) })}
-                    style={inputStyle}
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
-                    重试间隔 (ms)
-                  </label>
-                  <input
-                    type="number"
-                    value={form.tick_verify_backoff_ms}
-                    onChange={e => setForm({ ...form, tick_verify_backoff_ms: Number(e.target.value) })}
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
             </div>
 
             {/* Buttons */}

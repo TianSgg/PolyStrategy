@@ -21,7 +21,7 @@ class WeatherSweepConfigDAO:
         sql = f"""
             SELECT c.id, c.owner_user_id, c.account_id, c.name, c.params_version,
                    c.fixed_entry_shares, c.entry_wait_ms, c.sweep_outcome_filter,
-                   c.signal_source_filter, c.signal_threshold_filter,
+                   c.signal_source_filter, c.signal_threshold_filter, c.direction_filter,
                    c.stop_loss_ratio, c.exit_wait_ms, c.tick_verify_retries,
                    c.tick_verify_backoff_ms,
                    a.proxy_wallet
@@ -45,6 +45,7 @@ class WeatherSweepConfigDAO:
                 "sweep_outcome_filter": d.get("sweep_outcome_filter", "no"),
                 "signal_source_filter": d.get("signal_source_filter", "all"),
                 "signal_threshold_filter": d.get("signal_threshold_filter", "all"),
+                "direction_filter": d.get("direction_filter", "all"),
                 "stop_loss_ratio": str(d["stop_loss_ratio"]),
                 "exit_wait_ms": int(d["exit_wait_ms"]),
                 "tick_verify_retries": int(d["tick_verify_retries"]),
@@ -105,13 +106,13 @@ class WeatherSweepConfigDAO:
             INSERT INTO {self.TABLE} (
                 owner_user_id, account_id, name, enabled,
                 fixed_entry_shares, entry_wait_ms, sweep_outcome_filter,
-                signal_source_filter, signal_threshold_filter,
+                signal_source_filter, signal_threshold_filter, direction_filter,
                 stop_loss_ratio, exit_wait_ms, tick_verify_retries, tick_verify_backoff_ms,
                 created_at, updated_at
             ) VALUES (
                 %(owner_user_id)s, %(account_id)s, %(name)s, %(enabled)s,
                 %(fixed_entry_shares)s, %(entry_wait_ms)s, %(sweep_outcome_filter)s,
-                %(signal_source_filter)s, %(signal_threshold_filter)s,
+                %(signal_source_filter)s, %(signal_threshold_filter)s, %(direction_filter)s,
                 %(stop_loss_ratio)s, %(exit_wait_ms)s, %(tick_verify_retries)s, %(tick_verify_backoff_ms)s,
                 NOW(3), NOW(3)
             )
@@ -128,7 +129,7 @@ class WeatherSweepConfigDAO:
         for key in (
             "name", "enabled", "fixed_entry_shares", "entry_wait_ms",
             "sweep_outcome_filter", "signal_source_filter", "signal_threshold_filter",
-            "stop_loss_ratio", "exit_wait_ms",
+            "direction_filter", "stop_loss_ratio", "exit_wait_ms",
             "tick_verify_retries", "tick_verify_backoff_ms",
         ):
             if key in data:
@@ -308,6 +309,8 @@ class WeatherSweepTradeDAO:
         status: Optional[str] = None,
         search: Optional[str] = None,
         proxy_wallet: Optional[str] = None,
+        direction: Optional[str] = None,
+        since: Optional[str] = None,
         limit: int = 30,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -324,9 +327,15 @@ class WeatherSweepTradeDAO:
         if status:
             conditions.append("status = %s")
             params.append(status)
+        if direction:
+            conditions.append("direction = %s")
+            params.append(direction)
         if search:
             conditions.append("event_slug LIKE %s")
             params.append(f"%{search}%")
+        if since:
+            conditions.append("started_at >= %s")
+            params.append(since)
 
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = f"""
@@ -349,6 +358,8 @@ class WeatherSweepTradeDAO:
         status: Optional[str] = None,
         search: Optional[str] = None,
         proxy_wallet: Optional[str] = None,
+        direction: Optional[str] = None,
+        since: Optional[str] = None,
     ) -> int:
         conditions: List[str] = []
         params: List[Any] = []
@@ -363,9 +374,15 @@ class WeatherSweepTradeDAO:
         if status:
             conditions.append("status = %s")
             params.append(status)
+        if direction:
+            conditions.append("direction = %s")
+            params.append(direction)
         if search:
             conditions.append("event_slug LIKE %s")
             params.append(f"%{search}%")
+        if since:
+            conditions.append("started_at >= %s")
+            params.append(since)
 
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = f"SELECT COUNT(*) FROM {self.TABLE} WHERE {where}"

@@ -48,6 +48,7 @@ async def create_config(data: CreateConfigRequest, request: Request, current_use
         "sweep_outcome_filter": data.sweep_outcome_filter,
         "signal_source_filter": data.signal_source_filter,
         "signal_threshold_filter": data.signal_threshold_filter,
+        "direction_filter": data.direction_filter,
         "stop_loss_ratio": data.stop_loss_ratio,
         "exit_wait_ms": data.exit_wait_ms,
         "tick_verify_retries": data.tick_verify_retries,
@@ -128,6 +129,8 @@ async def list_trades(
     status: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     proxy_wallet: Optional[str] = Query(default=None),
+    direction: Optional[str] = Query(default=None),
+    since: Optional[str] = Query(default=None),
     limit: int = Query(default=30, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: AuthUser = Depends(get_current_user),
@@ -138,6 +141,8 @@ async def list_trades(
         status=status,
         search=search,
         proxy_wallet=proxy_wallet,
+        direction=direction,
+        since=since,
         limit=limit,
         offset=offset,
     )
@@ -146,6 +151,8 @@ async def list_trades(
         status=status,
         search=search,
         proxy_wallet=proxy_wallet,
+        direction=direction,
+        since=since,
     )
     return {"trades": trades, "total": total}
 

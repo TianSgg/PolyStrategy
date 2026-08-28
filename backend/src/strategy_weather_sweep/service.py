@@ -563,6 +563,11 @@ class SweepStrategy:
             if f"through_{threshold_filter}_cleared" not in reason:
                 return False
 
+        direction_filter = cfg.get("direction_filter", "all")
+        if direction_filter != "all":
+            if payload.get("direction", "") != direction_filter:
+                return False
+
         return True
 
     # ==================== Lifecycle ====================

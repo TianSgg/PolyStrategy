@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../api'
 import { useBalance } from '../contexts/BalanceContext'
-import SweepTrades from './SweepTrades'
 import './Account.css'
 
 type Account = {
@@ -53,7 +52,6 @@ export default function Account({ darkMode, visible, refreshKey = 0, onAccountsL
   const [error, setError] = useState('')
   const [positionsCollapsed, setPositionsCollapsed] = useState<Record<number, boolean>>({})
   const [refreshingAccounts, setRefreshingAccounts] = useState<Set<number>>(new Set())
-  const [tradesWallet, setTradesWallet] = useState<string | null>(null)
 
 
   useEffect(() => {
@@ -201,14 +199,6 @@ export default function Account({ darkMode, visible, refreshKey = 0, onAccountsL
     setPositionsCollapsed(prev => ({ ...prev, [accountId]: prev[accountId] === false ? true : false }))
   }
 
-  if (tradesWallet) {
-    return (
-      <div className="account-page" data-theme={darkMode ? 'dark' : 'light'}>
-        <SweepTrades darkMode={darkMode} proxyWallet={tradesWallet} onBack={() => setTradesWallet(null)} />
-      </div>
-    )
-  }
-
   return (
     <div className="account-page" data-theme={darkMode ? 'dark' : 'light'}>
       <div className="account-container">
@@ -285,9 +275,6 @@ export default function Account({ darkMode, visible, refreshKey = 0, onAccountsL
                     )}
                   </div>
                   <div className="account-actions">
-                    <button onClick={() => setTradesWallet(account.proxy_wallet)} className="btn btn-outline">
-                      📊 交易记录
-                    </button>
                     <button onClick={() => startEditingBuilderCode(account)} className="btn btn-outline">
                       {account.builder_code ? '✓ Builder Code' : '+ Builder Code'}
                     </button>

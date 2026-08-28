@@ -79,20 +79,43 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState<string>('')
+  const [walletFilter, setWalletFilter] = useState<string>('')
+  const [directionFilter, setDirectionFilter] = useState<string>('')
+  const [timeRange, setTimeRange] = useState<string>('')
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [page, setPage] = useState(0)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [steps, setSteps] = useState<EventStep[]>([])
   const [stepsLoading, setStepsLoading] = useState(false)
+  const [accounts, setAccounts] = useState<{id: number; name: string; proxy_wallet: string}[]>([])
+
+  useEffect(() => {
+    if (!proxyWallet) {
+      apiFetch('/api/account/list').then(async res => {
+        if (res.ok) {
+          const data = await res.json()
+          setAccounts(Array.isArray(data) ? data : [])
+        }
+      })
+    }
+  }, [proxyWallet])
 
   const fetchTrades = useCallback(async () => {
     setLoading(true)
     try {
       const params = new URLSearchParams()
       if (proxyWallet) params.set('proxy_wallet', proxyWallet)
+      else if (walletFilter) params.set('proxy_wallet', walletFilter)
       if (statusFilter) params.set('status', statusFilter)
+      if (directionFilter) params.set('direction', directionFilter)
       if (search) params.set('search', search)
+      if (timeRange) {
+        const hours = { '24h': 24, '7d': 168, '30d': 720 }[timeRange]
+        if (hours) {
+          params.set('since', new Date(Date.now() - hours * 3600000).toISOString())
+        }
+      }
       params.set('limit', String(PAGE_SIZE))
       params.set('offset', String(page * PAGE_SIZE))
       const res = await apiFetch(`/api/strategy/trades?${params}`)
@@ -106,7 +129,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, search, page, proxyWallet])
+  }, [statusFilter, walletFilter, directionFilter, timeRange, search, page, proxyWallet])
 
   useEffect(() => { fetchTrades() }, [fetchTrades])
 
@@ -162,16 +185,6 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
   const textPrimary = darkMode ? '#f8fafc' : '#0f172a'
   const textSecondary = darkMode ? '#94a3b8' : '#64748b'
 
-  const tabStyle = (active: boolean): React.CSSProperties => ({
-    padding: '6px 16px',
-    borderRadius: '6px',
-    border: `1px solid ${active ? '#2563eb' : border}`,
-    background: active ? '#2563eb' : 'transparent',
-    color: active ? '#fff' : textSecondary,
-    fontSize: '13px',
-    cursor: 'pointer',
-    fontWeight: active ? 600 : 400,
-  })
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -192,10 +205,47 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
-        <button onClick={() => { setStatusFilter(''); setPage(0) }} style={tabStyle(!statusFilter)}>全部</button>
-        <button onClick={() => { setStatusFilter('entry_working'); setPage(0) }} style={tabStyle(statusFilter === 'entry_working')}>入场中</button>
-        <button onClick={() => { setStatusFilter('exit_working'); setPage(0) }} style={tabStyle(statusFilter === 'exit_working')}>出场中</button>
-        <button onClick={() => { setStatusFilter('closed'); setPage(0) }} style={tabStyle(statusFilter === 'closed')}>已平仓</button>
+        <select
+          value={statusFilter}
+          onChange={e => { setStatusFilter(e.target.value); setPage(0) }}
+          style={{ padding: '6px 10px', borderRadius: '6px', border: `1px solid ${border}`, background: darkMode ? '#334155' : '#f1f5f9', color: textPrimary, fontSize: '13px' }}
+        >
+          <option value="">全部状态</option>
+          <option value="entry_working">入场中</option>
+          <option value="exit_working">出场中</option>
+          <option value="closed">已平仓</option>
+        </select>
+        {!proxyWallet && accounts.length > 0 && (
+          <select
+            value={walletFilter}
+            onChange={e => { setWalletFilter(e.target.value); setPage(0) }}
+            style={{ padding: '6px 10px', borderRadius: '6px', border: `1px solid ${border}`, background: darkMode ? '#334155' : '#f1f5f9', color: textPrimary, fontSize: '13px' }}
+          >
+            <option value="">全部账户</option>
+            {accounts.map(a => (
+              <option key={a.id} value={a.proxy_wallet}>{a.name || a.proxy_wallet.slice(0, 8)}</option>
+            ))}
+          </select>
+        )}
+        <select
+          value={directionFilter}
+          onChange={e => { setDirectionFilter(e.target.value); setPage(0) }}
+          style={{ padding: '6px 10px', borderRadius: '6px', border: `1px solid ${border}`, background: darkMode ? '#334155' : '#f1f5f9', color: textPrimary, fontSize: '13px' }}
+        >
+          <option value="">全部方向</option>
+          <option value="highest">最高温</option>
+          <option value="lowest">最低温</option>
+        </select>
+        <select
+          value={timeRange}
+          onChange={e => { setTimeRange(e.target.value); setPage(0) }}
+          style={{ padding: '6px 10px', borderRadius: '6px', border: `1px solid ${border}`, background: darkMode ? '#334155' : '#f1f5f9', color: textPrimary, fontSize: '13px' }}
+        >
+          <option value="">全部时间</option>
+          <option value="24h">24小时</option>
+          <option value="7d">7天</option>
+          <option value="30d">30天</option>
+        </select>
         <div style={{ flex: 1 }} />
         <input
           value={searchInput}
