@@ -65,7 +65,7 @@ services:
     environment:
       SERVICE_NAME: polystrategy-strategy-weather-sweep
       SERVICE_PORT: "8003"
-      WEATHER_SIGNAL_WS_URL: ws://127.0.0.1:8001/ws/signal
+      WEATHER_SIGNAL_WS_URL: ws://127.0.0.1:8001/ws/signals
     volumes:
       - ./logs:/logs
     restart: unless-stopped
