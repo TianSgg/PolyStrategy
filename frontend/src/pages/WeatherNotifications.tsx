@@ -116,6 +116,11 @@ export default function WeatherNotifications({ limit }: Props) {
                   <strong>{item.city}</strong>
                   {item.temperature_label && <span>{item.temperature_label}</span>}
                   {item.outcome && <span>{item.outcome.toUpperCase()}</span>}
+                  {item.payload?.is_from_main !== undefined && (
+                    <span className={`wm-tag wm-tag-${item.payload.is_from_main ? 'primary' : 'info'}`}>
+                      {item.payload.is_from_main ? 'Main' : 'Next'}
+                    </span>
+                  )}
                 </div>
                 {item.event_slug && (
                   <p className="wm-cell-sub">

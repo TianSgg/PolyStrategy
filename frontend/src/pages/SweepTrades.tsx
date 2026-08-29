@@ -302,8 +302,20 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
                       ({t.close_reason})
                     </span>
                   )}
-                  <span style={{ fontSize: '13px', fontWeight: 600, color: textPrimary, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {t.event_slug || t.market_slug || t.event_id.slice(0, 8)}
+                  <span style={{ fontSize: '13px', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {t.event_slug ? (
+                      <a
+                        href={`https://polymarket.com/event/${encodeURIComponent(t.event_slug)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        style={{ color: '#3b82f6', textDecoration: 'none' }}
+                        onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                        onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                      >{t.event_slug}</a>
+                    ) : (
+                      <span style={{ color: textPrimary }}>{t.market_slug || t.event_id.slice(0, 8)}</span>
+                    )}
                   </span>
                   <span style={{ fontSize: '12px', color: textSecondary }}>{formatTime(t.started_at)}</span>
                 </div>
