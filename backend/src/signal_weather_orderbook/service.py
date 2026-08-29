@@ -72,19 +72,21 @@ class _SignalHub:
                     self._clients.pop(client.ws, None)
 
 
-def _build_signal_record(event: WeatherEvent, city: WeatherCity, main_ctx: dict | None, next_candidate_orderbook: dict | None) -> WeatherSignalRecord:
+def _build_signal_record(event: WeatherEvent, city: WeatherCity, main_ctx: dict | None, next_candidate_orderbook: dict | None, signal_id: str | None = None) -> WeatherSignalRecord:
     occurred_at_ms = event.current_orderbook.get("observed_at_unix_ms")
     try:
         occurred_at = datetime.fromtimestamp(int(occurred_at_ms) / 1000, timezone.utc)
     except (TypeError, ValueError, OSError):
         occurred_at = datetime.now(timezone.utc)
     payload = event.payload()
+    is_from_main = bool(main_ctx and main_ctx.get("main_market_slug") == event.asset.market_slug)
+    payload["is_from_main"] = is_from_main
     if main_ctx:
         payload["main_monitor"] = main_ctx
     if next_candidate_orderbook:
         payload["next_candidate_orderbook"] = next_candidate_orderbook
     return WeatherSignalRecord(
-        signal_id=f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
+        signal_id=signal_id or f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
         occurred_at=occurred_at,
         signal_type=event.event_type,
         event_slug=event.asset.event_slug,
@@ -160,13 +162,13 @@ class WeatherService:
             await asyncio.gather(self._rollover_task, return_exceptions=True)
         await self.coordinator.stop()
 
-    async def _on_weather_event(self, event: WeatherEvent, main_ctx=None, next_candidate_orderbook=None) -> None:
+    async def _on_weather_event(self, event: WeatherEvent, main_ctx=None, next_candidate_orderbook=None, signal_id: str | None = None) -> None:
         city = self._city_by_name.get(event.asset.city)
         if city is None:
             logger.error("Unknown weather city: %s", event.asset.city)
             return
         try:
-            record = _build_signal_record(event, city, main_ctx, next_candidate_orderbook)
+            record = _build_signal_record(event, city, main_ctx, next_candidate_orderbook, signal_id)
             inserted = await self.dao.insert_if_absent(record)
         except Exception:
             logger.exception("Failed to persist weather event=%s", event.asset.event_slug)
@@ -175,11 +177,13 @@ class WeatherService:
             self.note_persisted_signal(event.asset.event_slug, record)
 
     async def _broadcast_event(self, event_type: str, payload: dict) -> None:
+        if event_type not in ("sweep", "no_longer_possible", "market_resolved"):
+            return
         asset = payload.get("asset", {})
         current = payload.get("current_orderbook", {})
         event_slug = asset.get("event_slug", "")
         signal = {
-            "event_id": f"{event_slug}:{asset.get('asset_id', '')}:{int(time.time() * 1000)}",
+            "signal_id": payload.get("signal_id", f"{event_type}:{event_slug}:{asset.get('asset_id', '')}:{int(time.time() * 1000)}"),
             "event_type": event_type,
             "token_id": asset.get("asset_id", ""),
             "outcome": asset.get("outcome", ""),

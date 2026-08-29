@@ -19,7 +19,7 @@ from .polymarket_client import PolymarketMarketClient
 logger = logging.getLogger(__name__)
 EventStartedHandler = Callable[[WeatherCity, str, date, str, Optional[MarketCandidate], bool], Awaitable[None]]
 BroadcastHandler = Callable[[str, dict], Awaitable[None]]
-EventHandler = Callable[[WeatherEvent], Awaitable[None]]
+EventHandler = Callable[..., Awaitable[None]]
 BookUpdateHandler = Callable[[dict], None]
 DriftCallback = Callable[[str], Awaitable[None]]
 
@@ -353,10 +353,14 @@ class WeatherEngine:
             main_ctx and main_ctx.get("main_market_slug") == event.asset.market_slug
         )
 
-        asyncio.create_task(self._on_event(event, main_ctx, next_ob), name=f"notify-{event.event_type}")
+        occurred_ms = event.current_orderbook.get("observed_at_unix_ms", int(time() * 1000))
+        signal_id = f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{occurred_ms}"
+
+        asyncio.create_task(self._on_event(event, main_ctx, next_ob, signal_id), name=f"notify-{event.event_type}")
         if self._on_broadcast:
             payload = event.payload()
             payload["is_from_main"] = is_from_main
+            payload["signal_id"] = signal_id
             if main_ctx:
                 payload["main_monitor"] = main_ctx
             if next_ob:

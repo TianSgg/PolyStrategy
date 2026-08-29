@@ -14,8 +14,11 @@ class WeatherSweepAdapter:
         if not data.get("token_id"):
             return None
         event_type = data.get("event_type", "sweep")
+        signal_id = data.get("signal_id")
+        if not signal_id:
+            return None
         return Signal(
-            signal_id=f"weather:{data.get('event_id', '')}",
+            signal_id=signal_id,
             signal_type=event_type,
             token_id=data.get("token_id", ""),
             market_slug=data.get("market_slug", ""),
