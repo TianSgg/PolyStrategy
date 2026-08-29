@@ -3,7 +3,7 @@
 职责：
   - 监听 Polymarket 订单簿变化
   - 持久化信号到 weather_orderbook_signals
-  - 通过 WS /ws/signal 向策略执行服务广播 weather_sweep 信号
+  - 通过 WS /ws/signals 向策略执行服务广播 weather_sweep 信号
   - 提供天气相关 REST API
 """
 import logging
@@ -77,7 +77,7 @@ app = FastAPI(title="Weather Signal Service", lifespan=lifespan)
 app.include_router(weather_router)
 
 
-@app.websocket("/ws/signal")
+@app.websocket("/ws/signals")
 async def signal_websocket(ws: WebSocket):
     """策略执行服务连接此端点订阅 weather_sweep 信号。"""
     await ws.app.state.weather_service.handle_signal_websocket(ws)
