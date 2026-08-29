@@ -270,7 +270,6 @@ class OrderBookWS:
             return
         await self._ws.send(json.dumps({
             "assets_ids": asset_ids,
-            "type": "market",
             "operation": "subscribe",
         }))
 
@@ -279,7 +278,6 @@ class OrderBookWS:
             return
         await self._ws.send(json.dumps({
             "assets_ids": [asset_id],
-            "type": "market",
             "operation": "unsubscribe",
         }))
 
