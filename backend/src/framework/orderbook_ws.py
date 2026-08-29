@@ -223,7 +223,7 @@ class OrderBookWS:
                     logger.info("[OrderBookWS] Connected")
 
                     if self._subscribed_on_wire:
-                        await self._send_subscribe(list(self._subscribed_on_wire))
+                        await self._send_initial_subscribe(list(self._subscribed_on_wire))
 
                     heartbeat = asyncio.create_task(self._heartbeat(ws))
                     try:
@@ -257,15 +257,20 @@ class OrderBookWS:
             except Exception:
                 return
 
-    async def _send_subscribe(self, asset_ids: list[str]) -> None:
+    async def _send_initial_subscribe(self, asset_ids: list[str]) -> None:
         if not self._ws:
             return
         await self._ws.send(json.dumps({
             "assets_ids": asset_ids,
             "type": "market",
+        }))
+
+    async def _send_subscribe(self, asset_ids: list[str]) -> None:
+        if not self._ws:
+            return
+        await self._ws.send(json.dumps({
+            "assets_ids": asset_ids,
             "operation": "subscribe",
-            "level": 2,
-            "initial_dump": True,
         }))
 
     async def _send_unsubscribe(self, asset_id: str) -> None:
@@ -273,7 +278,6 @@ class OrderBookWS:
             return
         await self._ws.send(json.dumps({
             "assets_ids": [asset_id],
-            "type": "market",
             "operation": "unsubscribe",
         }))
 
