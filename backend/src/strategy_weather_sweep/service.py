@@ -108,18 +108,33 @@ class SweepTrade:
             bids = sorted(book.bids.items(), reverse=True)
             asks = sorted(book.asks.items())
             return {
+                "utc": utc,
+                "offset_ms": elapsed,
                 "best_bid": bids[0][0] if bids else None,
                 "best_bid_size": bids[0][1] if bids else None,
                 "best_ask": asks[0][0] if asks else None,
                 "best_ask_size": asks[0][1] if asks else None,
-                "utc": utc,
-                "offset_ms": elapsed,
             }
         return {
-            "best_bid": None, "best_bid_size": None,
-            "best_ask": None, "best_ask_size": None,
             "utc": utc,
             "offset_ms": elapsed,
+            "best_bid": None, "best_bid_size": None,
+            "best_ask": None, "best_ask_size": None,
+        }
+
+    @staticmethod
+    def _bbo_from_signal_snapshot(snapshot: dict, offset_origin_ms: int) -> dict:
+        best_bid = snapshot.get("best_bid")
+        best_ask = snapshot.get("best_ask")
+        observed_ms = snapshot.get("observed_at_unix_ms")
+        return {
+            "utc": snapshot.get("observed_at", ""),
+            "offset_ms": int(observed_ms - offset_origin_ms) if observed_ms else 0,
+            "best_bid": float(best_bid["price"]) if best_bid else None,
+            "best_bid_size": float(best_bid["size"]) if best_bid else None,
+            "best_ask": float(best_ask["price"]) if best_ask else None,
+            "best_ask_size": float(best_ask["size"]) if best_ask else None,
+            "source": "signal_snapshot",
         }
 
     def _order_obj(
@@ -183,13 +198,15 @@ class SweepTrade:
             side="BUY",
             price=str(buy_price),
             size=str(actual_shares),
+            tick_size="0.01",
+            neg_risk=True,
         ))
         risk_task = asyncio.create_task(
             self.risk.start(token_id=self.token_id, orderbook_snapshot=orderbook_snapshot)
         )
 
         await risk_task
-        pre_bbo = self._snapshot_bbo(enter_origin_ms)
+        pre_bbo = self._bbo_from_signal_snapshot(orderbook_snapshot, enter_origin_ms)
 
         result = await order_task
         aft_bbo = self._snapshot_bbo(enter_origin_ms)
@@ -345,7 +362,7 @@ class SweepTrade:
             return
 
         self.state = "exit_working"
-        sell_price = Decimal("1") - self._tick_size
+        sell_price = Decimal("0.01")
         sell_timeout_s = 600
         sell_backoff_base = 2.0
         sell_backoff_cap = 60.0
@@ -365,6 +382,8 @@ class SweepTrade:
                 side="SELL",
                 price=str(sell_price),
                 size=str(sell_size),
+                tick_size="0.01",
+                neg_risk=True,
                 check_balance=False,
             )
 
@@ -535,6 +554,8 @@ class SweepTrade:
                     side="SELL",
                     price="0.01",
                     size=str(sell_size),
+                    tick_size="0.01",
+                    neg_risk=True,
                     check_balance=False,
                 )
 

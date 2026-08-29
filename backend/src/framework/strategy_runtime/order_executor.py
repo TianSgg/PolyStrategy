@@ -115,7 +115,7 @@ class OrderExecutor:
         wallet = (proxy_wallet or self._proxy_wallet).lower()
         params = self._cached_params.get(token_id, {})
         ts = tick_size or params.get("tick_size", "0.01")
-        nr = neg_risk if neg_risk is not None else params.get("neg_risk", False)
+        nr = neg_risk if neg_risk is not None else params.get("neg_risk", True)
 
         order_id = generate_order_id()
 
