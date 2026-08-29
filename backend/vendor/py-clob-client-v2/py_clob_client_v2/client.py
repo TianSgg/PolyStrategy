@@ -322,19 +322,14 @@ class ClobClient:
         return generate_orderbook_summary_hash(orderbook)
 
     def get_tick_size(self, token_id: str) -> TickSize:
-        # if token_id in self.__tick_sizes:
-        #     return self.__tick_sizes[token_id]
-
-        # if token_id in self.__token_condition_map:
-        #     self.get_clob_market_info(self.__token_condition_map[token_id])
-        #     return self.__tick_sizes[token_id]
+        if token_id in self.__tick_sizes:
+            return self.__tick_sizes[token_id]
 
         result = self._get(
             f"{self.host}{GET_TICK_SIZE}", params={"token_id": token_id}
         )
-        # self.__tick_sizes[token_id] = str(result["minimum_tick_size"])
-        # return self.__tick_sizes[token_id]
-        return result
+        self.__tick_sizes[token_id] = str(result["minimum_tick_size"])
+        return self.__tick_sizes[token_id]
 
     def get_neg_risk(self, token_id: str) -> bool:
         if token_id in self.__neg_risk:
