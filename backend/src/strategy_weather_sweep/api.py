@@ -51,8 +51,6 @@ async def create_config(data: CreateConfigRequest, request: Request, current_use
         "direction_filter": data.direction_filter,
         "stop_loss_ratio": data.stop_loss_ratio,
         "exit_wait_ms": data.exit_wait_ms,
-        "tick_verify_retries": data.tick_verify_retries,
-        "tick_verify_backoff_ms": data.tick_verify_backoff_ms,
     })
     await _reload(request)
     return {"config_id": config_id}

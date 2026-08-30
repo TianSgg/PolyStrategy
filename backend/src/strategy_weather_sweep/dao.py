@@ -22,8 +22,7 @@ class WeatherSweepConfigDAO:
             SELECT c.id, c.owner_user_id, c.account_id, c.name, c.params_version,
                    c.fixed_entry_shares, c.entry_wait_ms, c.sweep_outcome_filter,
                    c.signal_source_filter, c.signal_threshold_filter, c.direction_filter,
-                   c.stop_loss_ratio, c.exit_wait_ms, c.tick_verify_retries,
-                   c.tick_verify_backoff_ms,
+                   c.stop_loss_ratio, c.exit_wait_ms,
                    a.proxy_wallet
             FROM {self.TABLE} c
             JOIN accounts a ON a.id = c.account_id
@@ -48,8 +47,6 @@ class WeatherSweepConfigDAO:
                 "direction_filter": d.get("direction_filter", "all"),
                 "stop_loss_ratio": str(d["stop_loss_ratio"]),
                 "exit_wait_ms": int(d["exit_wait_ms"]),
-                "tick_verify_retries": int(d["tick_verify_retries"]),
-                "tick_verify_backoff_ms": int(d["tick_verify_backoff_ms"]),
             }
             result.append(d)
         return result
@@ -107,13 +104,13 @@ class WeatherSweepConfigDAO:
                 owner_user_id, account_id, name, enabled,
                 fixed_entry_shares, entry_wait_ms, sweep_outcome_filter,
                 signal_source_filter, signal_threshold_filter, direction_filter,
-                stop_loss_ratio, exit_wait_ms, tick_verify_retries, tick_verify_backoff_ms,
+                stop_loss_ratio, exit_wait_ms,
                 created_at, updated_at
             ) VALUES (
                 %(owner_user_id)s, %(account_id)s, %(name)s, %(enabled)s,
                 %(fixed_entry_shares)s, %(entry_wait_ms)s, %(sweep_outcome_filter)s,
                 %(signal_source_filter)s, %(signal_threshold_filter)s, %(direction_filter)s,
-                %(stop_loss_ratio)s, %(exit_wait_ms)s, %(tick_verify_retries)s, %(tick_verify_backoff_ms)s,
+                %(stop_loss_ratio)s, %(exit_wait_ms)s,
                 NOW(3), NOW(3)
             )
         """
@@ -130,7 +127,6 @@ class WeatherSweepConfigDAO:
             "name", "enabled", "fixed_entry_shares", "entry_wait_ms",
             "sweep_outcome_filter", "signal_source_filter", "signal_threshold_filter",
             "direction_filter", "stop_loss_ratio", "exit_wait_ms",
-            "tick_verify_retries", "tick_verify_backoff_ms",
         ):
             if key in data:
                 sets.append(f"{key} = %s")

@@ -18,8 +18,6 @@ class CreateConfigRequest(BaseModel):
     direction_filter: str = "all"
     stop_loss_ratio: float = 0.60
     exit_wait_ms: int = 5000
-    tick_verify_retries: int = 3
-    tick_verify_backoff_ms: int = 1000
 
 
 class UpdateConfigRequest(BaseModel):
@@ -33,5 +31,3 @@ class UpdateConfigRequest(BaseModel):
     direction_filter: Optional[str] = None
     stop_loss_ratio: Optional[float] = None
     exit_wait_ms: Optional[int] = None
-    tick_verify_retries: Optional[int] = None
-    tick_verify_backoff_ms: Optional[int] = None

@@ -225,16 +225,10 @@ class OrderBookWS:
                     if self._subscribed_on_wire:
                         await self._send_initial_subscribe(list(self._subscribed_on_wire))
 
-                    heartbeat = asyncio.create_task(self._heartbeat(ws))
-                    try:
-                        async for raw in ws:
-                            if not self._running:
-                                break
-                            if raw == "PONG":
-                                continue
-                            self._dispatch(raw)
-                    finally:
-                        heartbeat.cancel()
+                    async for raw in ws:
+                        if not self._running:
+                            break
+                        self._dispatch(raw)
 
             except asyncio.CancelledError:
                 raise
@@ -249,35 +243,40 @@ class OrderBookWS:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30)
 
-    async def _heartbeat(self, ws) -> None:
-        while True:
-            await asyncio.sleep(10)
-            try:
-                await ws.send("PING")
-            except Exception:
-                return
-
     async def _send_initial_subscribe(self, asset_ids: list[str]) -> None:
-        if not self._ws:
+        if not self._ws or not asset_ids:
             return
-        await self._ws.send(json.dumps({
+        msg = json.dumps({
             "assets_ids": asset_ids,
             "type": "market",
-        }))
+            "operation": "subscribe",
+            "level": 2,
+            "initial_dump": True,
+            "custom_feature_enabled": True,
+        })
+        logger.debug("[OrderBookWS] Initial subscribe: %d assets", len(asset_ids))
+        await self._ws.send(msg)
 
     async def _send_subscribe(self, asset_ids: list[str]) -> None:
-        if not self._ws:
+        if not self._ws or not asset_ids:
             return
-        await self._ws.send(json.dumps({
+        msg = json.dumps({
             "assets_ids": asset_ids,
+            "type": "market",
             "operation": "subscribe",
-        }))
+            "level": 2,
+            "initial_dump": True,
+            "custom_feature_enabled": True,
+        })
+        logger.debug("[OrderBookWS] Subscribe: %d assets", len(asset_ids))
+        await self._ws.send(msg)
 
     async def _send_unsubscribe(self, asset_id: str) -> None:
         if not self._ws:
             return
         await self._ws.send(json.dumps({
             "assets_ids": [asset_id],
+            "type": "market",
             "operation": "unsubscribe",
         }))
 

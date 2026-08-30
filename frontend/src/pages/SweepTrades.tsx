@@ -56,6 +56,15 @@ const STATUS_COLORS: Record<string, string> = {
   closed: '#64748b',
 }
 
+const CLOSE_REASON_LABELS: Record<string, string> = {
+  tick_exit: 'Tick退出 tick_exit',
+  stop_loss: '止损 stop_loss',
+  force_exit: '强制退出 force_exit',
+  buy_failed: '买入失败 buy_failed',
+  timeout_no_fill: '入场超时 timeout_no_fill',
+  sell_failed: '卖出失败 sell_failed',
+}
+
 const PHASE_COLORS: Record<string, string> = {
   entry: '#3b82f6',
   monitor: '#8b5cf6',
@@ -161,7 +170,8 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
 
   const formatTime = (ts: string | null) => {
     if (!ts) return '--'
-    return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const utc = ts.endsWith('Z') ? ts : ts + 'Z'
+    return new Date(utc).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }
 
   const formatDuration = (ms: number | null) => {
@@ -299,7 +309,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
                   </span>
                   {t.close_reason && (
                     <span style={{ fontSize: '11px', color: textSecondary }}>
-                      ({t.close_reason})
+                      ({CLOSE_REASON_LABELS[t.close_reason] || t.close_reason})
                     </span>
                   )}
                   <span style={{ fontSize: '13px', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

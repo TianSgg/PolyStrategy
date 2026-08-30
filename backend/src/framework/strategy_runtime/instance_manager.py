@@ -37,8 +37,7 @@ class InstanceManager:
             SELECT c.id, c.owner_user_id, c.account_id, c.name, c.enabled,
                    c.fixed_entry_shares, c.entry_wait_ms, c.sweep_outcome_filter,
                    c.signal_source_filter, c.signal_threshold_filter,
-                   c.stop_loss_ratio, c.exit_wait_ms, c.tick_verify_retries,
-                   c.tick_verify_backoff_ms, c.params_version,
+                   c.stop_loss_ratio, c.exit_wait_ms, c.params_version,
                    a.proxy_wallet
             FROM {self._config_table} c
             JOIN accounts a ON a.id = c.account_id
@@ -62,8 +61,6 @@ class InstanceManager:
                 "signal_threshold_filter": d.get("signal_threshold_filter", "all"),
                 "stop_loss_ratio": str(d["stop_loss_ratio"]),
                 "exit_wait_ms": int(d["exit_wait_ms"]),
-                "tick_verify_retries": int(d["tick_verify_retries"]),
-                "tick_verify_backoff_ms": int(d["tick_verify_backoff_ms"]),
             }
             configs.append(StrategyInstanceConfig(
                 id=d["id"],
@@ -87,8 +84,7 @@ class InstanceManager:
             SELECT c.id, c.owner_user_id, c.account_id, c.name, c.enabled,
                    c.fixed_entry_shares, c.entry_wait_ms, c.sweep_outcome_filter,
                    c.signal_source_filter, c.signal_threshold_filter,
-                   c.stop_loss_ratio, c.exit_wait_ms, c.tick_verify_retries,
-                   c.tick_verify_backoff_ms, c.params_version,
+                   c.stop_loss_ratio, c.exit_wait_ms, c.params_version,
                    a.proxy_wallet
             FROM {self._config_table} c
             JOIN accounts a ON a.id = c.account_id
@@ -112,8 +108,6 @@ class InstanceManager:
             "signal_threshold_filter": d.get("signal_threshold_filter", "all"),
             "stop_loss_ratio": str(d["stop_loss_ratio"]),
             "exit_wait_ms": int(d["exit_wait_ms"]),
-            "tick_verify_retries": int(d["tick_verify_retries"]),
-            "tick_verify_backoff_ms": int(d["tick_verify_backoff_ms"]),
         }
         return StrategyInstanceConfig(
             id=d["id"],

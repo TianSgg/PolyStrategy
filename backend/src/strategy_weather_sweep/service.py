@@ -168,6 +168,16 @@ class SweepTrade:
                 market_slug=signal.market_slug,
                 event_slug=signal.payload.get("event_slug"),
             )
+            snap_bid = orderbook_snapshot.get("best_bid")
+            snap_ask = orderbook_snapshot.get("best_ask")
+            bid_price = Decimal(str(snap_bid["price"])) if snap_bid else None
+            ask_price = Decimal(str(snap_ask["price"])) if snap_ask else None
+            if bid_price is not None and ask_price is not None:
+                snap_mid = (bid_price + ask_price) / 2
+            else:
+                snap_mid = bid_price or ask_price
+            stop_ratio = Decimal(self._config.get("stop_loss_ratio", "0.60"))
+            snap_threshold = snap_mid * stop_ratio if snap_mid else None
             self._el.log_step("signal_received", {
                 "signal_id": signal.signal_id,
                 "token_id": signal.token_id,
@@ -176,8 +186,8 @@ class SweepTrade:
                 "city": signal.payload.get("city"),
                 "direction": signal.payload.get("direction"),
                 "utc": self._utc_str(),
-                "risk_ref_mid": str(self.risk.reference_mid),
-                "risk_threshold": str(self.risk.threshold),
+                "risk_ref_mid": str(snap_mid),
+                "risk_threshold": str(snap_threshold),
             }, phase="entry")
             self._insert_trade_summary(signal)
 
@@ -190,7 +200,9 @@ class SweepTrade:
                     "requested_size": str(fixed_shares),
                     "available_cash": str(available),
                 }, phase="entry")
-            self._close("buy_failed", phase="entry")
+            self._close("buy_failed", phase="entry", extra={
+                "error": f"no_cash: requested={fixed_shares}, available={available}",
+            })
             return
 
         order_task = asyncio.create_task(self._executor.place_order(
@@ -227,7 +239,9 @@ class SweepTrade:
                     "pre_bbo": pre_bbo,
                     "aft_bbo": aft_bbo,
                 }, phase="entry")
-            self._close("buy_failed", phase="entry")
+            self._close("buy_failed", phase="entry", extra={
+                "error": result.error,
+            })
             return
 
         # --- Layer 1: order_placed (CLOB accepted) ---
@@ -333,6 +347,8 @@ class SweepTrade:
 
     async def _on_tick_change(self, new_tick: Decimal) -> None:
         if self._tick_verified or self.state not in ("entry_working", "exit_working"):
+            return
+        if self._tick_size == new_tick:
             return
 
         if new_tick == Decimal("0.001"):
@@ -684,7 +700,7 @@ class SweepTrade:
 
     # ==================== Close & Trade Summary ====================
 
-    def _close(self, reason: str, phase: str = "exit") -> None:
+    def _close(self, reason: str, phase: str = "exit", extra: dict | None = None) -> None:
         duration_ms = int(time.time() * 1000) - self._event_start_ms if self._event_start_ms else 0
 
         pnl = None
@@ -703,11 +719,14 @@ class SweepTrade:
         })
 
         if self._el:
-            self._el.log_step("event_closed", {
+            detail = {
                 "reason": reason,
                 "total_position": str(self.position_shares),
                 "duration_ms": duration_ms,
-            }, phase=phase)
+            }
+            if extra:
+                detail.update(extra)
+            self._el.log_step("event_closed", detail, phase=phase)
             self._el.end_event()
 
         self.state = "closed"
@@ -728,6 +747,9 @@ class SweepTrade:
                 "event_slug": signal.payload.get("event_slug"),
                 "city": signal.payload.get("city"),
                 "direction": signal.payload.get("direction"),
+                "outcome": signal.payload.get("outcome"),
+                "temperature_label": signal.payload.get("temperature_label"),
+                "is_from_main": 1 if signal.payload.get("is_from_main", True) else 0,
                 "status": "entry_working",
                 "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
             })

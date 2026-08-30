@@ -183,8 +183,6 @@ CREATE TABLE strategy_weather_sweep_configs (
   direction_filter VARCHAR(8) NOT NULL DEFAULT 'all',
   stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
   exit_wait_ms INT NOT NULL DEFAULT 5000,
-  tick_verify_retries SMALLINT UNSIGNED NOT NULL DEFAULT 3,
-  tick_verify_backoff_ms INT NOT NULL DEFAULT 1000,
 
   params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
   deleted_at DATETIME(3) DEFAULT NULL,

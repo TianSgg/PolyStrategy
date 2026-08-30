@@ -24,8 +24,6 @@ interface SweepConfig {
   direction_filter: string
   stop_loss_ratio: number
   exit_wait_ms: number
-  tick_verify_retries: number
-  tick_verify_backoff_ms: number
   params_version: number
   created_at: string
   updated_at: string
@@ -46,8 +44,15 @@ const DEFAULT_FORM = {
   direction_filter: 'all',
   stop_loss_ratio: 0.6,
   exit_wait_ms: 5000,
-  tick_verify_retries: 3,
-  tick_verify_backoff_ms: 1000,
+}
+
+const CLOSE_REASON_LABELS: Record<string, string> = {
+  tick_exit: 'Tick退出 tick_exit',
+  stop_loss: '止损 stop_loss',
+  force_exit: '强制退出 force_exit',
+  buy_failed: '买入失败 buy_failed',
+  timeout_no_fill: '入场超时 timeout_no_fill',
+  sell_failed: '卖出失败 sell_failed',
 }
 
 export default function StrategyDashboard({ darkMode }: Props) {
@@ -207,8 +212,6 @@ export default function StrategyDashboard({ darkMode }: Props) {
       direction_filter: cfg.direction_filter || 'all',
       stop_loss_ratio: cfg.stop_loss_ratio,
       exit_wait_ms: cfg.exit_wait_ms,
-      tick_verify_retries: cfg.tick_verify_retries,
-      tick_verify_backoff_ms: cfg.tick_verify_backoff_ms,
     })
     setShowForm(true)
   }
@@ -461,10 +464,35 @@ export default function StrategyDashboard({ darkMode }: Props) {
                             }}>
                               {t.status === 'entry_working' ? '入场中' : t.status === 'exit_working' ? '出场中' : '已平仓'}
                             </span>
-                            {t.close_reason && <span style={{ fontSize: '11px', color: textSecondary }}>({t.close_reason})</span>}
-                            <span style={{ fontWeight: 500, color: textPrimary, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {t.event_slug || t.market_slug || t.event_id.slice(0, 8)}
+                            {t.close_reason && <span style={{ fontSize: '11px', color: textSecondary }}>({CLOSE_REASON_LABELS[t.close_reason] || t.close_reason})</span>}
+                            <span style={{ fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {t.event_slug ? (
+                                <a
+                                  href={`https://polymarket.com/event/${encodeURIComponent(t.event_slug)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  style={{ color: '#3b82f6', textDecoration: 'none' }}
+                                  onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                                  onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                                >{t.event_slug}</a>
+                              ) : (
+                                <span style={{ color: textPrimary }}>{t.market_slug || t.event_id.slice(0, 8)}</span>
+                              )}
                             </span>
+                            {t.outcome && (
+                              <span style={{ fontSize: '11px', padding: '1px 5px', borderRadius: '3px', fontWeight: 500,
+                                background: t.outcome === 'yes' ? '#22c55e20' : '#ef444420',
+                                color: t.outcome === 'yes' ? '#22c55e' : '#ef4444',
+                              }}>{t.outcome.toUpperCase()}</span>
+                            )}
+                            {t.is_from_main !== null && t.is_from_main !== undefined && (
+                              <span style={{ fontSize: '10px', padding: '1px 4px', borderRadius: '3px',
+                                background: t.is_from_main ? '#3b82f620' : '#8b5cf620',
+                                color: t.is_from_main ? '#3b82f6' : '#8b5cf6',
+                              }}>{t.is_from_main ? 'Main' : 'Next'}</span>
+                            )}
+                            {t.temperature_label && <span style={{ fontSize: '11px', color: textSecondary }}>{t.temperature_label}</span>}
                             {t.city && <span style={{ color: textSecondary }}>{t.city} {t.direction === 'highest' ? '↑' : t.direction === 'lowest' ? '↓' : ''}</span>}
                             {t.pnl != null && (
                               <span style={{ fontWeight: 600, color: parseFloat(t.pnl) > 0 ? '#22c55e' : parseFloat(t.pnl) < 0 ? '#ef4444' : textSecondary }}>
@@ -472,7 +500,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                               </span>
                             )}
                             <span style={{ color: textSecondary, fontSize: '11px' }}>
-                              {t.started_at ? new Date(t.started_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                              {t.started_at ? new Date(t.started_at.endsWith('Z') ? t.started_at : t.started_at + 'Z').toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
                             </span>
                           </div>
                         </div>
@@ -504,7 +532,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                                         </span>
                                         <span style={{ fontSize: '12px', fontWeight: 600, color: textPrimary }}>{step.step}</span>
                                         <span style={{ fontSize: '10px', color: textSecondary, marginLeft: 'auto' }}>
-                                          {step.occurred_at ? new Date(step.occurred_at).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                                          {step.occurred_at ? new Date(step.occurred_at.endsWith('Z') ? step.occurred_at : step.occurred_at + 'Z').toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
                                         </span>
                                       </div>
                                       {step.detail && Object.keys(step.detail).length > 0 && (
