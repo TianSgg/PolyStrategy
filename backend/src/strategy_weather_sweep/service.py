@@ -35,6 +35,7 @@ from framework.strategy_runtime.event_logger import EventLogger
 from framework.strategy_runtime.interfaces import Signal
 from framework.strategy_runtime.order_executor import OrderExecutor
 from framework.strategy_runtime.tick_verifier import TickVerifier
+from framework.user_ws import FillEvent
 from strategy_weather_sweep.dao import WeatherSweepTradeDAO
 from strategy_weather_sweep.internal.risk_monitor import SweepRiskMonitor
 
@@ -270,7 +271,15 @@ class SweepTrade:
             self._record_entry_complete(result.order_id)
             return
 
-        # partial or live → start timeout timer
+        # partial or live → WS 监听 + 超时计时器
+        self.buy_price = buy_price
+        user_ws = await self._executor.ensure_user_ws()
+        user_ws.watch_order(
+            order_id=result.order_id, token_id=self.token_id, side="BUY",
+            price=self.buy_price,
+            initial_matched=Decimal(result.filled_size),
+            on_fill=self._on_buy_fill,
+        )
         entry_wait_ms = int(self._config.get("entry_wait_ms", 1200000))
         self._entry_timer = asyncio.create_task(
             self._entry_timeout(entry_wait_ms / 1000.0)
@@ -316,6 +325,18 @@ class SweepTrade:
             }, phase="entry")
         self._update_trade_summary({"status": "exit_working"})
 
+    async def _on_buy_fill(self, event: FillEvent) -> None:
+        if self.state == "closed":
+            return
+        self._record_buy_fill(event.order_id, event.fill_size, event.fill_price,
+                              source=event.source, trade_id=event.trade_id)
+        if event.total_matched >= self._order_size:
+            if self._entry_timer and not self._entry_timer.done():
+                self._entry_timer.cancel()
+            self.entry_order_id = None
+            (await self._executor.ensure_user_ws()).unwatch_order(event.order_id)
+            self._record_entry_complete(event.order_id)
+
     async def _entry_timeout(self, wait_sec: float) -> None:
         await asyncio.sleep(wait_sec)
         if self.state == "closed":
@@ -323,9 +344,23 @@ class SweepTrade:
 
         cancelled_id = None
         if self.entry_order_id:
-            cancelled_id = self.entry_order_id
-            await self._executor.cancel_order(self.entry_order_id)
+            order_id = self.entry_order_id
+            cancelled_id = order_id
+            user_ws = await self._executor.ensure_user_ws()
+            user_ws.unwatch_order(order_id)
+            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
             self.entry_order_id = None
+            if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
+                missed = cancel_result.final_matched - self.position_shares
+                self._record_buy_fill(order_id, missed, self.buy_price,
+                                      source="cancel_reconcile")
+                if self._el:
+                    self._el.log_step("fill_reconcile", {
+                        "side": "BUY", "order_id": order_id,
+                        "clob_matched": str(cancel_result.final_matched),
+                        "memory_before": str(self.position_shares - missed),
+                        "reconciled": str(missed),
+                    }, phase="entry")
 
         unfilled = self._order_size - self.position_shares
 
@@ -463,8 +498,48 @@ class SweepTrade:
                 # partial was labeled "filled" but position remains — continue selling
                 continue
 
-            # live → wait for WS fills (TODO: implement User WS fill detection)
-            # For now, return and wait. sell_timeout will be triggered when WS is added.
+            # live → WS 监听 + 等待全部成交或超时
+            self.sell_price = sell_price
+            sell_start_shares = self.position_shares
+            user_ws = await self._executor.ensure_user_ws()
+            sell_done = asyncio.Event()
+            self._sell_done_event = sell_done
+
+            user_ws.watch_order(
+                order_id=result.order_id, token_id=self.token_id, side="SELL",
+                price=self.sell_price,
+                initial_matched=Decimal(result.filled_size),
+                on_fill=self._on_sell_fill,
+            )
+
+            try:
+                remaining = deadline - time.monotonic()
+                await asyncio.wait_for(sell_done.wait(), timeout=max(remaining, 0))
+            except asyncio.TimeoutError:
+                user_ws.unwatch_order(result.order_id)
+                cancel_result = await self._executor.cancel_order_with_fill_check(result.order_id)
+                self.exit_order_id = None
+                sold_by_clob = cancel_result.final_matched
+                sold_by_memory = sell_start_shares - self.position_shares
+                if sold_by_clob > sold_by_memory:
+                    missed = sold_by_clob - sold_by_memory
+                    self._record_sell_fill(result.order_id, missed, self.sell_price,
+                                           source="cancel_reconcile")
+                    if self._el:
+                        self._el.log_step("fill_reconcile", {
+                            "side": "SELL", "order_id": result.order_id,
+                            "clob_matched": str(sold_by_clob),
+                            "memory_before": str(sold_by_memory),
+                            "reconciled": str(missed),
+                        }, phase="exit")
+                continue
+
+            # 全部成交
+            user_ws.unwatch_order(result.order_id)
+            self.exit_order_id = None
+            self._record_sell_complete(result.order_id, sell_fill_count, sell_placed_ms)
+            await self.risk.stop()
+            self._close("tick_exit", phase="exit")
             return
 
         await self.risk.stop()
@@ -517,6 +592,14 @@ class SweepTrade:
                 "elapsed_ms": elapsed_ms,
             }, phase="exit")
 
+    async def _on_sell_fill(self, event: FillEvent) -> None:
+        if self.state == "closed":
+            return
+        self._record_sell_fill(event.order_id, event.fill_size, event.fill_price,
+                               source=event.source, trade_id=event.trade_id)
+        if self.position_shares <= 0 and hasattr(self, '_sell_done_event'):
+            self._sell_done_event.set()
+
     # ==================== Risk Exit ====================
 
     async def _risk_exit(self) -> None:
@@ -540,31 +623,57 @@ class SweepTrade:
                 "position_shares": str(self.position_shares),
             }, phase="exit_risk")
 
+        user_ws = await self._executor.ensure_user_ws()
+
+        # 缺口①: 撤买单 + REST 校准
         if self.entry_order_id:
-            cancelled = await self._executor.cancel_order(self.entry_order_id)
+            order_id = self.entry_order_id
+            user_ws.unwatch_order(order_id)
+            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
             if self._el:
                 self._el.log_step("risk_cancel_buy", {
-                    "order_id": self.entry_order_id,
-                    "success": cancelled,
+                    "order_id": order_id,
+                    "success": cancel_result.cancelled,
+                    "final_matched": str(cancel_result.final_matched),
                 }, phase="exit_risk")
             self.entry_order_id = None
+            if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
+                missed = cancel_result.final_matched - self.position_shares
+                self._record_buy_fill(order_id, missed,
+                                      getattr(self, 'buy_price', Decimal("0.99")),
+                                      source="cancel_reconcile")
+                if self._el:
+                    self._el.log_step("fill_reconcile", {
+                        "side": "BUY", "order_id": order_id,
+                        "clob_matched": str(cancel_result.final_matched),
+                        "memory_before": str(self.position_shares - missed),
+                        "reconciled": str(missed),
+                    }, phase="exit_risk")
 
+        # 缺口②: 撤卖单 + REST 校准
         if self.exit_order_id:
-            cancelled = await self._executor.cancel_order(self.exit_order_id)
+            order_id = self.exit_order_id
+            user_ws.unwatch_order(order_id)
+            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
             if self._el:
                 self._el.log_step("risk_cancel_sell", {
-                    "order_id": self.exit_order_id,
-                    "success": cancelled,
+                    "order_id": order_id,
+                    "success": cancel_result.cancelled,
+                    "final_matched": str(cancel_result.final_matched),
                 }, phase="exit_risk")
             self.exit_order_id = None
 
+        # 缺口③: 清仓循环 — live 时用 WS + asyncio.Event 等待
         if self.position_shares > 0:
             risk_origin_ms = int(time.time() * 1000)
             risk_deadline = time.monotonic() + 600
             risk_attempt = 0
+            risk_sell_wait_s = 30
+
             while self.position_shares > 0 and time.monotonic() < risk_deadline:
                 risk_attempt += 1
                 sell_size = self.position_shares
+                sell_start_shares = self.position_shares
                 result = await self._executor.place_order(
                     token_id=self.token_id,
                     side="SELL",
@@ -591,7 +700,6 @@ class SweepTrade:
                         await asyncio.sleep(backoff)
                     continue
 
-                # sell_order_placed
                 if self._el:
                     self._el.log_step("risk_sell_order_placed", {
                         "order": self._order_obj(
@@ -626,8 +734,32 @@ class SweepTrade:
                         break
                     continue
 
-                # live → wait (TODO: User WS)
-                break
+                # live → WS 监听 + 等待
+                sell_done = asyncio.Event()
+                self._sell_done_event = sell_done
+
+                user_ws.watch_order(
+                    order_id=result.order_id, token_id=self.token_id, side="SELL",
+                    price=Decimal("0.01"),
+                    initial_matched=Decimal(result.filled_size),
+                    on_fill=self._on_sell_fill_risk,
+                )
+
+                try:
+                    remaining = min(risk_sell_wait_s, risk_deadline - time.monotonic())
+                    await asyncio.wait_for(sell_done.wait(), timeout=max(remaining, 0))
+                except asyncio.TimeoutError:
+                    pass
+
+                user_ws.unwatch_order(result.order_id)
+                cancel_result = await self._executor.cancel_order_with_fill_check(result.order_id)
+                sold_by_clob = cancel_result.final_matched
+                sold_by_memory = sell_start_shares - self.position_shares
+                if sold_by_clob > sold_by_memory:
+                    missed = sold_by_clob - sold_by_memory
+                    self._record_sell_fill_risk(result.order_id, missed, Decimal("0.01"))
+                if self.position_shares <= 0:
+                    break
 
         self._close("stop_loss", phase="exit_risk")
 
@@ -653,6 +785,13 @@ class SweepTrade:
             "exited_at": datetime.now(timezone.utc).replace(tzinfo=None),
         })
 
+    async def _on_sell_fill_risk(self, event: FillEvent) -> None:
+        if self.state == "closed":
+            return
+        self._record_sell_fill_risk(event.order_id, event.fill_size, event.fill_price)
+        if self.position_shares <= 0 and hasattr(self, '_sell_done_event'):
+            self._sell_done_event.set()
+
     # ==================== Force Exit ====================
 
     async def force_exit(self, reason: str = "config_disabled") -> None:
@@ -671,21 +810,34 @@ class SweepTrade:
                 "position_shares": str(self.position_shares),
             }, phase="exit_force")
 
+        user_ws = await self._executor.ensure_user_ws()
+
         if self.entry_order_id:
-            cancelled = await self._executor.cancel_order(self.entry_order_id)
+            order_id = self.entry_order_id
+            user_ws.unwatch_order(order_id)
+            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
             if self._el:
                 self._el.log_step("buy_cancelled", {
-                    "order_id": self.entry_order_id,
-                    "success": cancelled,
+                    "order_id": order_id,
+                    "success": cancel_result.cancelled,
+                    "final_matched": str(cancel_result.final_matched),
                 }, phase="exit_force")
             self.entry_order_id = None
+            if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
+                missed = cancel_result.final_matched - self.position_shares
+                self._record_buy_fill(order_id, missed,
+                                      getattr(self, 'buy_price', Decimal("0.99")),
+                                      source="cancel_reconcile")
 
         if self.exit_order_id:
-            cancelled = await self._executor.cancel_order(self.exit_order_id)
+            order_id = self.exit_order_id
+            user_ws.unwatch_order(order_id)
+            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
             if self._el:
                 self._el.log_step("sell_cancelled", {
-                    "order_id": self.exit_order_id,
-                    "success": cancelled,
+                    "order_id": order_id,
+                    "success": cancel_result.cancelled,
+                    "final_matched": str(cancel_result.final_matched),
                 }, phase="exit_force")
             self.exit_order_id = None
 
@@ -701,6 +853,12 @@ class SweepTrade:
     # ==================== Close & Trade Summary ====================
 
     def _close(self, reason: str, phase: str = "exit", extra: dict | None = None) -> None:
+        user_ws = getattr(self._executor, '_user_ws', None)
+        if user_ws:
+            for oid in (self.entry_order_id, self.exit_order_id):
+                if oid:
+                    user_ws.unwatch_order(oid)
+
         duration_ms = int(time.time() * 1000) - self._event_start_ms if self._event_start_ms else 0
 
         pnl = None

@@ -20,6 +20,7 @@ from framework.trading import place_limit_order, cancel_order as _cancel_order
 from framework.trading.provider import get_client
 from framework.strategy_runtime.interfaces import CancelResult, OrderResult
 from framework.strategy_runtime.balance_poller import BalancePoller, get_or_create_poller
+from framework.user_ws import UserWS, get_or_create_user_ws
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class OrderExecutor:
         self._proxy_wallet = proxy_wallet
         self._cached_params: Dict[str, Dict[str, Any]] = {}
         self._poller: Optional[BalancePoller] = None
+        self._user_ws: Optional[UserWS] = None
         self._keepalive_task: Optional[asyncio.Task] = None
 
     def cache_market_params(
@@ -54,6 +56,12 @@ class OrderExecutor:
         if self._poller is None or self._poller._proxy_wallet != wallet:
             self._poller = await get_or_create_poller(wallet)
         return self._poller
+
+    async def ensure_user_ws(self) -> UserWS:
+        """懒加载，首次下单时创建 WS 连接。"""
+        if self._user_ws is None:
+            self._user_ws = await get_or_create_user_ws(self._proxy_wallet)
+        return self._user_ws
 
     async def warmup(self) -> None:
         """预热 HTTP 连接（建立 TCP+TLS）并启动保活任务。"""

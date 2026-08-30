@@ -35,6 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from framework.consul import consul_lifespan
 from framework.instance_pool import InstancePool, InstanceConfig
 from framework.orderbook_ws import OrderBookWS
+from framework.user_ws import stop_all_user_ws
 from framework.strategy_runtime.signal_client import SignalWSClient
 from framework.strategy_runtime.weather_adapter import WeatherSweepAdapter
 from framework.trading.provider import set_client_provider
@@ -117,6 +118,7 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
             await pool.stop()
+            await stop_all_user_ws()
             await orderbook_ws.stop()
 
 
