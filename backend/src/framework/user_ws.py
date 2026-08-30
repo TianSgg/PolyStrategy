@@ -251,7 +251,7 @@ class UserWS:
         if not order_id:
             return
 
-        operation = data.get("operation", "")
+        operation = data.get("type", "")
 
         if operation == "CANCELLATION":
             watch = self._watches.get(order_id)
