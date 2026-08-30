@@ -1,8 +1,16 @@
 # Weather Sweep Tick Size 缓存与 SELL 熔断修复方案
 
 > 日期: 2026-08-30  
-> 状态: 设计中，未实施  
+> 状态: 已实施（2026-08-31）
 > 主题: Warsaw tick size 事故分析、tick size 权威来源设计、SELL 失败熔断与终态语义
+
+实施记录：
+
+1. 本地与策略服务统一使用 vendored `py_clob_client_v2`。
+2. `TickSizeService` 已接入 BUY/SELL、tick 验证与风控轮询。
+3. SELL 已接入错误分类、事件级熔断与 `invalid_tick_size` refresh 后重试一次。
+4. `strategy_weather_sweep_trades.status` 已增加 `exit_failed`，本地 MySQL enum 已同步扩展。
+5. `force_exit` 已区分清仓成功与仍有仓位；策略级同一错误跨 event 熔断已接入。
 
 ---
 
