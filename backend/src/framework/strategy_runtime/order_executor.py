@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 
 from framework.trading import place_limit_order, cancel_order as _cancel_order
 from framework.trading.provider import get_client
-from framework.strategy_runtime.interfaces import OrderResult
+from framework.strategy_runtime.interfaces import CancelResult, OrderResult
 from framework.strategy_runtime.balance_poller import BalancePoller, get_or_create_poller
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,35 @@ class OrderExecutor:
         except Exception as e:
             logger.error("Cancel failed: order=%s err=%s", order_id, e)
             return False
+
+    async def _get_order(self, order_id: str) -> dict:
+        """GET /data/order/{orderID}"""
+        wallet = self._proxy_wallet.lower()
+        client = get_client(wallet)
+        return await asyncio.to_thread(client.get_order, order_id)
+
+    async def cancel_order_with_fill_check(self, order_id: str) -> CancelResult:
+        """撤单 + REST 查询最终成交量。"""
+        cancelled = await self.cancel_order(order_id)
+        try:
+            info = await self._get_order(order_id)
+            if info.get("status") == "LIVE":
+                await asyncio.sleep(0.5)
+                info = await self._get_order(order_id)
+            return CancelResult(
+                order_id=order_id,
+                cancelled=cancelled,
+                final_matched=Decimal(info.get("size_matched", "0")),
+                status=info.get("status", "unknown"),
+            )
+        except Exception as e:
+            logger.warning("get_order after cancel failed: %s", e)
+            return CancelResult(
+                order_id=order_id,
+                cancelled=cancelled,
+                final_matched=Decimal("-1"),
+                status="query_failed",
+            )
 
     def _parse_result(
         self, order_id: str, result: Optional[Dict[str, Any]], send_ns: int,

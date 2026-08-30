@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Protocol
 
 
@@ -73,3 +74,11 @@ class OrderResult:
     clob_status: str | None = None      # raw CLOB status: "matched", "live", "delayed"
     clob_taking: str | None = None      # raw takingAmount
     clob_making: str | None = None      # raw makingAmount
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    order_id: str
+    cancelled: bool
+    final_matched: Decimal
+    status: str

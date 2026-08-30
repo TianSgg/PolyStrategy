@@ -3,6 +3,7 @@
 framework 内部通过 get_client(proxy_wallet) 获取 ClobClient 实例，
 不再直接依赖 account_service。
 """
+from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
 
 from py_clob_client_v2 import ClobClient
@@ -35,3 +36,21 @@ def get_account_name(proxy_wallet: str) -> str:
     if _provider is None:
         return proxy_wallet[:8]
     return _provider.get_acc_name(proxy_wallet)
+
+
+@dataclass(frozen=True)
+class ClobCredentials:
+    api_key: str
+    api_secret: str
+    api_passphrase: str
+
+
+def get_clob_credentials(proxy_wallet: str) -> ClobCredentials:
+    """从已有 ClobClient 提取 CLOB API 凭证，用于 User WS 认证。"""
+    client = get_client(proxy_wallet)
+    creds = client.creds
+    return ClobCredentials(
+        api_key=creds.api_key,
+        api_secret=creds.api_secret,
+        api_passphrase=creds.api_passphrase,
+    )
