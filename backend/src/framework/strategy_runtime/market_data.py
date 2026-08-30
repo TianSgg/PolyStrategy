@@ -33,7 +33,7 @@ class MarketData:
                 result = await asyncio.to_thread(
                     self._clob_client.get_tick_size, token_id
                 )
-                ts = str(result["minimum_tick_size"])
+                ts = str(result)
                 self._tick_size_cache[token_id] = ts
                 return ts
             except Exception as e:
