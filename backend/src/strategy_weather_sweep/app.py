@@ -28,7 +28,6 @@ from framework.logging import setup_logging
 setup_logging(_cfg["service"]["name"])
 
 import logging
-from pathlib import Path
 
 import py_clob_client_v2
 
@@ -40,6 +39,7 @@ from framework.instance_pool import InstancePool, InstanceConfig
 from framework.orderbook_ws import OrderBookWS
 from framework.user_ws import stop_all_user_ws, _instances as _user_ws_instances
 from framework.strategy_runtime.signal_client import SignalWSClient
+from framework.strategy_runtime.tick_size_service import TickSizeService
 from framework.strategy_runtime.weather_adapter import WeatherSweepAdapter
 from framework.trading.provider import set_client_provider
 
@@ -66,6 +66,8 @@ def _assert_vendored_clob_client() -> None:
 
 _assert_vendored_clob_client()
 
+tick_size_service = TickSizeService()
+
 PORT = int(os.getenv("STRATEGY_SWEEP_PORT", str(_cfg["service"]["port"])))
 WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")
 
@@ -86,7 +88,11 @@ def _load_configs() -> list[InstanceConfig]:
 
 
 async def _create_instance(cfg: InstanceConfig) -> SweepStrategy:
-    return await SweepStrategy.create(cfg.data, orderbook_ws)
+    return await SweepStrategy.create(
+        cfg.data,
+        orderbook_ws,
+        tick_size_service=tick_size_service,
+    )
 
 
 async def _destroy_instance(strategy: SweepStrategy, reason: str) -> None:

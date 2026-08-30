@@ -62,6 +62,20 @@ class FakeTickVerifier:
         return TickVerifyResult(confirmed=True, actual_tick=Decimal("0.001"))
 
 
+class FakeTickSizeService:
+    def __init__(self, tick_size=Decimal("0.001")):
+        self.tick_size = tick_size
+
+    async def get(self, token_id, *, max_age_ms=None):
+        return self.tick_size
+
+    async def refresh(self, token_id):
+        return self.tick_size
+
+    def invalidate(self, token_id):
+        return None
+
+
 def make_trade(sell_result=None, final_matched=Decimal("0")):
     executor = FakeExecutor(sell_result=sell_result, final_matched=final_matched)
     event_logger = FakeEventLogger()
@@ -74,6 +88,7 @@ def make_trade(sell_result=None, final_matched=Decimal("0")):
         orderbook_ws=None,
         event_logger=event_logger,
         on_closed=closed.append,
+        tick_size_service=FakeTickSizeService(),
     )
     trade.tick_verifier = FakeTickVerifier()
     trade.buy_price = Decimal("0.99")

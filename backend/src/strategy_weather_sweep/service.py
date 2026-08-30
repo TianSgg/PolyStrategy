@@ -34,6 +34,10 @@ from typing import Any, Callable, Optional
 from framework.strategy_runtime.event_logger import EventLogger
 from framework.strategy_runtime.interfaces import Signal
 from framework.strategy_runtime.order_executor import OrderExecutor
+from framework.strategy_runtime.tick_size_service import (
+    TickSizeFetchError,
+    TickSizeService,
+)
 from framework.strategy_runtime.tick_verifier import TickVerifier
 from framework.user_ws import FillEvent
 from strategy_weather_sweep.dao import WeatherSweepTradeDAO
@@ -60,6 +64,7 @@ class SweepTrade:
         event_logger: Optional[EventLogger],
         on_closed: Callable[[str], None],
         trade_dao: Optional[WeatherSweepTradeDAO] = None,
+        tick_size_service: Optional[TickSizeService] = None,
     ) -> None:
         self.token_id = token_id
         self.market_slug = market_slug
@@ -69,6 +74,7 @@ class SweepTrade:
         self._el = event_logger
         self._on_closed = on_closed
         self._trade_dao = trade_dao
+        self._tick_size_service = tick_size_service or TickSizeService()
 
         self.state = "entry_working"
         self.position_shares = Decimal("0")
@@ -92,8 +98,9 @@ class SweepTrade:
             stop_loss_ratio=Decimal(config.get("stop_loss_ratio", "0.60")),
             on_trigger=self._risk_exit,
             on_tick_change=self._on_tick_change,
+            tick_size_service=self._tick_size_service,
         )
-        self.tick_verifier = TickVerifier()
+        self.tick_verifier = TickVerifier(tick_size_service=self._tick_size_service)
 
     # ==================== Helpers ====================
 
@@ -207,12 +214,25 @@ class SweepTrade:
             })
             return
 
+        try:
+            entry_tick_size = await self._tick_size_service.get(self.token_id)
+        except TickSizeFetchError as exc:
+            logger.error("Tick size lookup failed before BUY: token=%s err=%s", self.token_id, exc)
+            if self._el:
+                self._el.log_step("order_failed", {
+                    "status": "tick_refresh_failed",
+                    "error": str(exc),
+                    "requested_size": str(actual_shares),
+                }, phase="entry")
+            self._close("buy_failed", phase="entry", extra={"error": str(exc)})
+            return
+
         order_task = asyncio.create_task(self._executor.place_order(
             token_id=self.token_id,
             side="BUY",
             price=str(buy_price),
             size=str(actual_shares),
-            tick_size="0.01",
+            tick_size=str(entry_tick_size),
             neg_risk=True,
         ))
         risk_task = asyncio.create_task(
@@ -411,10 +431,15 @@ class SweepTrade:
                 return
             if result.confirmed:
                 self._tick_verified = True
+                self._tick_size = result.actual_tick or new_tick
                 if self._el:
                     self._el.log_step("tick_verified", {
                         "token_id": self.token_id,
                         "confirmed": True,
+                        "ws_tick_size": str(new_tick),
+                        "http_tick_size": str(result.actual_tick or new_tick),
+                        "source": "http",
+                        "utc": self._utc_str(),
                     }, phase="monitor")
                 await self._start_normal_exit()
 
@@ -437,6 +462,21 @@ class SweepTrade:
         self._normal_exit_started = True
         self.state = "exit_working"
         self._update_trade_summary({"status": "exit_working"})
+
+        try:
+            self._tick_size = await self._tick_size_service.refresh(self.token_id)
+        except TickSizeFetchError as exc:
+            logger.error("Tick size refresh failed before SELL: token=%s err=%s", self.token_id, exc)
+            if self._el:
+                self._el.log_step("tick_refresh_failed", {
+                    "error": str(exc),
+                    "action": "stop_event",
+                    "utc": self._utc_str(),
+                }, phase="exit")
+            await self.risk.stop()
+            self._close("sell_failed", phase="exit", extra={"error": str(exc)})
+            return
+
         sell_price = Decimal("1") - self._tick_size
         sell_timeout_s = 600
         sell_backoff_base = 2.0
@@ -690,6 +730,20 @@ class SweepTrade:
             self.exit_order_id = None
 
         # 缺口③: 清仓循环 — live 时用 WS + asyncio.Event 等待
+        try:
+            risk_tick_size = await self._tick_size_service.refresh(self.token_id)
+        except TickSizeFetchError as exc:
+            logger.error("Tick size refresh failed before risk SELL: token=%s err=%s", self.token_id, exc)
+            if self._el:
+                self._el.log_step("tick_refresh_failed", {
+                    "error": str(exc),
+                    "reason": "stop_loss",
+                    "action": "stop_event",
+                    "utc": self._utc_str(),
+                }, phase="exit_risk")
+            self._close("sell_failed", phase="exit_risk", extra={"error": str(exc)})
+            return
+
         if self.position_shares > 0:
             risk_origin_ms = int(time.time() * 1000)
             risk_deadline = time.monotonic() + 600
@@ -707,7 +761,7 @@ class SweepTrade:
                     side="SELL",
                     price="0.01",
                     size=str(sell_size),
-                    tick_size="0.01",
+                    tick_size=str(risk_tick_size),
                     neg_risk=True,
                     check_balance=False,
                 )
@@ -971,17 +1025,23 @@ class SweepStrategy:
         cls,
         config_data: dict[str, Any],
         orderbook_ws: Any,
+        tick_size_service: Optional[TickSizeService] = None,
     ) -> SweepStrategy:
         """工厂方法 — 根据一条 DB 配置创建完整策略实例。"""
         proxy_wallet = config_data["proxy_wallet"]
+        tick_size_service = tick_size_service or TickSizeService()
 
-        executor = OrderExecutor(proxy_wallet=proxy_wallet)
+        executor = OrderExecutor(
+            proxy_wallet=proxy_wallet,
+            tick_size_service=tick_size_service,
+        )
         await executor.ensure_poller(proxy_wallet)
         await executor.warmup()
 
         instance = cls()
         instance._config = config_data["params"]
         instance._executor = executor
+        instance._tick_size_service = tick_size_service
         instance._orderbook_ws = orderbook_ws
         instance._proxy_wallet = proxy_wallet
         instance._owner_user_id = config_data["owner_user_id"]
@@ -1021,6 +1081,7 @@ class SweepStrategy:
             event_logger=el,
             on_closed=self._remove_trade,
             trade_dao=self._trade_dao,
+            tick_size_service=self._tick_size_service,
         )
         self._trades[signal.token_id] = trade
         await trade.enter(signal)

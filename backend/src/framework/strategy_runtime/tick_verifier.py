@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
-from framework.strategy_runtime.market_data import MarketData
+from framework.strategy_runtime.tick_size_service import TickSizeService
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +29,12 @@ class TickVerifier:
 
     def __init__(
         self,
-        market_data: Optional[MarketData] = None,
+        tick_size_service: Optional[TickSizeService] = None,
         backoff_ms: int = 1000,
         max_backoff_ms: int = 5000,
         max_duration_s: int = 1800,
     ) -> None:
-        self._market_data = market_data or MarketData()
+        self._tick_size_service = tick_size_service or TickSizeService()
         self._backoff_ms = backoff_ms
         self._max_backoff_ms = max_backoff_ms
         self._max_duration_s = max_duration_s
@@ -47,8 +47,7 @@ class TickVerifier:
         while time.monotonic() < deadline:
             attempt += 1
             try:
-                tick_size = await self._market_data.get_tick_size(token_id)
-                actual = Decimal(str(tick_size)) if tick_size else None
+                actual = await self._tick_size_service.refresh(token_id)
 
                 if actual == TARGET_TICK:
                     return TickVerifyResult(confirmed=True, actual_tick=actual)

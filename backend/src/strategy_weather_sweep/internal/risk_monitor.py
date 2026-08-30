@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Any, Awaitable, Callable, Optional
 
 from framework.orderbook_ws import OrderBookWS
-from framework.strategy_runtime.market_data import MarketData
+from framework.strategy_runtime.tick_size_service import TickSizeService
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ class SweepRiskMonitor:
         stop_loss_ratio: Decimal = Decimal("0.60"),
         on_trigger: Optional[Callable[[], Awaitable[None]]] = None,
         on_tick_change: Optional[Callable[[Decimal], Awaitable[None]]] = None,
+        tick_size_service: Optional[TickSizeService] = None,
     ) -> None:
         self._orderbook_ws = orderbook_ws
         self._stop_loss_ratio = stop_loss_ratio
@@ -41,7 +42,7 @@ class SweepRiskMonitor:
         self._active = False
         self._triggered = False
         self._tick_poll_task: Optional[asyncio.Task] = None
-        self._market_data = MarketData()
+        self._tick_size_service = tick_size_service or TickSizeService()
 
     @property
     def is_active(self) -> bool:
@@ -136,6 +137,7 @@ class SweepRiskMonitor:
     async def _on_tick(self, asset_id: str, tick_size: Decimal) -> None:
         if not self._active:
             return
+        self._tick_size_service.invalidate(asset_id)
         if self._on_tick_change:
             asyncio.create_task(self._on_tick_change(tick_size))
 
@@ -146,11 +148,7 @@ class SweepRiskMonitor:
         if not self._active or not self._token_id:
             return
         try:
-            self._market_data._tick_size_cache.pop(self._token_id, None)
-            tick_raw = await self._market_data.get_tick_size(self._token_id)
-            if tick_raw is None:
-                return
-            tick = Decimal(str(tick_raw))
+            tick = await self._tick_size_service.refresh(self._token_id)
             if tick == Decimal("0.001") and self._on_tick_change and self._active:
                 logger.info(
                     "[RiskMonitor] HTTP tick check: token=%s tick already 0.001, firing callback",
@@ -170,11 +168,7 @@ class SweepRiskMonitor:
                 if not self._active or not self._token_id:
                     break
                 try:
-                    self._market_data._tick_size_cache.pop(self._token_id, None)
-                    tick_raw = await self._market_data.get_tick_size(self._token_id)
-                    if tick_raw is None:
-                        continue
-                    tick = Decimal(str(tick_raw))
+                    tick = await self._tick_size_service.refresh(self._token_id)
                     if tick == Decimal("0.001") and self._on_tick_change and self._active:
                         logger.info(
                             "[RiskMonitor] Tick poll: token=%s tick=0.001, firing callback",

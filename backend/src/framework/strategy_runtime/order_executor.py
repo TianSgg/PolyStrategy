@@ -20,6 +20,10 @@ from framework.trading import place_limit_order, cancel_order as _cancel_order
 from framework.trading.provider import get_client
 from framework.strategy_runtime.interfaces import CancelResult, OrderResult
 from framework.strategy_runtime.balance_poller import BalancePoller, get_or_create_poller
+from framework.strategy_runtime.tick_size_service import (
+    TickSizeFetchError,
+    TickSizeService,
+)
 from framework.user_ws import UserWS, get_or_create_user_ws
 
 logger = logging.getLogger(__name__)
@@ -35,8 +39,14 @@ def generate_order_id() -> str:
 class OrderExecutor:
     """Polymarket CLOB 下单执行器（集成余额轮询）。"""
 
-    def __init__(self, proxy_wallet: str = "") -> None:
+    def __init__(
+        self,
+        proxy_wallet: str = "",
+        *,
+        tick_size_service: Optional[TickSizeService] = None,
+    ) -> None:
         self._proxy_wallet = proxy_wallet
+        self._tick_size_service = tick_size_service
         self._cached_params: Dict[str, Dict[str, Any]] = {}
         self._poller: Optional[BalancePoller] = None
         self._user_ws: Optional[UserWS] = None
@@ -122,10 +132,46 @@ class OrderExecutor:
         """
         wallet = (proxy_wallet or self._proxy_wallet).lower()
         params = self._cached_params.get(token_id, {})
-        ts = tick_size or params.get("tick_size", "0.01")
         nr = neg_risk if neg_risk is not None else params.get("neg_risk", True)
 
         order_id = generate_order_id()
+
+        if self._tick_size_service is not None:
+            try:
+                authoritative_tick = await self._tick_size_service.get(token_id)
+            except TickSizeFetchError as exc:
+                logger.error(
+                    "Tick size lookup failed before order: token=%s side=%s err=%s",
+                    token_id, side, exc,
+                )
+                return OrderResult(
+                    order_id=order_id,
+                    status="failed",
+                    filled_size="0",
+                    filled_price=None,
+                    error=f"tick size refresh failed: {exc}",
+                )
+
+            if tick_size is not None and Decimal(tick_size) != authoritative_tick:
+                error = (
+                    f"tick size mismatch: caller={tick_size}, "
+                    f"authoritative={authoritative_tick}"
+                )
+                logger.error(
+                    "Order rejected before send: token=%s side=%s %s",
+                    token_id, side, error,
+                )
+                return OrderResult(
+                    order_id=order_id,
+                    status="failed",
+                    filled_size="0",
+                    filled_price=None,
+                    error=error,
+                )
+
+            ts = str(authoritative_tick)
+        else:
+            ts = tick_size or params.get("tick_size", "0.01")
 
         poller = await self.ensure_poller(wallet)
 
