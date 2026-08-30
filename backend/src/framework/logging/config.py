@@ -75,10 +75,11 @@ def setup_logging(service_name: str) -> None:
     error_handler.setFormatter(formatter)
     root.addHandler(error_handler)
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    root.addHandler(console_handler)
+    if sys.stdout.isatty():
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(log_level)
+        console_handler.setFormatter(formatter)
+        root.addHandler(console_handler)
 
     for lib in QUIET_LIBS:
         logging.getLogger(lib).setLevel(logging.WARNING)
