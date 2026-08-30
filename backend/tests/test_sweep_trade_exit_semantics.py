@@ -237,3 +237,40 @@ def test_invalid_tick_sell_refreshes_once_then_stops():
     steps = {(step, detail.get("stop_reason")) for _, step, detail in event_logger.steps}
     assert ("tick_refreshed", None) in steps
     assert ("sell_retry_exhausted", "invalid_tick_retry_exhausted") in steps
+
+
+def test_force_exit_reconciles_sell_fill_and_closes():
+    trade, _, event_logger, closed = make_trade(final_matched=Decimal("10"))
+    trade.position_shares = Decimal("10")
+    trade.exit_order_id = "sell-1"
+    trade.sell_price = Decimal("0.999")
+
+    run(trade.force_exit("config_disabled"))
+
+    assert trade.position_shares == Decimal("0")
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert close_reason(event_logger) == "force_exit"
+    assert ("exit_force", "fill_reconcile") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+
+
+def test_force_exit_with_open_position_uses_exit_failed():
+    trade, _, event_logger, closed = make_trade(final_matched=Decimal("0"))
+    trade.position_shares = Decimal("10")
+    trade.exit_order_id = "sell-1"
+    trade.sell_price = Decimal("0.999")
+
+    run(trade.force_exit("config_disabled"))
+
+    assert trade.position_shares == Decimal("10")
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert close_reason(event_logger) == "force_exit"
+    exit_failed = next(
+        detail for _, step, detail in event_logger.steps if step == "exit_failed"
+    )
+    assert exit_failed["position_open"] is True
+    assert exit_failed["position_shares"] == "10"
+    assert exit_failed["manual_action_required"] is True

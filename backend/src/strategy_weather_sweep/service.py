@@ -942,6 +942,7 @@ class SweepTrade:
                         "reason": "stop_loss",
                         "attempt": risk_attempt,
                     }, phase="exit_risk")
+                self.sell_price = Decimal("0.01")
 
                 risk_fill_count = 0
                 if result.status in ("filled", "partial"):
@@ -1078,6 +1079,7 @@ class SweepTrade:
 
             if self.exit_order_id:
                 order_id = self.exit_order_id
+                sell_start_shares = self.position_shares
                 user_ws.unwatch_order(order_id)
                 cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
                 if self._el:
@@ -1087,10 +1089,32 @@ class SweepTrade:
                         "final_matched": str(cancel_result.final_matched),
                     }, phase="exit_force")
                 self.exit_order_id = None
+                sold_by_memory = sell_start_shares - self.position_shares
+                if cancel_result.final_matched > sold_by_memory:
+                    missed = cancel_result.final_matched - sold_by_memory
+                    self._record_sell_fill(
+                        order_id,
+                        missed,
+                        getattr(self, "sell_price", Decimal("0.01")),
+                        source="cancel_reconcile",
+                    )
+                    if self._el:
+                        self._el.log_step("fill_reconcile", {
+                            "side": "SELL",
+                            "order_id": order_id,
+                            "clob_matched": str(cancel_result.final_matched),
+                            "memory_before": str(sold_by_memory),
+                            "reconciled": str(missed),
+                        }, phase="exit_force")
         except Exception as exc:
             logger.error("force_exit cancel orders failed: %s", exc)
         finally:
-            self._close("force_exit", phase="exit_force")
+            if self.position_shares > 0:
+                self._close_exit_failed("force_exit", phase="exit_force", extra={
+                    "trigger": "user",
+                })
+            else:
+                self._close("force_exit", phase="exit_force")
 
     # ==================== Stop ====================
 
