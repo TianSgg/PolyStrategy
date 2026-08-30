@@ -64,6 +64,7 @@ def test_global_breaker_requires_three_events_in_window():
     assert breaker.record_event("token-1", "network_timeout") is False
     assert breaker.record_event("token-2", "network_timeout") is False
     assert breaker.record_event("token-3", "network_timeout") is True
+    assert breaker.record_event("token-4", "network_timeout") is False
 
 
 def test_global_breaker_expires_old_events():

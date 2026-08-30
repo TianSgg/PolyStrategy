@@ -123,8 +123,12 @@ class SellErrorCircuitBreaker:
         self._window_sec = window_sec
         self._clock = clock
         self._events: dict[str, deque[tuple[float, str]]] = defaultdict(deque)
+        self._opened_signatures: set[str] = set()
 
     def record_event(self, token_id: str, error_signature: str) -> bool:
+        if error_signature in self._opened_signatures:
+            return False
+
         now = self._clock()
         events = self._events[error_signature]
         events.append((now, token_id))
@@ -133,6 +137,7 @@ class SellErrorCircuitBreaker:
         if len(events) < self._threshold:
             return False
 
+        self._opened_signatures.add(error_signature)
         triggering_tokens = [token for _, token in list(events)[-self._threshold:]]
         logger.warning(
             "SELL error circuit breaker opened: signature=%s events=%d tokens=%s",

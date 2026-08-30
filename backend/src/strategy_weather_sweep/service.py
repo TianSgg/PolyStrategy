@@ -1180,6 +1180,9 @@ class SweepTrade:
         status: str = "closed",
         event_step: str = "event_closed",
     ) -> None:
+        if self.state == "closed":
+            return
+
         user_ws = getattr(self._executor, '_user_ws', None)
         if user_ws:
             for oid in (self.entry_order_id, self.exit_order_id):
