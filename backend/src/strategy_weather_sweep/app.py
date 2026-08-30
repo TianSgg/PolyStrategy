@@ -35,7 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from framework.consul import consul_lifespan
 from framework.instance_pool import InstancePool, InstanceConfig
 from framework.orderbook_ws import OrderBookWS
-from framework.user_ws import stop_all_user_ws
+from framework.user_ws import stop_all_user_ws, _instances as _user_ws_instances
 from framework.strategy_runtime.signal_client import SignalWSClient
 from framework.strategy_runtime.weather_adapter import WeatherSweepAdapter
 from framework.trading.provider import set_client_provider
@@ -137,7 +137,11 @@ app.include_router(strategy_router)
 
 @app.get("/health")
 async def health():
-    return {"strategy": "SweepStrategy", **pool.health()}
+    base = {"strategy": "SweepStrategy", **pool.health()}
+    user_ws = {addr[:8]: ws.snapshot() for addr, ws in _user_ws_instances.items()}
+    if user_ws:
+        base["user_ws"] = user_ws
+    return base
 
 
 @app.get("/api/status")
