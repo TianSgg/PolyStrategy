@@ -499,6 +499,24 @@ export default function StrategyDashboard({ darkMode }: Props) {
                             )}
                             {t.temperature_label && <span style={{ fontSize: '11px', color: textSecondary }}>{t.temperature_label}</span>}
                             {t.city && <span style={{ color: textSecondary }}>{t.city} {t.direction === 'highest' ? '↑' : t.direction === 'lowest' ? '↓' : ''}</span>}
+                            {(t.entry_order_size || t.entry_shares) && (
+                              <span style={{ fontSize: '11px', color: textSecondary }}>
+                                买{t.entry_order_size ? (
+                                  <span style={{ color: t.entry_shares && parseFloat(t.entry_shares) >= parseFloat(t.entry_order_size) ? '#22c55e' : '#f59e0b', fontWeight: 500 }}>
+                                    {' '}{t.entry_shares || '0'}/{t.entry_order_size}
+                                  </span>
+                                ) : ` ${t.entry_shares}`}
+                                {(t.exit_order_size || t.exit_shares) && (
+                                  <>
+                                    {' '}卖{t.exit_order_size ? (
+                                      <span style={{ color: t.exit_shares && parseFloat(t.exit_shares) >= parseFloat(t.exit_order_size) ? '#22c55e' : '#f59e0b', fontWeight: 500 }}>
+                                        {' '}{t.exit_shares || '0'}/{t.exit_order_size}
+                                      </span>
+                                    ) : ` ${t.exit_shares}`}
+                                  </>
+                                )}
+                              </span>
+                            )}
                             {t.pnl != null && (
                               <span style={{ fontWeight: 600, color: parseFloat(t.pnl) > 0 ? '#22c55e' : parseFloat(t.pnl) < 0 ? '#ef4444' : textSecondary }}>
                                 {parseFloat(t.pnl) > 0 ? '+' : ''}{parseFloat(t.pnl).toFixed(4)}

@@ -18,9 +18,11 @@ interface Trade {
   entry_price: string | null
   entry_shares: string | null
   entry_cost: string | null
+  entry_order_size: string | null
   exit_price: string | null
   exit_shares: string | null
   exit_revenue: string | null
+  exit_order_size: string | null
   pnl: string | null
   pnl_pct: string | null
   duration_ms: number | null
@@ -334,8 +336,20 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
                 {/* Row 2: city + direction + entry/exit + pnl + duration */}
                 <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: textSecondary, flexWrap: 'wrap', alignItems: 'center' }}>
                   {t.city && <span>{t.city} {t.direction === 'highest' ? '↑' : t.direction === 'lowest' ? '↓' : ''}</span>}
-                  <span>买入: {t.entry_price ? `$${t.entry_price} x ${t.entry_shares}` : '--'}</span>
-                  <span>卖出: {t.exit_price ? `$${t.exit_price} x ${t.exit_shares}` : '--'}</span>
+                  <span>买入: {t.entry_price ? `$${t.entry_price}` : '--'}{' '}
+                    {t.entry_order_size ? (
+                      <span style={{ color: t.entry_shares && parseFloat(t.entry_shares) >= parseFloat(t.entry_order_size) ? '#22c55e' : '#f59e0b' }}>
+                        {t.entry_shares || '0'}/{t.entry_order_size}
+                      </span>
+                    ) : t.entry_shares ? t.entry_shares : ''}
+                  </span>
+                  <span>卖出: {t.exit_price ? `$${t.exit_price}` : '--'}{' '}
+                    {t.exit_order_size ? (
+                      <span style={{ color: t.exit_shares && parseFloat(t.exit_shares) >= parseFloat(t.exit_order_size) ? '#22c55e' : '#f59e0b' }}>
+                        {t.exit_shares || '0'}/{t.exit_order_size}
+                      </span>
+                    ) : t.exit_shares ? t.exit_shares : ''}
+                  </span>
                   {t.pnl !== null && (
                     <span style={{ fontWeight: 600, color: pnlColor(t.pnl) }}>
                       PnL: {parseFloat(t.pnl) > 0 ? '+' : ''}{parseFloat(t.pnl).toFixed(4)}

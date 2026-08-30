@@ -228,6 +228,7 @@ class SweepTrade:
         # Track order metadata for entry_complete
         self._order_size = actual_shares
         self._order_placed_ms = int(time.time() * 1000)
+        self._update_trade_summary({"entry_order_size": str(actual_shares)})
 
         # --- Layer 1: order_failed (CLOB rejected) ---
         if result.status in ("failed", "insufficient_balance"):
@@ -451,6 +452,8 @@ class SweepTrade:
 
             attempt += 1
             sell_size = self.position_shares
+            if attempt == 1:
+                self._update_trade_summary({"exit_order_size": str(sell_size)})
             result = await self._executor.place_order(
                 token_id=self.token_id,
                 side="SELL",
@@ -697,6 +700,8 @@ class SweepTrade:
                 risk_attempt += 1
                 sell_size = self.position_shares
                 sell_start_shares = self.position_shares
+                if risk_attempt == 1:
+                    self._update_trade_summary({"exit_order_size": str(sell_size)})
                 result = await self._executor.place_order(
                     token_id=self.token_id,
                     side="SELL",
@@ -833,38 +838,41 @@ class SweepTrade:
                 "position_shares": str(self.position_shares),
             }, phase="exit_force")
 
-        user_ws = await self._executor.ensure_user_ws()
+        try:
+            user_ws = await self._executor.ensure_user_ws()
 
-        if self.entry_order_id:
-            order_id = self.entry_order_id
-            user_ws.unwatch_order(order_id)
-            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
-            if self._el:
-                self._el.log_step("buy_cancelled", {
-                    "order_id": order_id,
-                    "success": cancel_result.cancelled,
-                    "final_matched": str(cancel_result.final_matched),
-                }, phase="exit_force")
-            self.entry_order_id = None
-            if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
-                missed = cancel_result.final_matched - self.position_shares
-                self._record_buy_fill(order_id, missed,
-                                      getattr(self, 'buy_price', Decimal("0.99")),
-                                      source="cancel_reconcile")
+            if self.entry_order_id:
+                order_id = self.entry_order_id
+                user_ws.unwatch_order(order_id)
+                cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+                if self._el:
+                    self._el.log_step("buy_cancelled", {
+                        "order_id": order_id,
+                        "success": cancel_result.cancelled,
+                        "final_matched": str(cancel_result.final_matched),
+                    }, phase="exit_force")
+                self.entry_order_id = None
+                if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
+                    missed = cancel_result.final_matched - self.position_shares
+                    self._record_buy_fill(order_id, missed,
+                                          getattr(self, 'buy_price', Decimal("0.99")),
+                                          source="cancel_reconcile")
 
-        if self.exit_order_id:
-            order_id = self.exit_order_id
-            user_ws.unwatch_order(order_id)
-            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
-            if self._el:
-                self._el.log_step("sell_cancelled", {
-                    "order_id": order_id,
-                    "success": cancel_result.cancelled,
-                    "final_matched": str(cancel_result.final_matched),
-                }, phase="exit_force")
-            self.exit_order_id = None
-
-        self._close("force_exit", phase="exit_force")
+            if self.exit_order_id:
+                order_id = self.exit_order_id
+                user_ws.unwatch_order(order_id)
+                cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+                if self._el:
+                    self._el.log_step("sell_cancelled", {
+                        "order_id": order_id,
+                        "success": cancel_result.cancelled,
+                        "final_matched": str(cancel_result.final_matched),
+                    }, phase="exit_force")
+                self.exit_order_id = None
+        except Exception as exc:
+            logger.error("force_exit cancel orders failed: %s", exc)
+        finally:
+            self._close("force_exit", phase="exit_force")
 
     # ==================== Stop ====================
 
