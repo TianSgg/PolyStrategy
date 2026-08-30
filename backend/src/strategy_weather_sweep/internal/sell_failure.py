@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import time
+import logging
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 def classify_sell_error(status: str, error: Optional[str]) -> str:
@@ -102,3 +107,44 @@ class SellFailureTracker:
     @property
     def elapsed_ms(self) -> int:
         return int((self._clock() - self._started_at) * 1000)
+
+
+class SellErrorCircuitBreaker:
+    """Open after the same signature fails across multiple events."""
+
+    def __init__(
+        self,
+        *,
+        threshold: int = 3,
+        window_sec: float = 300.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._threshold = threshold
+        self._window_sec = window_sec
+        self._clock = clock
+        self._events: dict[str, deque[tuple[float, str]]] = defaultdict(deque)
+
+    def record_event(self, token_id: str, error_signature: str) -> bool:
+        now = self._clock()
+        events = self._events[error_signature]
+        events.append((now, token_id))
+        self._prune(events, now)
+
+        if len(events) < self._threshold:
+            return False
+
+        triggering_tokens = [token for _, token in list(events)[-self._threshold:]]
+        logger.warning(
+            "SELL error circuit breaker opened: signature=%s events=%d tokens=%s",
+            error_signature, len(events), ",".join(triggering_tokens),
+        )
+        return True
+
+    def event_count(self, error_signature: str) -> int:
+        events = self._events.get(error_signature, deque())
+        self._prune(events, self._clock())
+        return len(events)
+
+    def _prune(self, events: deque[tuple[float, str]], now: float) -> None:
+        while events and events[0][0] <= now - self._window_sec:
+            events.popleft()

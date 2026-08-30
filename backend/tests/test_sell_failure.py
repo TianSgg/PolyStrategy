@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from strategy_weather_sweep.internal.sell_failure import (  # noqa: E402
+    SellErrorCircuitBreaker,
     SellFailureTracker,
     classify_sell_error,
 )
@@ -54,3 +55,23 @@ def test_tracker_stops_when_deadline_exceeded():
 
     now[0] = 180.0
     assert tracker.snapshot().stop_reason == "deadline_exceeded"
+
+
+def test_global_breaker_requires_three_events_in_window():
+    now = [0.0]
+    breaker = SellErrorCircuitBreaker(clock=lambda: now[0])
+
+    assert breaker.record_event("token-1", "network_timeout") is False
+    assert breaker.record_event("token-2", "network_timeout") is False
+    assert breaker.record_event("token-3", "network_timeout") is True
+
+
+def test_global_breaker_expires_old_events():
+    now = [0.0]
+    breaker = SellErrorCircuitBreaker(clock=lambda: now[0])
+    breaker.record_event("token-1", "invalid_tick_size")
+
+    now[0] = 301.0
+    breaker.record_event("token-2", "invalid_tick_size")
+    breaker.record_event("token-3", "invalid_tick_size")
+    assert breaker.event_count("invalid_tick_size") == 2
