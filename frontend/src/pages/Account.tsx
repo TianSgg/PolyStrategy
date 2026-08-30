@@ -249,7 +249,16 @@ export default function Account({ darkMode, visible, refreshKey = 0, onAccountsL
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
                     <div>
                       <div className="account-name">
-                        {account.name || '未命名'}
+                        <a
+                          href={`https://polymarket.com/profile/${account.proxy_wallet}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: 'inherit', textDecoration: 'none' }}
+                          onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                          onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                        >
+                          {account.name || '未命名'}
+                        </a>
                         <span style={{ marginLeft: '8px', fontSize: '11px', padding: '2px 6px', borderRadius: '4px', background: account.signature_type === 3 ? '#7c3aed22' : '#3b82f622', color: account.signature_type === 3 ? '#7c3aed' : '#3b82f6' }}>
                           {account.signature_type === 3 ? 'POLY_1271' : 'SAFE'}
                         </span>

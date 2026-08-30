@@ -307,7 +307,9 @@ export default function StrategyDashboard({ darkMode }: Props) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {configs.map(cfg => (
             <div key={cfg.id}>
-            <div style={{
+            <div
+              onClick={() => handleExpandTrades(cfg)}
+              style={{
               background: cardBg,
               borderRadius: expandedConfigId === cfg.id ? '12px 12px 0 0' : '12px',
               padding: '20px',
@@ -316,10 +318,11 @@ export default function StrategyDashboard({ darkMode }: Props) {
               display: 'flex',
               alignItems: 'center',
               gap: '16px',
+              cursor: 'pointer',
             }}>
               {/* Enable toggle */}
               <button
-                onClick={() => handleToggle(cfg)}
+                onClick={e => { e.stopPropagation(); handleToggle(cfg) }}
                 disabled={togglingId === cfg.id}
                 style={{
                   width: '48px',
@@ -364,6 +367,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                     href={cfg.proxy_wallet ? `https://polymarket.com/profile/${cfg.proxy_wallet}` : '#'}
                     target="_blank"
                     rel="noopener noreferrer"
+                    onClick={e => e.stopPropagation()}
                     style={{ color: '#3b82f6', fontWeight: 500, textDecoration: 'none' }}
                   >
                     {cfg.account_name || `#${cfg.account_id}`}
@@ -382,7 +386,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
               {/* Actions */}
               <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
                 <button
-                  onClick={() => handleExpandTrades(cfg)}
+                  onClick={e => { e.stopPropagation(); handleExpandTrades(cfg) }}
                   style={{
                     padding: '6px 14px',
                     borderRadius: '6px',
@@ -396,7 +400,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                   24h 交易
                 </button>
                 <button
-                  onClick={() => handleEdit(cfg)}
+                  onClick={e => { e.stopPropagation(); handleEdit(cfg) }}
                   style={{
                     padding: '6px 14px',
                     borderRadius: '6px',
@@ -410,7 +414,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                   编辑
                 </button>
                 <button
-                  onClick={() => handleDelete(cfg.id)}
+                  onClick={e => { e.stopPropagation(); handleDelete(cfg.id) }}
                   style={{
                     padding: '6px 14px',
                     borderRadius: '6px',
