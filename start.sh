@@ -53,7 +53,8 @@ start_backend_service() {
     fi
 
     local cmd
-    cmd="cd '$BACKEND_DIR/src' && $extra_env PYTHONPATH='$BACKEND_DIR/src' $PYTHON -m $module"
+    # vendored CLOB client must win over any package installed in the active Python environment.
+    cmd="cd '$BACKEND_DIR/src' && $extra_env PYTHONPATH='$BACKEND_DIR/vendor/py-clob-client-v2:$BACKEND_DIR/src' $PYTHON -m $module"
 
     local log_dir="$ROOT_DIR/logs/$name"
     mkdir -p "$log_dir"

@@ -28,6 +28,9 @@ from framework.logging import setup_logging
 setup_logging(_cfg["service"]["name"])
 
 import logging
+from pathlib import Path
+
+import py_clob_client_v2
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,6 +49,22 @@ from strategy_weather_sweep.dao import WeatherSweepConfigDAO
 from strategy_weather_sweep.service import SweepStrategy
 
 logger = logging.getLogger(__name__)
+
+
+def _assert_vendored_clob_client() -> None:
+    """Fail fast when the service would run a non-vendored CLOB client."""
+    expected_root = _project_root / "backend" / "vendor" / "py-clob-client-v2"
+    actual_path = Path(py_clob_client_v2.__file__).resolve()
+    try:
+        actual_path.relative_to(expected_root.resolve())
+    except ValueError:
+        raise RuntimeError(
+            f"py_clob_client_v2 must be imported from {expected_root}, got {actual_path}"
+        )
+    logger.info("Using vendored py_clob_client_v2: %s", actual_path)
+
+
+_assert_vendored_clob_client()
 
 PORT = int(os.getenv("STRATEGY_SWEEP_PORT", str(_cfg["service"]["port"])))
 WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/signals")
