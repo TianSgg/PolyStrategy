@@ -105,7 +105,7 @@ def run(coro):
 
 def close_reason(event_logger):
     for _, step, detail in event_logger.steps:
-        if step == "event_closed":
+        if step in ("event_closed", "exit_failed"):
             return detail["reason"]
     return None
 
@@ -227,6 +227,12 @@ def test_invalid_tick_sell_refreshes_once_then_stops():
     assert trade.state == "closed"
     assert closed == ["token"]
     assert close_reason(event_logger) == "sell_failed"
+    exit_failed = next(
+        detail for _, step, detail in event_logger.steps if step == "exit_failed"
+    )
+    assert exit_failed["position_open"] is True
+    assert exit_failed["position_shares"] == "10"
+    assert exit_failed["manual_action_required"] is True
 
     steps = {(step, detail.get("stop_reason")) for _, step, detail in event_logger.steps}
     assert ("tick_refreshed", None) in steps

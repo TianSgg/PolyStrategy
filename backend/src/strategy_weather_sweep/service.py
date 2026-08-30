@@ -532,7 +532,7 @@ class SweepTrade:
                     "utc": self._utc_str(),
                 }, phase="exit")
             await self.risk.stop()
-            self._close("sell_failed", phase="exit", extra={"error": str(exc)})
+            self._close_exit_failed("sell_failed", phase="exit", extra={"error": str(exc)})
             return
 
         sell_price = Decimal("1") - self._tick_size
@@ -586,7 +586,7 @@ class SweepTrade:
                     )
                     if new_tick is None:
                         await self.risk.stop()
-                        self._close("sell_failed", phase="exit", extra={
+                        self._close_exit_failed("sell_failed", phase="exit", extra={
                             "error": result.error,
                             "error_signature": error_signature,
                             "stop_reason": "tick_refresh_failed",
@@ -604,7 +604,7 @@ class SweepTrade:
                         failure, phase="exit", reason="normal_exit", stop_reason=stop_reason,
                     )
                     await self.risk.stop()
-                    self._close("sell_failed", phase="exit", extra={
+                    self._close_exit_failed("sell_failed", phase="exit", extra={
                         "error": result.error,
                         "error_signature": error_signature,
                         "stop_reason": stop_reason,
@@ -720,7 +720,7 @@ class SweepTrade:
                 "remaining_position": str(self.position_shares),
                 "last_error": result.error if result else None,
             }, phase="exit")
-        self._close("sell_failed", phase="exit", extra={
+        self._close_exit_failed("sell_failed", phase="exit", extra={
             "error": result.error if result else None,
             "error_signature": failure.error_signature,
             "stop_reason": stop_reason,
@@ -849,7 +849,7 @@ class SweepTrade:
                     "action": "stop_event",
                     "utc": self._utc_str(),
                 }, phase="exit_risk")
-            self._close("sell_failed", phase="exit_risk", extra={"error": str(exc)})
+            self._close_exit_failed("sell_failed", phase="exit_risk", extra={"error": str(exc)})
             return
 
         if self.position_shares > 0:
@@ -900,7 +900,7 @@ class SweepTrade:
                         )
                         if new_tick is None:
                             await self.risk.stop()
-                            self._close("sell_failed", phase="exit_risk", extra={
+                            self._close_exit_failed("sell_failed", phase="exit_risk", extra={
                                 "error": result.error,
                                 "error_signature": error_signature,
                                 "stop_reason": "tick_refresh_failed",
@@ -919,7 +919,7 @@ class SweepTrade:
                             stop_reason=stop_reason,
                         )
                         await self.risk.stop()
-                        self._close("sell_failed", phase="exit_risk", extra={
+                        self._close_exit_failed("sell_failed", phase="exit_risk", extra={
                             "error": result.error,
                             "error_signature": error_signature,
                             "stop_reason": stop_reason,
@@ -999,7 +999,7 @@ class SweepTrade:
                 failure, phase="exit_risk", reason="stop_loss", stop_reason=stop_reason,
             )
             await self.risk.stop()
-            self._close("sell_failed", phase="exit_risk", extra={
+            self._close_exit_failed("sell_failed", phase="exit_risk", extra={
                 "error": failure.last_error,
                 "error_signature": failure.error_signature,
                 "stop_reason": stop_reason,
@@ -1101,7 +1101,30 @@ class SweepTrade:
 
     # ==================== Close & Trade Summary ====================
 
-    def _close(self, reason: str, phase: str = "exit", extra: dict | None = None) -> None:
+    def _close_exit_failed(
+        self, reason: str, phase: str = "exit", extra: dict | None = None,
+    ) -> None:
+        detail = dict(extra or {})
+        detail.setdefault("position_shares", str(self.position_shares))
+        detail.setdefault("position_open", self.position_shares > 0)
+        detail.setdefault("manual_action_required", self.position_shares > 0)
+        self._close(
+            reason,
+            phase=phase,
+            extra=detail,
+            status="exit_failed",
+            event_step="exit_failed",
+        )
+
+    def _close(
+        self,
+        reason: str,
+        phase: str = "exit",
+        extra: dict | None = None,
+        *,
+        status: str = "closed",
+        event_step: str = "event_closed",
+    ) -> None:
         user_ws = getattr(self._executor, '_user_ws', None)
         if user_ws:
             for oid in (self.entry_order_id, self.exit_order_id):
@@ -1117,7 +1140,7 @@ class SweepTrade:
             pnl_pct = (pnl / self._entry_cost * 100).quantize(Decimal("0.01"))
 
         self._update_trade_summary({
-            "status": "closed",
+            "status": status,
             "close_reason": reason,
             "pnl": str(pnl) if pnl is not None else None,
             "pnl_pct": str(pnl_pct) if pnl_pct is not None else None,
@@ -1133,7 +1156,7 @@ class SweepTrade:
             }
             if extra:
                 detail.update(extra)
-            self._el.log_step("event_closed", detail, phase=phase)
+            self._el.log_step(event_step, detail, phase=phase)
             self._el.end_event()
 
         self.state = "closed"
