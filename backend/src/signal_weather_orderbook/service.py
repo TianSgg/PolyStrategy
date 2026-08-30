@@ -86,7 +86,7 @@ def _build_signal_record(event: WeatherEvent, city: WeatherCity, main_ctx: dict 
     if next_candidate_orderbook:
         payload["next_candidate_orderbook"] = next_candidate_orderbook
     return WeatherSignalRecord(
-        signal_id=signal_id or f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{int(occurred_at.timestamp() * 1000)}",
+        signal_id=signal_id or f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{event.reason}:{int(occurred_at.timestamp() * 1000)}",
         occurred_at=occurred_at,
         signal_type=event.event_type,
         event_slug=event.asset.event_slug,
@@ -183,7 +183,7 @@ class WeatherService:
         current = payload.get("current_orderbook", {})
         event_slug = asset.get("event_slug", "")
         signal = {
-            "signal_id": payload.get("signal_id", f"{event_type}:{event_slug}:{asset.get('asset_id', '')}:{int(time.time() * 1000)}"),
+            "signal_id": payload.get("signal_id", f"{event_type}:{event_slug}:{asset.get('asset_id', '')}:{payload.get('reason', '')}:{int(time.time() * 1000)}"),
             "event_type": event_type,
             "token_id": asset.get("asset_id", ""),
             "outcome": asset.get("outcome", ""),

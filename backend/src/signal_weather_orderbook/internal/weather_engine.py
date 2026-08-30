@@ -354,7 +354,7 @@ class WeatherEngine:
         )
 
         occurred_ms = event.current_orderbook.get("observed_at_unix_ms", int(time() * 1000))
-        signal_id = f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{occurred_ms}"
+        signal_id = f"{event.event_type}:{event.asset.event_slug}:{event.asset.asset_id}:{event.reason}:{occurred_ms}"
 
         asyncio.create_task(self._on_event(event, main_ctx, next_ob, signal_id), name=f"notify-{event.event_type}")
         if self._on_broadcast:
