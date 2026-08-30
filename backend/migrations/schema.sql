@@ -253,7 +253,7 @@ CREATE TABLE strategy_weather_sweep_trades (
   direction VARCHAR(16) NULL,
 
   -- 状态
-  status ENUM('entry_working', 'exit_working', 'closed') NOT NULL DEFAULT 'entry_working',
+  status ENUM('entry_working', 'exit_working', 'closed', 'exit_failed') NOT NULL DEFAULT 'entry_working',
   close_reason VARCHAR(64) NULL,
 
   -- 入场
