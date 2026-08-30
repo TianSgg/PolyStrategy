@@ -40,9 +40,10 @@ from framework.strategy_runtime.tick_size_service import (
 )
 from framework.strategy_runtime.tick_verifier import TickVerifier
 from framework.user_ws import FillEvent
-from strategy_weather_sweep.dao import WeatherSweepTradeDAO
+from strategy_weather_sweep.dao import WeatherSweepConfigDAO, WeatherSweepTradeDAO
 from strategy_weather_sweep.internal.risk_monitor import SweepRiskMonitor
 from strategy_weather_sweep.internal.sell_failure import (
+    SellErrorCircuitBreaker,
     SellFailureSnapshot,
     SellFailureTracker,
     classify_sell_error,
@@ -68,6 +69,7 @@ class SweepTrade:
         orderbook_ws: Any,
         event_logger: Optional[EventLogger],
         on_closed: Callable[[str], None],
+        on_exit_failed: Optional[Callable[[str, str], Optional[dict[str, Any]]]] = None,
         trade_dao: Optional[WeatherSweepTradeDAO] = None,
         tick_size_service: Optional[TickSizeService] = None,
     ) -> None:
@@ -78,6 +80,7 @@ class SweepTrade:
         self._orderbook_ws = orderbook_ws
         self._el = event_logger
         self._on_closed = on_closed
+        self._on_exit_failed = on_exit_failed
         self._trade_dao = trade_dao
         self._tick_size_service = tick_size_service or TickSizeService()
 
@@ -92,6 +95,7 @@ class SweepTrade:
         self._event_start_ms = int(time.time() * 1000)
         self._entry_cost = Decimal("0")
         self._exit_revenue = Decimal("0")
+        self._exit_failure_reported = False
 
         # Fill tracking
         self._order_size = Decimal("0")        # original buy order size
@@ -532,7 +536,10 @@ class SweepTrade:
                     "utc": self._utc_str(),
                 }, phase="exit")
             await self.risk.stop()
-            self._close_exit_failed("sell_failed", phase="exit", extra={"error": str(exc)})
+            self._close_exit_failed("sell_failed", phase="exit", extra={
+                "error": str(exc),
+                "error_signature": classify_sell_error("failed", str(exc)),
+            })
             return
 
         sell_price = Decimal("1") - self._tick_size
@@ -849,7 +856,10 @@ class SweepTrade:
                     "action": "stop_event",
                     "utc": self._utc_str(),
                 }, phase="exit_risk")
-            self._close_exit_failed("sell_failed", phase="exit_risk", extra={"error": str(exc)})
+            self._close_exit_failed("sell_failed", phase="exit_risk", extra={
+                "error": str(exc),
+                "error_signature": classify_sell_error("failed", str(exc)),
+            })
             return
 
         if self.position_shares > 0:
@@ -1132,6 +1142,27 @@ class SweepTrade:
         detail.setdefault("position_shares", str(self.position_shares))
         detail.setdefault("position_open", self.position_shares > 0)
         detail.setdefault("manual_action_required", self.position_shares > 0)
+
+        error_signature = detail.get("error_signature")
+        if (
+            self._on_exit_failed
+            and error_signature
+            and not self._exit_failure_reported
+        ):
+            self._exit_failure_reported = True
+            try:
+                pause_detail = self._on_exit_failed(self.token_id, error_signature)
+            except Exception:
+                logger.exception("Failed to report SELL failure to strategy")
+                pause_detail = None
+            if pause_detail is not None and self._el:
+                self._el.log_step("strategy_paused", {
+                    "reason": "sell_error_circuit_breaker",
+                    "trigger_token_id": self.token_id,
+                    "utc": self._utc_str(),
+                    **pause_detail,
+                }, phase="strategy")
+
         self._close(
             reason,
             phase=phase,
@@ -1261,6 +1292,9 @@ class SweepStrategy:
         instance._draining = False
         instance._trades: dict[str, SweepTrade] = {}
         instance._trade_dao = WeatherSweepTradeDAO()
+        instance._config_dao = WeatherSweepConfigDAO()
+        instance._sell_error_breaker = SellErrorCircuitBreaker()
+        instance._sell_error_window_sec = 300.0
         return instance
 
     # ==================== Signal Dispatch ====================
@@ -1291,6 +1325,7 @@ class SweepStrategy:
             orderbook_ws=self._orderbook_ws,
             event_logger=el,
             on_closed=self._remove_trade,
+            on_exit_failed=self._on_exit_failed,
             trade_dao=self._trade_dao,
             tick_size_service=self._tick_size_service,
         )
@@ -1323,6 +1358,28 @@ class SweepStrategy:
                 return False
 
         return True
+
+    def _on_exit_failed(
+        self, token_id: str, error_signature: str,
+    ) -> Optional[dict[str, Any]]:
+        if not self._sell_error_breaker.record_event(token_id, error_signature):
+            return None
+
+        self._draining = True
+        config_disabled = True
+        try:
+            self._config_dao.update(self._config_id, {"enabled": 0})
+        except Exception:
+            config_disabled = False
+            logger.exception("Failed to disable config after SELL error breaker")
+
+        return {
+            "error_signature": error_signature,
+            "event_count": self._sell_error_breaker.event_count(error_signature),
+            "window_sec": int(self._sell_error_window_sec),
+            "config_disabled": config_disabled,
+            "action": "pause_strategy",
+        }
 
     # ==================== Lifecycle ====================
 

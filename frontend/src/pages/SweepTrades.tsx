@@ -76,6 +76,7 @@ const PHASE_COLORS: Record<string, string> = {
   exit: '#22c55e',
   exit_risk: '#ef4444',
   exit_force: '#f59e0b',
+  strategy: '#f97316',
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -84,6 +85,7 @@ const PHASE_LABELS: Record<string, string> = {
   exit: '退出',
   exit_risk: '风控退出',
   exit_force: '强制退出',
+  strategy: '策略',
 }
 
 const PAGE_SIZE = 30

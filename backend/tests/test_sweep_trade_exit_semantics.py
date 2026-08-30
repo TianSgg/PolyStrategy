@@ -8,7 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from framework.strategy_runtime.interfaces import CancelResult, OrderResult  # noqa: E402
 from framework.strategy_runtime.tick_verifier import TickVerifyResult  # noqa: E402
 from framework.user_ws import FillEvent  # noqa: E402
-from strategy_weather_sweep.service import SweepTrade  # noqa: E402
+from strategy_weather_sweep.internal.sell_failure import SellErrorCircuitBreaker  # noqa: E402
+from strategy_weather_sweep.service import SweepStrategy, SweepTrade  # noqa: E402
 
 
 class FakeEventLogger:
@@ -78,7 +79,7 @@ class FakeTickSizeService:
         return None
 
 
-def make_trade(sell_result=None, final_matched=Decimal("0")):
+def make_trade(sell_result=None, final_matched=Decimal("0"), on_exit_failed=None):
     executor = FakeExecutor(sell_result=sell_result, final_matched=final_matched)
     event_logger = FakeEventLogger()
     closed = []
@@ -90,6 +91,7 @@ def make_trade(sell_result=None, final_matched=Decimal("0")):
         orderbook_ws=None,
         event_logger=event_logger,
         on_closed=closed.append,
+        on_exit_failed=on_exit_failed,
         tick_size_service=FakeTickSizeService(),
     )
     trade.tick_verifier = FakeTickVerifier()
@@ -274,3 +276,61 @@ def test_force_exit_with_open_position_uses_exit_failed():
     assert exit_failed["position_open"] is True
     assert exit_failed["position_shares"] == "10"
     assert exit_failed["manual_action_required"] is True
+
+
+def test_strategy_pauses_after_three_exit_failures():
+    class FakeConfigDAO:
+        def __init__(self):
+            self.updates = []
+
+        def update(self, config_id, data):
+            self.updates.append((config_id, data))
+            return True
+
+    strategy = SweepStrategy()
+    strategy._config_id = 7
+    strategy._config_dao = FakeConfigDAO()
+    strategy._sell_error_breaker = SellErrorCircuitBreaker()
+    strategy._sell_error_window_sec = 300.0
+
+    assert strategy._on_exit_failed("token-1", "network_timeout") is None
+    assert strategy._on_exit_failed("token-2", "network_timeout") is None
+    pause_detail = strategy._on_exit_failed("token-3", "network_timeout")
+
+    assert strategy._draining is True
+    assert strategy._config_dao.updates == [(7, {"enabled": 0})]
+    assert pause_detail == {
+        "error_signature": "network_timeout",
+        "event_count": 3,
+        "window_sec": 300,
+        "config_disabled": True,
+        "action": "pause_strategy",
+    }
+
+
+def test_exit_failure_reports_strategy_pause_event():
+    def on_exit_failed(token_id, error_signature):
+        return {
+            "error_signature": error_signature,
+            "event_count": 3,
+            "window_sec": 300,
+            "config_disabled": True,
+            "action": "pause_strategy",
+        }
+
+    trade, _, event_logger, closed = make_trade(on_exit_failed=on_exit_failed)
+    trade.position_shares = Decimal("10")
+
+    trade._close_exit_failed("sell_failed", extra={
+        "error": "timeout",
+        "error_signature": "network_timeout",
+    })
+
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    pause_detail = next(
+        detail for _, step, detail in event_logger.steps if step == "strategy_paused"
+    )
+    assert pause_detail["reason"] == "sell_error_circuit_breaker"
+    assert pause_detail["error_signature"] == "network_timeout"
+    assert pause_detail["config_disabled"] is True
