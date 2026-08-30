@@ -65,11 +65,13 @@ class FakeTickVerifier:
 class FakeTickSizeService:
     def __init__(self, tick_size=Decimal("0.001")):
         self.tick_size = tick_size
+        self.refresh_count = 0
 
     async def get(self, token_id, *, max_age_ms=None):
         return self.tick_size
 
     async def refresh(self, token_id):
+        self.refresh_count += 1
         return self.tick_size
 
     def invalidate(self, token_id):
@@ -202,3 +204,30 @@ def test_full_fill_after_tick_starts_normal_exit():
     assert executor.placed_orders[0]["price"] == "0.999"
     assert executor.placed_orders[0]["tick_size"] == "0.001"
     assert close_reason(event_logger) == "normal_exit"
+
+
+def test_invalid_tick_sell_refreshes_once_then_stops():
+    sell_result = OrderResult(
+        order_id="sell-failed",
+        status="failed",
+        filled_size="0",
+        error="invalid tick size (0.001), minimum for the market is 0.01",
+    )
+    trade, executor, event_logger, closed = make_trade(sell_result=sell_result)
+    trade.position_shares = Decimal("10")
+    trade._tick_size = Decimal("0.01")
+
+    run(trade._start_normal_exit())
+
+    assert len(executor.placed_orders) == 2
+    assert executor.placed_orders[0]["price"] == "0.999"
+    assert executor.placed_orders[0]["tick_size"] == "0.001"
+    assert executor.placed_orders[1]["price"] == "0.999"
+    assert executor.placed_orders[1]["tick_size"] == "0.001"
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert close_reason(event_logger) == "sell_failed"
+
+    steps = {(step, detail.get("stop_reason")) for _, step, detail in event_logger.steps}
+    assert ("tick_refreshed", None) in steps
+    assert ("sell_retry_exhausted", "invalid_tick_retry_exhausted") in steps

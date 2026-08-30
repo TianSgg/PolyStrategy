@@ -42,6 +42,11 @@ from framework.strategy_runtime.tick_verifier import TickVerifier
 from framework.user_ws import FillEvent
 from strategy_weather_sweep.dao import WeatherSweepTradeDAO
 from strategy_weather_sweep.internal.risk_monitor import SweepRiskMonitor
+from strategy_weather_sweep.internal.sell_failure import (
+    SellFailureSnapshot,
+    SellFailureTracker,
+    classify_sell_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +162,59 @@ class SweepTrade:
             "utc": self._utc_str(),
             "offset_ms": int((time.time() * 1000) - offset_origin_ms),
         }
+
+    async def _refresh_tick_after_invalid_sell(
+        self, old_tick: Decimal, *, phase: str, reason: str,
+    ) -> Optional[Decimal]:
+        try:
+            new_tick = await self._tick_size_service.refresh(self.token_id)
+        except TickSizeFetchError as exc:
+            logger.error(
+                "Tick refresh failed after invalid tick SELL: token=%s err=%s",
+                self.token_id, exc,
+            )
+            if self._el:
+                self._el.log_step("tick_refresh_failed", {
+                    "reason": reason,
+                    "error": str(exc),
+                    "action": "stop_event",
+                    "utc": self._utc_str(),
+                }, phase=phase)
+            return None
+
+        self._tick_size = new_tick
+        if self._el:
+            self._el.log_step("tick_refreshed", {
+                "reason": "invalid_tick_size",
+                "old_tick_size": str(old_tick),
+                "new_tick_size": str(new_tick),
+                "source": "http",
+                "utc": self._utc_str(),
+            }, phase=phase)
+        return new_tick
+
+    def _log_sell_retry_exhausted(
+        self,
+        snapshot: SellFailureSnapshot,
+        *,
+        phase: str,
+        reason: str,
+        stop_reason: str,
+    ) -> None:
+        if not self._el:
+            return
+        self._el.log_step("sell_retry_exhausted", {
+            "attempt_count": snapshot.attempt_count,
+            "consecutive_same_error": snapshot.consecutive_same_error,
+            "error_signature": snapshot.error_signature,
+            "last_error": snapshot.last_error,
+            "elapsed_ms": snapshot.elapsed_ms,
+            "position_shares": str(self.position_shares),
+            "trigger": reason,
+            "stop_reason": stop_reason,
+            "action": "stop_event",
+            "utc": self._utc_str(),
+        }, phase=phase)
 
     # ==================== Entry ====================
 
@@ -478,16 +536,18 @@ class SweepTrade:
             return
 
         sell_price = Decimal("1") - self._tick_size
-        sell_timeout_s = 600
+        sell_timeout_s = 180
         sell_backoff_base = 2.0
         sell_backoff_cap = 60.0
 
         deadline = time.monotonic() + sell_timeout_s
         attempt = 0
         exit_origin_ms = int(time.time() * 1000)
+        failure_tracker = SellFailureTracker(max_elapsed_ms=sell_timeout_s * 1000)
+        invalid_tick_refreshed = False
 
         while time.monotonic() < deadline:
-            if self.state == "closed":
+            if self.state != "exit_working":
                 return
 
             attempt += 1
@@ -506,15 +566,50 @@ class SweepTrade:
 
             # --- Layer 1: sell_order_failed ---
             if result.status in ("failed", "insufficient_balance"):
+                error_signature = classify_sell_error(result.status, result.error)
+                failure = failure_tracker.record(error_signature, result.error)
                 if self._el:
                     self._el.log_step("sell_order_failed", {
                         "status": result.status,
                         "error": result.error,
+                        "error_signature": error_signature,
                         "order": self._order_obj(
                             result.order_id, "SELL", str(sell_price), str(sell_size), exit_origin_ms,
                         ),
                         "attempt": attempt,
                     }, phase="exit")
+
+                if error_signature == "invalid_tick_size" and not invalid_tick_refreshed:
+                    old_tick = self._tick_size
+                    new_tick = await self._refresh_tick_after_invalid_sell(
+                        old_tick, phase="exit", reason="normal_exit",
+                    )
+                    if new_tick is None:
+                        await self.risk.stop()
+                        self._close("sell_failed", phase="exit", extra={
+                            "error": result.error,
+                            "error_signature": error_signature,
+                            "stop_reason": "tick_refresh_failed",
+                        })
+                        return
+                    invalid_tick_refreshed = True
+                    sell_price = Decimal("1") - new_tick
+                    continue
+
+                stop_reason = failure.stop_reason
+                if error_signature == "invalid_tick_size" and invalid_tick_refreshed:
+                    stop_reason = "invalid_tick_retry_exhausted"
+                if stop_reason:
+                    self._log_sell_retry_exhausted(
+                        failure, phase="exit", reason="normal_exit", stop_reason=stop_reason,
+                    )
+                    await self.risk.stop()
+                    self._close("sell_failed", phase="exit", extra={
+                        "error": result.error,
+                        "error_signature": error_signature,
+                        "stop_reason": stop_reason,
+                    })
+                    return
 
                 if time.monotonic() < deadline:
                     backoff = min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
@@ -609,6 +704,15 @@ class SweepTrade:
             return
 
         await self.risk.stop()
+        if self.position_shares <= 0:
+            self._close("normal_exit", phase="exit")
+            return
+
+        failure = failure_tracker.snapshot()
+        stop_reason = failure.stop_reason or "deadline_exceeded"
+        self._log_sell_retry_exhausted(
+            failure, phase="exit", reason="normal_exit", stop_reason=stop_reason,
+        )
         if self._el:
             self._el.log_step("sell_give_up", {
                 "attempts": attempt,
@@ -616,7 +720,11 @@ class SweepTrade:
                 "remaining_position": str(self.position_shares),
                 "last_error": result.error if result else None,
             }, phase="exit")
-        self._close("sell_failed", phase="exit")
+        self._close("sell_failed", phase="exit", extra={
+            "error": result.error if result else None,
+            "error_signature": failure.error_signature,
+            "stop_reason": stop_reason,
+        })
 
     def _record_sell_fill(
         self, order_id: str, filled: Decimal, price: Decimal, *,
@@ -746,11 +854,16 @@ class SweepTrade:
 
         if self.position_shares > 0:
             risk_origin_ms = int(time.time() * 1000)
-            risk_deadline = time.monotonic() + 600
+            risk_timeout_s = 180
+            risk_deadline = time.monotonic() + risk_timeout_s
             risk_attempt = 0
             risk_sell_wait_s = 30
+            failure_tracker = SellFailureTracker(max_elapsed_ms=risk_timeout_s * 1000)
+            invalid_tick_refreshed = False
 
             while self.position_shares > 0 and time.monotonic() < risk_deadline:
+                if self.state == "closed":
+                    return
                 risk_attempt += 1
                 sell_size = self.position_shares
                 sell_start_shares = self.position_shares
@@ -767,16 +880,52 @@ class SweepTrade:
                 )
 
                 if result.status in ("failed", "insufficient_balance"):
+                    error_signature = classify_sell_error(result.status, result.error)
+                    failure = failure_tracker.record(error_signature, result.error)
                     if self._el:
                         self._el.log_step("sell_order_failed", {
                             "status": result.status,
                             "error": result.error,
+                            "error_signature": error_signature,
                             "order": self._order_obj(
                                 result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
                             ),
                             "reason": "stop_loss",
                             "attempt": risk_attempt,
                         }, phase="exit_risk")
+
+                    if error_signature == "invalid_tick_size" and not invalid_tick_refreshed:
+                        new_tick = await self._refresh_tick_after_invalid_sell(
+                            risk_tick_size, phase="exit_risk", reason="stop_loss",
+                        )
+                        if new_tick is None:
+                            await self.risk.stop()
+                            self._close("sell_failed", phase="exit_risk", extra={
+                                "error": result.error,
+                                "error_signature": error_signature,
+                                "stop_reason": "tick_refresh_failed",
+                            })
+                            return
+                        invalid_tick_refreshed = True
+                        risk_tick_size = new_tick
+                        continue
+
+                    stop_reason = failure.stop_reason
+                    if error_signature == "invalid_tick_size" and invalid_tick_refreshed:
+                        stop_reason = "invalid_tick_retry_exhausted"
+                    if stop_reason:
+                        self._log_sell_retry_exhausted(
+                            failure, phase="exit_risk", reason="stop_loss",
+                            stop_reason=stop_reason,
+                        )
+                        await self.risk.stop()
+                        self._close("sell_failed", phase="exit_risk", extra={
+                            "error": result.error,
+                            "error_signature": error_signature,
+                            "stop_reason": stop_reason,
+                        })
+                        return
+
                     if time.monotonic() < risk_deadline:
                         backoff = min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
                         await asyncio.sleep(backoff)
@@ -843,6 +992,21 @@ class SweepTrade:
                 if self.position_shares <= 0:
                     break
 
+        if self.position_shares > 0:
+            failure = failure_tracker.snapshot()
+            stop_reason = failure.stop_reason or "deadline_exceeded"
+            self._log_sell_retry_exhausted(
+                failure, phase="exit_risk", reason="stop_loss", stop_reason=stop_reason,
+            )
+            await self.risk.stop()
+            self._close("sell_failed", phase="exit_risk", extra={
+                "error": failure.last_error,
+                "error_signature": failure.error_signature,
+                "stop_reason": stop_reason,
+            })
+            return
+
+        await self.risk.stop()
         self._close("stop_loss", phase="exit_risk")
 
     def _record_sell_fill_risk(
