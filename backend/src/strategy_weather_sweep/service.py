@@ -10,13 +10,13 @@
   1. 收到合格 sweep → 快速 BUY@0.99 固定份额
   2. 启动风控 + 订单簿监听
   3. entry_wait_ms 后撤销未成交 BUY
-  4. 无持仓 → 关闭；有持仓 → 等待 tick=0.001
-  5. HTTP 校验通过 → SELL@0.999；风控触发 → 强制退出
+  4. 入场超时无持仓 → timeout_no_fill；有持仓 → 等待 tick=0.001
+  5. HTTP 校验通过 → SELL@(1 - tick_size)；风控触发 → 强制退出
 
 Event log 三层分离（参见 doc/2026-08-28-event-log-storage-design.md）：
   挂单结果: order_placed / order_failed
   成交通知: buy_filled / sell_filled
-  阶段终态: entry_complete / entry_timeout / sell_complete / sell_timeout
+  阶段终态: entry_complete / entry_timeout / sell_complete / sell_failed
 
 强制退出（配置变更/禁用）:
   - 撤销所有未成交买单
@@ -76,6 +76,7 @@ class SweepTrade:
         self.exit_order_id: Optional[str] = None
         self._entry_timer: Optional[asyncio.Task] = None
         self._tick_verified = False
+        self._normal_exit_started = False
         self._tick_size = Decimal("0.01")
         self._event_start_ms = int(time.time() * 1000)
         self._entry_cost = Decimal("0")
@@ -268,7 +269,7 @@ class SweepTrade:
         # --- Layer 3: entry_complete (all filled immediately) ---
         if result.status == "filled":
             self.entry_order_id = None
-            self._record_entry_complete(result.order_id)
+            await self._record_entry_complete(result.order_id)
             return
 
         # partial or live → WS 监听 + 超时计时器
@@ -313,7 +314,10 @@ class SweepTrade:
             "entered_at": datetime.now(timezone.utc).replace(tzinfo=None),
         })
 
-    def _record_entry_complete(self, order_id: str) -> None:
+    async def _record_entry_complete(self, order_id: str) -> None:
+        if self.state == "closed":
+            return
+
         elapsed_ms = int(time.time() * 1000) - self._order_placed_ms if self._order_placed_ms else 0
         if self._el:
             self._el.log_step("entry_complete", {
@@ -323,7 +327,11 @@ class SweepTrade:
                 "fill_count": self._buy_fill_count,
                 "elapsed_ms": elapsed_ms,
             }, phase="entry")
+        self.state = "exit_working"
         self._update_trade_summary({"status": "exit_working"})
+
+        if self._tick_verified:
+            await self._start_normal_exit()
 
     async def _on_buy_fill(self, event: FillEvent) -> None:
         if self.state == "closed":
@@ -335,7 +343,7 @@ class SweepTrade:
                 self._entry_timer.cancel()
             self.entry_order_id = None
             (await self._executor.ensure_user_ws()).unwatch_order(event.order_id)
-            self._record_entry_complete(event.order_id)
+            await self._record_entry_complete(event.order_id)
 
     async def _entry_timeout(self, wait_sec: float) -> None:
         await asyncio.sleep(wait_sec)
@@ -373,10 +381,13 @@ class SweepTrade:
             }, phase="entry")
 
         if self.position_shares <= 0:
+            await self.risk.stop()
             self._close("timeout_no_fill", phase="entry")
         else:
             self.state = "exit_working"
             self._update_trade_summary({"status": "exit_working"})
+            if self._tick_verified:
+                await self._start_normal_exit()
 
     # ==================== Monitor & Exit ====================
 
@@ -404,16 +415,28 @@ class SweepTrade:
                         "token_id": self.token_id,
                         "confirmed": True,
                     }, phase="monitor")
-                await self._tick_exit()
+                await self._start_normal_exit()
 
-    async def _tick_exit(self) -> None:
-        if self.position_shares <= 0:
-            await self.risk.stop()
-            self._close("tick_exit", phase="exit")
+    async def _start_normal_exit(self) -> None:
+        if self.state == "closed" or self._normal_exit_started:
             return
 
+        # Tick changing before the entry order reaches a terminal state is only
+        # a trigger. The entry order still owns the entry_wait_ms lifecycle.
+        if self.position_shares <= 0 or self.entry_order_id:
+            if self._el:
+                self._el.log_step("normal_exit_deferred", {
+                    "trigger": "tick_size_change",
+                    "reason": "no_position" if self.position_shares <= 0 else "entry_order_pending",
+                    "position_shares": str(self.position_shares),
+                    "entry_order_id": self.entry_order_id,
+                }, phase="monitor")
+            return
+
+        self._normal_exit_started = True
         self.state = "exit_working"
-        sell_price = Decimal("0.01")
+        self._update_trade_summary({"status": "exit_working"})
+        sell_price = Decimal("1") - self._tick_size
         sell_timeout_s = 600
         sell_backoff_base = 2.0
         sell_backoff_cap = 60.0
@@ -433,7 +456,7 @@ class SweepTrade:
                 side="SELL",
                 price=str(sell_price),
                 size=str(sell_size),
-                tick_size="0.01",
+                tick_size=str(self._tick_size),
                 neg_risk=True,
                 check_balance=False,
             )
@@ -473,7 +496,7 @@ class SweepTrade:
                     "clob_status": result.clob_status,
                     "clob_taking": result.clob_taking,
                     "clob_making": result.clob_making,
-                    "reason": "tick_exit",
+                    "trigger": "tick_size_change",
                     "attempt": attempt,
                 }, phase="exit")
 
@@ -493,7 +516,7 @@ class SweepTrade:
                 if self.position_shares <= 0:
                     self._record_sell_complete(result.order_id, sell_fill_count, sell_placed_ms)
                     await self.risk.stop()
-                    self._close("tick_exit", phase="exit")
+                    self._close("normal_exit", phase="exit")
                     return
                 # partial was labeled "filled" but position remains — continue selling
                 continue
@@ -539,7 +562,7 @@ class SweepTrade:
             self.exit_order_id = None
             self._record_sell_complete(result.order_id, sell_fill_count, sell_placed_ms)
             await self.risk.stop()
-            self._close("tick_exit", phase="exit")
+            self._close("normal_exit", phase="exit")
             return
 
         await self.risk.stop()

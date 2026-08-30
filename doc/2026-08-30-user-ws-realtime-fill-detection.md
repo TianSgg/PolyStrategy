@@ -355,7 +355,7 @@ WS 回调只是以不同 `source` 值调用它们，event log 自然就有了逐
 | N+1 | sell_filled | exit | `{filled_size: "15", remaining_position: "20", source: "ws_order_update"}` |
 | N+2 | sell_filled | exit | `{filled_size: "20", remaining_position: "0", source: "ws_order_update"}` |
 | N+3 | sell_complete | exit | `{total_filled: "35", remaining_position: "0", fill_count: 2}` |
-| N+4 | event_closed | exit | `{reason: "tick_exit"}` |
+| N+4 | event_closed | exit | `{reason: "normal_exit"}` |
 
 ---
 
@@ -593,9 +593,9 @@ if self.entry_order_id:
 
 #### 2.4 卖单退出 — live 注册 WS 监听 + Event 等待
 
-**文件**: `strategy_weather_sweep/service.py`，`_tick_exit()`（当前 line 466-468，替换 TODO）
+**文件**: `strategy_weather_sweep/service.py`，`_start_normal_exit()`（当前 line 466-468，替换 TODO）
 
-注意：与 `buy_price` 同理，当前 `sell_price` 是 `_tick_exit()` 的局部变量，需要先存到实例属性 `self.sell_price = sell_price`。
+注意：与 `buy_price` 同理，当前 `sell_price` 是 `_start_normal_exit()` 的局部变量，需要先存到实例属性 `self.sell_price = sell_price`。
 
 ```python
 # live → WS 监听 + 等待全部成交或超时

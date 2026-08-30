@@ -299,6 +299,10 @@ trades 表：UPDATE `status = exit_working`。
 - `final_position = 0` → 写 `event_closed`（reason=timeout_no_fill），生命周期结束
 - `final_position > 0` → trades 表 UPDATE `status = exit_working`，进入 monitor/exit 阶段
 
+如果 tick size 在入场等待期内已变为 `0.001` 并通过 HTTP 校验，但买单仍没有任何成交，
+只写 `normal_exit_deferred`（trigger=tick_size_change, reason=no_position），不提前关闭 event。
+订单仍等待 `entry_wait_ms` 到期；到期撤单并校准后若仍无仓位，最终关闭原因仍是 `timeout_no_fill`。
+
 ---
 
 ## 5. 买入场景完整示例
@@ -428,7 +432,7 @@ WS 检测到 tick size 变化（价格精度变为 0.001）。
 
 ### 7.1 sell_order_placed
 
-CLOB 接受了卖单。结构同 `order_placed`，加 `reason` 和 `attempt`。
+CLOB 接受了卖单。结构同 `order_placed`，加 `trigger` 和 `attempt`。
 
 ```json
 {
@@ -443,7 +447,7 @@ CLOB 接受了卖单。结构同 `order_placed`，加 `reason` 和 `attempt`。
   "clob_status": "matched",
   "clob_taking": "20.0000",
   "clob_making": "0",
-  "reason": "tick_exit",
+  "trigger": "tick_size_change",
   "attempt": 1,
   "pre_bbo": { "...": "下单前盘口" },
   "aft_bbo": { "...": "下单后盘口" }
@@ -507,7 +511,7 @@ trades 表：每次 `sell_filled` UPDATE `exit_shares`（累计）和 `exit_reve
 }
 ```
 
-之后写 `event_closed`（reason=tick_exit）。
+之后写 `event_closed`（reason=normal_exit）。
 
 ### 7.5 sell_timeout
 
@@ -678,7 +682,7 @@ sell_order_placed
 
 ```json
 {
-  "reason": "tick_exit",
+  "reason": "normal_exit",
   "total_position": "0",
   "duration_ms": 85000
 }
@@ -686,12 +690,15 @@ sell_order_placed
 
 | reason 值 | 含义 |
 |-----------|------|
-| tick_exit | tick 变化触发正常卖出完成 |
+| normal_exit | 买入成功后按策略预期完成卖出 |
 | stop_loss | 风控止损完成 |
 | buy_failed | 入场失败 |
 | timeout_no_fill | 入场超时无成交 |
 | sell_failed | 卖出超时失败 |
 | force_exit | 强制退出 |
+
+历史数据中可能存在 `tick_exit`，表示旧版“tick 变化且正常卖出完成”的合并语义；
+新数据不再写入该值，前端仅作只读兼容展示。
 
 trades 表：最终 UPDATE `status = closed, close_reason = reason, pnl = ..., pnl_pct = ..., duration_ms = ..., closed_at = ...`。
 
@@ -793,15 +800,15 @@ seq  phase       step                detail 关键字段
 5    entry       entry_complete      {total_filled: "20", fill_count: 2, elapsed_ms: 4500}
 6    monitor     tick_detected       {tick_size: "0.001"}
 7    monitor     tick_verified       {confirmed: true}
-8    exit        sell_order_placed   {order: {order_id, price: "0.999", size: "20"}, clob_status: "matched", clob_taking: "20", reason: "tick_exit", attempt: 1}
+8    exit        sell_order_placed   {order: {order_id, price: "0.999", size: "20"}, clob_status: "matched", clob_taking: "20", trigger: "tick_size_change", attempt: 1}
 9    exit        sell_filled         {filled_size: "20", remaining_position: "0", source: "clob_response"}
 10   exit        sell_complete       {total_filled: "20", fill_count: 1, elapsed_ms: 0}
-11   exit        event_closed        {reason: "tick_exit", total_position: "0", duration_ms: 85000}
+11   exit        event_closed        {reason: "normal_exit", total_position: "0", duration_ms: 85000}
 ```
 
 trades 表最终状态：
 ```
-status=closed, close_reason=tick_exit
+status=closed, close_reason=normal_exit
 entry_price=0.99, entry_shares=20, entry_cost=19.80
 exit_price=0.999, exit_shares=20, exit_revenue=19.98
 pnl=0.18, pnl_pct=0.91, duration_ms=85000

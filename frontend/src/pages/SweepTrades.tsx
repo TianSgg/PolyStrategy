@@ -57,7 +57,8 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 const CLOSE_REASON_LABELS: Record<string, string> = {
-  tick_exit: 'Tick退出 tick_exit',
+  normal_exit: '正常退出 normal_exit',
+  tick_exit: '旧版Tick退出 tick_exit',
   stop_loss: '止损 stop_loss',
   force_exit: '强制退出 force_exit',
   buy_failed: '买入失败 buy_failed',
