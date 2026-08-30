@@ -464,10 +464,10 @@ export default function StrategyDashboard({ darkMode }: Props) {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px' }}>
                             <span style={{
                               fontSize: '11px', padding: '2px 6px', borderRadius: '4px', fontWeight: 500,
-                              background: t.status === 'closed' ? '#64748b20' : t.status === 'exit_working' ? '#f59e0b20' : '#3b82f620',
-                              color: t.status === 'closed' ? '#64748b' : t.status === 'exit_working' ? '#f59e0b' : '#3b82f6',
+                              background: t.status === 'exit_failed' ? '#ef444420' : t.status === 'closed' ? '#64748b20' : t.status === 'exit_working' ? '#f59e0b20' : '#3b82f620',
+                              color: t.status === 'exit_failed' ? '#ef4444' : t.status === 'closed' ? '#64748b' : t.status === 'exit_working' ? '#f59e0b' : '#3b82f6',
                             }}>
-                              {t.status === 'entry_working' ? '入场中' : t.status === 'exit_working' ? '出场中' : '已平仓'}
+                              {t.status === 'entry_working' ? '入场中' : t.status === 'exit_working' ? '出场中' : t.status === 'exit_failed' ? '退出失败' : '已平仓'}
                             </span>
                             {t.close_reason && <span style={{ fontSize: '11px', color: textSecondary }}>({CLOSE_REASON_LABELS[t.close_reason] || t.close_reason})</span>}
                             <span style={{ fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

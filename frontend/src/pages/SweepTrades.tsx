@@ -13,7 +13,7 @@ interface Trade {
   event_slug: string | null
   city: string | null
   direction: string | null
-  status: 'entry_working' | 'exit_working' | 'closed'
+  status: 'entry_working' | 'exit_working' | 'closed' | 'exit_failed'
   close_reason: string | null
   entry_price: string | null
   entry_shares: string | null
@@ -50,12 +50,14 @@ const STATUS_LABELS: Record<string, string> = {
   entry_working: '入场中',
   exit_working: '出场中',
   closed: '已平仓',
+  exit_failed: '退出失败',
 }
 
 const STATUS_COLORS: Record<string, string> = {
   entry_working: '#3b82f6',
   exit_working: '#f59e0b',
   closed: '#64748b',
+  exit_failed: '#ef4444',
 }
 
 const CLOSE_REASON_LABELS: Record<string, string> = {
@@ -227,6 +229,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
           <option value="entry_working">入场中</option>
           <option value="exit_working">出场中</option>
           <option value="closed">已平仓</option>
+          <option value="exit_failed">退出失败</option>
         </select>
         {!proxyWallet && accounts.length > 0 && (
           <select
