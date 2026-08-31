@@ -2,6 +2,7 @@ import asyncio
 import sys
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -37,10 +38,11 @@ class FakeExecutor:
     available_cash = Decimal("1000")
 
     def __init__(
-        self, sell_result=None, final_matched=Decimal("0"),
+        self, sell_result=None, sell_results=None, final_matched=Decimal("0"),
         cancel_query_failed=False, cancel_cancelled=True,
     ):
         self.sell_result = sell_result
+        self.sell_results = list(sell_results) if sell_results is not None else None
         self.final_matched = final_matched
         self.cancel_query_failed = cancel_query_failed
         self.cancel_cancelled = cancel_cancelled
@@ -52,6 +54,8 @@ class FakeExecutor:
 
     async def place_order(self, **kwargs):
         self.placed_orders.append(kwargs)
+        if self.sell_results is not None:
+            return self.sell_results.pop(0)
         return self.sell_result
 
     async def cancel_order_with_fill_check(self, order_id):
@@ -86,11 +90,12 @@ class FakeTickSizeService:
 
 
 def make_trade(
-    sell_result=None, final_matched=Decimal("0"), on_exit_failed=None,
+    sell_result=None, sell_results=None, final_matched=Decimal("0"), on_exit_failed=None,
     cancel_query_failed=False, cancel_cancelled=True,
 ):
     executor = FakeExecutor(
-        sell_result=sell_result, final_matched=final_matched,
+        sell_result=sell_result, sell_results=sell_results,
+        final_matched=final_matched,
         cancel_query_failed=cancel_query_failed,
         cancel_cancelled=cancel_cancelled,
     )
@@ -116,6 +121,10 @@ def make_trade(
 
 def run(coro):
     return asyncio.run(coro)
+
+
+async def no_sleep(_):
+    return None
 
 
 def close_reason(event_logger):
@@ -255,6 +264,41 @@ def test_invalid_tick_sell_refreshes_once_then_stops():
     steps = {(step, detail.get("stop_reason")) for _, step, detail in event_logger.steps}
     assert ("tick_refreshed", None) in steps
     assert ("sell_retry_exhausted", "invalid_tick_retry_exhausted") in steps
+
+
+def test_insufficient_balance_retries_once_for_settlement():
+    failed = OrderResult(
+        order_id="sell-settlement",
+        status="failed",
+        filled_size="0",
+        error="not enough balance / allowance",
+    )
+    success = OrderResult(
+        order_id="sell-success",
+        status="filled",
+        filled_size="10",
+        clob_status="matched",
+        clob_taking="9.99",
+        clob_making="10",
+    )
+    trade, executor, event_logger, closed = make_trade(
+        sell_results=[failed, success],
+    )
+    trade.position_shares = Decimal("10")
+    trade._tick_size = Decimal("0.01")
+
+    with patch("strategy_weather_sweep.service.asyncio.sleep", no_sleep):
+        run(trade._start_normal_exit())
+
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert len(executor.placed_orders) == 2
+    assert ("exit", "balance_settlement_retry") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    assert ("exit", "event_closed") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
 
 
 def test_force_exit_reconciles_sell_fill_and_closes():

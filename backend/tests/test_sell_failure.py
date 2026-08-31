@@ -14,6 +14,9 @@ def test_classify_sell_error_signatures():
     assert classify_sell_error("failed", "invalid tick size (0.001)") == "invalid_tick_size"
     assert classify_sell_error("failed", "tick size mismatch: caller=0.01") == "invalid_tick_size"
     assert classify_sell_error("insufficient_balance", None) == "insufficient_balance"
+    assert classify_sell_error(
+        "failed", "not enough balance / allowance"
+    ) == "insufficient_balance"
     assert classify_sell_error("failed", "Read timeout while calling CLOB") == "network_timeout"
     assert classify_sell_error("failed", "401 unauthorized") == "authentication_error"
     assert classify_sell_error("failed", "invalid order price") == "invalid_order_params"

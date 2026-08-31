@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 def classify_sell_error(status: str, error: Optional[str]) -> str:
     """Normalize CLOB/executor errors into a stable retry signature."""
     text = (error or "").lower()
-    if status == "insufficient_balance" or "insufficient balance" in text:
+    if (
+        status == "insufficient_balance"
+        or "insufficient balance" in text
+        or "not enough balance" in text
+        or "not enough allowance" in text
+    ):
         return "insufficient_balance"
     if "invalid tick size" in text or "tick size mismatch" in text:
         return "invalid_tick_size"

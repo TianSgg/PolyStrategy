@@ -615,6 +615,7 @@ class SweepTrade:
         exit_origin_ms = int(time.time() * 1000)
         failure_tracker = SellFailureTracker(max_elapsed_ms=sell_timeout_s * 1000)
         invalid_tick_refreshed = False
+        balance_settlement_retried = False
 
         while time.monotonic() < deadline:
             if self.state != "exit_working":
@@ -648,6 +649,21 @@ class SweepTrade:
                         ),
                         "attempt": attempt,
                     }, phase="exit")
+
+                if (
+                    error_signature == "insufficient_balance"
+                    and not balance_settlement_retried
+                ):
+                    if self._el:
+                        self._el.log_step("balance_settlement_retry", {
+                            "attempt": attempt,
+                            "error": result.error,
+                            "wait_ms": 3000,
+                            "utc": self._utc_str(),
+                        }, phase="exit")
+                    balance_settlement_retried = True
+                    await asyncio.sleep(3.0)
+                    continue
 
                 if error_signature == "invalid_tick_size" and not invalid_tick_refreshed:
                     old_tick = self._tick_size
@@ -684,7 +700,10 @@ class SweepTrade:
                     return
 
                 if time.monotonic() < deadline:
-                    backoff = min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
+                    backoff = (
+                        2.0 if error_signature == "insufficient_balance"
+                        else min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
+                    )
                     if self._el:
                         self._el.log_step("sell_retry_start", {
                             "attempt": attempt,
@@ -980,6 +999,7 @@ class SweepTrade:
             risk_sell_wait_s = 30
             failure_tracker = SellFailureTracker(max_elapsed_ms=risk_timeout_s * 1000)
             invalid_tick_refreshed = False
+            balance_settlement_retried = False
 
             while self.position_shares > 0 and time.monotonic() < risk_deadline:
                 if self.state == "closed":
@@ -1013,6 +1033,21 @@ class SweepTrade:
                             "reason": "stop_loss",
                             "attempt": risk_attempt,
                         }, phase="exit_risk")
+
+                    if (
+                        error_signature == "insufficient_balance"
+                        and not balance_settlement_retried
+                    ):
+                        if self._el:
+                            self._el.log_step("balance_settlement_retry", {
+                                "attempt": risk_attempt,
+                                "error": result.error,
+                                "wait_ms": 3000,
+                                "utc": self._utc_str(),
+                            }, phase="exit_risk")
+                        balance_settlement_retried = True
+                        await asyncio.sleep(3.0)
+                        continue
 
                     if error_signature == "invalid_tick_size" and not invalid_tick_refreshed:
                         new_tick = await self._refresh_tick_after_invalid_sell(
@@ -1049,7 +1084,10 @@ class SweepTrade:
                         return
 
                     if time.monotonic() < risk_deadline:
-                        backoff = min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
+                        backoff = (
+                            2.0 if error_signature == "insufficient_balance"
+                            else min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
+                        )
                         await asyncio.sleep(backoff)
                     continue
 
