@@ -497,6 +497,9 @@ def test_exit_failure_reports_strategy_pause_event():
     pause_detail = next(
         detail for _, step, detail in event_logger.steps if step == "strategy_paused"
     )
+    assert ("exit", "strategy_paused") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
     assert pause_detail["reason"] == "sell_error_circuit_breaker"
     assert pause_detail["error_signature"] == "network_timeout"
     assert pause_detail["config_disabled"] is True

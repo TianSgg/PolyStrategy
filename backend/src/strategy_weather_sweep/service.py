@@ -1429,7 +1429,7 @@ class SweepTrade:
                     "trigger_token_id": self.token_id,
                     "utc": self._utc_str(),
                     **pause_detail,
-                }, phase="strategy")
+                }, phase="exit")
 
         self._close(
             reason,
