@@ -47,6 +47,7 @@ class SharedMarketWebSocket:
             self._task = None
         self._subscribed_tokens.clear()
         self._routing.clear()
+        self._pending_unsub.clear()
         self.connected = False
 
     async def subscribe(self, token_id: str, monitor: MonitorProtocol, asset_ids: list[str]) -> None:
@@ -110,6 +111,7 @@ class SharedMarketWebSocket:
         if self._ws and self.connected:
             await self._ws.send(json.dumps({
                 "assets_ids": [token_id],
+                "type": "market",
                 "operation": "unsubscribe",
             }))
 
@@ -119,6 +121,7 @@ class SharedMarketWebSocket:
             "reconnects": self.reconnects,
             "last_message_at": self.last_message_at,
             "subscribed_tokens": len(self._subscribed_tokens),
+            "pending_initial_dump_tokens": len(self._pending_unsub),
             "routed_assets": len(self._routing),
         }
 
@@ -133,6 +136,10 @@ class SharedMarketWebSocket:
                 "operation": "unsubscribe",
             }))
             await asyncio.sleep(0.1)
+            if token_id not in self._subscribed_tokens:
+                # YES tokens are temporary snapshot subscriptions; NO tokens are
+                # the persistent market anchor and must remain subscribed.
+                self._pending_unsub.add(token_id)
             await self._ws.send(json.dumps({
                 "assets_ids": [token_id],
                 "type": "market",
@@ -189,6 +196,7 @@ class SharedMarketWebSocket:
             finally:
                 self._ws = None
                 self.connected = False
+                self._pending_unsub.clear()
 
     async def _heartbeat(self, ws) -> None:
         """Send application-level PING text frame every 10 seconds."""
