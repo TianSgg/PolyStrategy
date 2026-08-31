@@ -82,3 +82,4 @@ class CancelResult:
     cancelled: bool
     final_matched: Decimal
     status: str
+    query_failed: bool = False

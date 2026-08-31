@@ -32,7 +32,7 @@ from decimal import Decimal
 from typing import Any, Callable, Optional
 
 from framework.strategy_runtime.event_logger import EventLogger
-from framework.strategy_runtime.interfaces import Signal
+from framework.strategy_runtime.interfaces import CancelResult, Signal
 from framework.strategy_runtime.order_executor import OrderExecutor
 from framework.strategy_runtime.tick_size_service import (
     TickSizeFetchError,
@@ -140,6 +140,26 @@ class SweepTrade:
             "best_bid": None, "best_bid_size": None,
             "best_ask": None, "best_ask_size": None,
         }
+
+    async def _stop_for_cancel_query_failure(
+        self, *, phase: str, side: str, order_id: str,
+        cancel_result: CancelResult,
+    ) -> None:
+        if self._el:
+            self._el.log_step("exit_reconcile_failed", {
+                "side": side,
+                "order_id": order_id,
+                "cancelled": cancel_result.cancelled,
+                "query_status": cancel_result.status,
+                "final_matched": str(cancel_result.final_matched),
+                "utc": self._utc_str(),
+            }, phase=phase)
+        await self.risk.stop()
+        self._close_exit_failed("sell_failed", phase=phase, extra={
+            "order_id": order_id,
+            "side": side,
+            "query_status": cancel_result.status,
+        })
 
     @staticmethod
     def _bbo_from_signal_snapshot(snapshot: dict, offset_origin_ms: int) -> dict:
@@ -441,6 +461,14 @@ class SweepTrade:
             user_ws = await self._executor.ensure_user_ws()
             user_ws.unwatch_order(order_id)
             cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+            if cancel_result.query_failed:
+                if cancel_result.cancelled:
+                    self.entry_order_id = None
+                await self._stop_for_cancel_query_failure(
+                    phase="entry", side="BUY", order_id=order_id,
+                    cancel_result=cancel_result,
+                )
+                return
             self.entry_order_id = None
             if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
                 missed = cancel_result.final_matched - self.position_shares
@@ -687,6 +715,14 @@ class SweepTrade:
             except asyncio.TimeoutError:
                 user_ws.unwatch_order(result.order_id)
                 cancel_result = await self._executor.cancel_order_with_fill_check(result.order_id)
+                if cancel_result.query_failed:
+                    if cancel_result.cancelled:
+                        self.exit_order_id = None
+                    await self._stop_for_cancel_query_failure(
+                        phase="exit", side="SELL", order_id=result.order_id,
+                        cancel_result=cancel_result,
+                    )
+                    return
                 self.exit_order_id = None
                 sold_by_clob = cancel_result.final_matched
                 sold_by_memory = sell_start_shares - self.position_shares
@@ -813,6 +849,14 @@ class SweepTrade:
             order_id = self.entry_order_id
             user_ws.unwatch_order(order_id)
             cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+            if cancel_result.query_failed:
+                if cancel_result.cancelled:
+                    self.entry_order_id = None
+                await self._stop_for_cancel_query_failure(
+                    phase="exit_risk", side="BUY", order_id=order_id,
+                    cancel_result=cancel_result,
+                )
+                return
             if self._el:
                 self._el.log_step("risk_cancel_buy", {
                     "order_id": order_id,
@@ -838,6 +882,14 @@ class SweepTrade:
             order_id = self.exit_order_id
             user_ws.unwatch_order(order_id)
             cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+            if cancel_result.query_failed:
+                if cancel_result.cancelled:
+                    self.exit_order_id = None
+                await self._stop_for_cancel_query_failure(
+                    phase="exit_risk", side="SELL", order_id=order_id,
+                    cancel_result=cancel_result,
+                )
+                return
             if self._el:
                 self._el.log_step("risk_cancel_sell", {
                     "order_id": order_id,
@@ -997,6 +1049,12 @@ class SweepTrade:
 
                 user_ws.unwatch_order(result.order_id)
                 cancel_result = await self._executor.cancel_order_with_fill_check(result.order_id)
+                if cancel_result.query_failed:
+                    await self._stop_for_cancel_query_failure(
+                        phase="exit_risk", side="SELL", order_id=result.order_id,
+                        cancel_result=cancel_result,
+                    )
+                    return
                 sold_by_clob = cancel_result.final_matched
                 sold_by_memory = sell_start_shares - self.position_shares
                 if sold_by_clob > sold_by_memory:
@@ -1078,6 +1136,14 @@ class SweepTrade:
                 order_id = self.entry_order_id
                 user_ws.unwatch_order(order_id)
                 cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+                if cancel_result.query_failed:
+                    if cancel_result.cancelled:
+                        self.entry_order_id = None
+                    await self._stop_for_cancel_query_failure(
+                        phase="exit_force", side="BUY", order_id=order_id,
+                        cancel_result=cancel_result,
+                    )
+                    return
                 if self._el:
                     self._el.log_step("buy_cancelled", {
                         "order_id": order_id,
@@ -1096,6 +1162,14 @@ class SweepTrade:
                 sell_start_shares = self.position_shares
                 user_ws.unwatch_order(order_id)
                 cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+                if cancel_result.query_failed:
+                    if cancel_result.cancelled:
+                        self.exit_order_id = None
+                    await self._stop_for_cancel_query_failure(
+                        phase="exit_force", side="SELL", order_id=order_id,
+                        cancel_result=cancel_result,
+                    )
+                    return
                 if self._el:
                     self._el.log_step("sell_cancelled", {
                         "order_id": order_id,

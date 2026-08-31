@@ -36,9 +36,13 @@ class FakeUserWS:
 class FakeExecutor:
     available_cash = Decimal("1000")
 
-    def __init__(self, sell_result=None, final_matched=Decimal("0")):
+    def __init__(
+        self, sell_result=None, final_matched=Decimal("0"),
+        cancel_query_failed=False,
+    ):
         self.sell_result = sell_result
         self.final_matched = final_matched
+        self.cancel_query_failed = cancel_query_failed
         self.user_ws = FakeUserWS()
         self.placed_orders = []
 
@@ -54,7 +58,8 @@ class FakeExecutor:
             order_id=order_id,
             cancelled=True,
             final_matched=self.final_matched,
-            status="CANCELED",
+            status="query_failed" if self.cancel_query_failed else "CANCELED",
+            query_failed=self.cancel_query_failed,
         )
 
 
@@ -79,8 +84,14 @@ class FakeTickSizeService:
         return None
 
 
-def make_trade(sell_result=None, final_matched=Decimal("0"), on_exit_failed=None):
-    executor = FakeExecutor(sell_result=sell_result, final_matched=final_matched)
+def make_trade(
+    sell_result=None, final_matched=Decimal("0"), on_exit_failed=None,
+    cancel_query_failed=False,
+):
+    executor = FakeExecutor(
+        sell_result=sell_result, final_matched=final_matched,
+        cancel_query_failed=cancel_query_failed,
+    )
     event_logger = FakeEventLogger()
     closed = []
     trade = SweepTrade(
@@ -299,6 +310,28 @@ def test_sell_complete_uses_exit_fill_accumulator():
     assert Decimal(complete["total_filled"]) == Decimal("10")
     assert Decimal(complete["remaining_position"]) == Decimal("10")
     assert trade._exit_filled_shares == Decimal("10")
+
+
+def test_entry_timeout_cancel_query_failure_fails_closed():
+    trade, _, event_logger, closed = make_trade(
+        final_matched=Decimal("-1"), cancel_query_failed=True,
+    )
+    trade.entry_order_id = "buy-1"
+
+    run(trade._entry_timeout(0))
+
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    reconcile_failed = next(
+        detail for _, step, detail in event_logger.steps
+        if step == "exit_reconcile_failed"
+    )
+    assert reconcile_failed["side"] == "BUY"
+    assert reconcile_failed["query_status"] == "query_failed"
+    exit_failed = next(
+        detail for _, step, detail in event_logger.steps if step == "exit_failed"
+    )
+    assert exit_failed["query_status"] == "query_failed"
 
 
 def test_strategy_pauses_after_three_exit_failures():

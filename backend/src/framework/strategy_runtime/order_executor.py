@@ -237,28 +237,54 @@ class OrderExecutor:
         client = get_client(wallet)
         return await asyncio.to_thread(client.get_order, order_id)
 
+    async def _get_order_after_cancel(
+        self, order_id: str,
+    ) -> tuple[Optional[dict], Optional[str]]:
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                info = await self._get_order(order_id)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "get_order after cancel failed attempt=%s order=%s err=%s",
+                    attempt + 1, order_id, exc,
+                )
+                await asyncio.sleep(0.25)
+                continue
+
+            if info is None:
+                await asyncio.sleep(0.25)
+                continue
+
+            if info.get("status") == "LIVE":
+                await asyncio.sleep(0.5)
+                continue
+
+            return info, None
+
+        if last_error is not None:
+            return None, str(last_error)
+        return None, "order query did not return a final status"
+
     async def cancel_order_with_fill_check(self, order_id: str) -> CancelResult:
         """撤单 + REST 查询最终成交量。"""
         cancelled = await self.cancel_order(order_id)
-        try:
-            info = await self._get_order(order_id)
-            if info.get("status") == "LIVE":
-                await asyncio.sleep(0.5)
-                info = await self._get_order(order_id)
-            return CancelResult(
-                order_id=order_id,
-                cancelled=cancelled,
-                final_matched=Decimal(info.get("size_matched", "0")),
-                status=info.get("status", "unknown"),
-            )
-        except Exception as e:
-            logger.warning("get_order after cancel failed: %s", e)
+        info, query_error = await self._get_order_after_cancel(order_id)
+        if query_error or info is None:
             return CancelResult(
                 order_id=order_id,
                 cancelled=cancelled,
                 final_matched=Decimal("-1"),
                 status="query_failed",
+                query_failed=True,
             )
+        return CancelResult(
+            order_id=order_id,
+            cancelled=cancelled,
+            final_matched=Decimal(info.get("size_matched", "0")),
+            status=info.get("status", "unknown"),
+        )
 
     def _parse_result(
         self, order_id: str, result: Optional[Dict[str, Any]], send_ns: int,
