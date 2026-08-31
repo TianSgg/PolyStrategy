@@ -69,8 +69,14 @@ class FakeExecutor:
 
 
 class FakeTickVerifier:
-    async def verify(self, token_id):
-        return TickVerifyResult(confirmed=True, actual_tick=Decimal("0.001"))
+    async def verify(self, token_id, ws_tick_size=None):
+        return TickVerifyResult(
+            confirmed=True,
+            actual_tick=Decimal("0.001"),
+            ws_tick_size=ws_tick_size,
+            tick_api_size=Decimal("0.001"),
+            book_tick_size=Decimal("0.001"),
+        )
 
 
 class FakeTickSizeService:
@@ -85,16 +91,24 @@ class FakeTickSizeService:
         self.refresh_count += 1
         return self.tick_size
 
+    async def refresh_consensus(self, token_id, ws_tick_size):
+        self.refresh_count += 1
+        return self.tick_size
+
     def invalidate(self, token_id):
         return None
 
 
 class FakeOrderBookWS:
-    def __init__(self, min_order_size=None):
+    def __init__(self, min_order_size=None, tick_size=Decimal("0.001")):
         self.min_order_size = min_order_size
+        self.tick_size = tick_size
 
     def get_min_order_size(self, token_id):
         return self.min_order_size
+
+    def get_tick_size(self, token_id):
+        return self.tick_size
 
 
 def make_trade(
@@ -102,6 +116,7 @@ def make_trade(
     cancel_query_failed=False, cancel_cancelled=True,
     orderbook_ws=None,
 ):
+    orderbook_ws = orderbook_ws or FakeOrderBookWS()
     executor = FakeExecutor(
         sell_result=sell_result, sell_results=sell_results,
         final_matched=final_matched,

@@ -35,6 +35,7 @@ from framework.strategy_runtime.event_logger import EventLogger
 from framework.strategy_runtime.interfaces import CancelResult, OrderResult, Signal
 from framework.strategy_runtime.order_executor import OrderExecutor
 from framework.strategy_runtime.tick_size_service import (
+    TickSizeConsensusError,
     TickSizeFetchError,
     TickSizeService,
 )
@@ -262,7 +263,27 @@ class SweepTrade:
         self, old_tick: Decimal, *, phase: str, reason: str,
     ) -> Optional[Decimal]:
         try:
-            new_tick = await self._tick_size_service.refresh(self.token_id)
+            new_tick = await self._tick_size_service.refresh_consensus(
+                self.token_id, self._latest_ws_tick_size()
+            )
+        except TickSizeConsensusError as exc:
+            logger.error(
+                "Tick source mismatch after invalid tick SELL: token=%s "
+                "ws=%s tick_api=%s book=%s",
+                self.token_id, exc.ws_tick_size, exc.tick_api_size,
+                exc.book_tick_size,
+            )
+            if self._el:
+                self._el.log_step("tick_refresh_failed", {
+                    "reason": reason,
+                    "error": "tick_source_mismatch",
+                    "ws_tick_size": str(exc.ws_tick_size),
+                    "http_tick_size": str(exc.tick_api_size),
+                    "book_tick_size": str(exc.book_tick_size),
+                    "action": "stop_event",
+                    "utc": self._utc_str(),
+                }, phase=phase)
+            return None
         except TickSizeFetchError as exc:
             logger.error(
                 "Tick refresh failed after invalid tick SELL: token=%s err=%s",
@@ -283,10 +304,19 @@ class SweepTrade:
                 "reason": "invalid_tick_size",
                 "old_tick_size": str(old_tick),
                 "new_tick_size": str(new_tick),
-                "source": "http",
+                "source": "ws+tick-size+book",
                 "utc": self._utc_str(),
             }, phase=phase)
         return new_tick
+
+    def _latest_ws_tick_size(self) -> Optional[Decimal]:
+        if not self._orderbook_ws:
+            return None
+        getter = getattr(self._orderbook_ws, "get_tick_size", None)
+        if getter is None:
+            return None
+        value = getter(self.token_id)
+        return Decimal(str(value)) if value is not None else None
 
     def _log_sell_retry_exhausted(
         self,
@@ -593,7 +623,9 @@ class SweepTrade:
                     "source": "risk_ws",
                 }, phase="monitor")
 
-            result = await self.tick_verifier.verify(self.token_id)
+            result = await self.tick_verifier.verify(
+                self.token_id, ws_tick_size=new_tick
+            )
             if self.state not in ("entry_working", "exit_working"):
                 return
             if result.confirmed:
@@ -604,11 +636,21 @@ class SweepTrade:
                         "token_id": self.token_id,
                         "confirmed": True,
                         "ws_tick_size": str(new_tick),
-                        "http_tick_size": str(result.actual_tick or new_tick),
-                        "source": "http",
+                        "http_tick_size": str(result.tick_api_size or result.actual_tick or new_tick),
+                        "book_tick_size": str(result.book_tick_size or result.actual_tick or new_tick),
+                        "source": "ws+tick-size+book",
                         "utc": self._utc_str(),
                     }, phase="monitor")
                 await self._start_normal_exit()
+            elif self._el:
+                self._el.log_step("tick_verify_failed", {
+                    "confirmed": False,
+                    "ws_tick_size": str(result.ws_tick_size or new_tick),
+                    "http_tick_size": str(result.tick_api_size) if result.tick_api_size is not None else None,
+                    "book_tick_size": str(result.book_tick_size) if result.book_tick_size is not None else None,
+                    "error": result.error,
+                    "utc": self._utc_str(),
+                }, phase="monitor")
 
     async def _start_normal_exit(self) -> None:
         if self.state == "closed" or self._normal_exit_started:
@@ -631,7 +673,31 @@ class SweepTrade:
         self._update_trade_summary({"status": "exit_working"})
 
         try:
-            self._tick_size = await self._tick_size_service.refresh(self.token_id)
+            self._tick_size = await self._tick_size_service.refresh_consensus(
+                self.token_id, self._latest_ws_tick_size()
+            )
+        except TickSizeConsensusError as exc:
+            logger.error(
+                "Tick source mismatch before SELL: token=%s ws=%s tick_api=%s book=%s",
+                self.token_id, exc.ws_tick_size, exc.tick_api_size,
+                exc.book_tick_size,
+            )
+            if self._el:
+                self._el.log_step("tick_refresh_failed", {
+                    "error": "tick_source_mismatch",
+                    "ws_tick_size": str(exc.ws_tick_size),
+                    "http_tick_size": str(exc.tick_api_size),
+                    "book_tick_size": str(exc.book_tick_size),
+                    "action": "stop_event",
+                    "utc": self._utc_str(),
+                }, phase="exit")
+            await self.risk.stop()
+            self._close_exit_failed("sell_failed", phase="exit", extra={
+                "failure_reason": "sell_placement_failed",
+                "error": "tick_source_mismatch",
+                "error_signature": classify_sell_error("failed", "tick size mismatch"),
+            })
+            return
         except TickSizeFetchError as exc:
             logger.error("Tick size refresh failed before SELL: token=%s err=%s", self.token_id, exc)
             if self._el:
@@ -1027,7 +1093,31 @@ class SweepTrade:
 
         # 缺口③: 清仓循环 — live 时用 WS + asyncio.Event 等待
         try:
-            risk_tick_size = await self._tick_size_service.refresh(self.token_id)
+            risk_tick_size = await self._tick_size_service.refresh_consensus(
+                self.token_id, self._latest_ws_tick_size()
+            )
+        except TickSizeConsensusError as exc:
+            logger.error(
+                "Tick source mismatch before risk SELL: token=%s ws=%s tick_api=%s book=%s",
+                self.token_id, exc.ws_tick_size, exc.tick_api_size,
+                exc.book_tick_size,
+            )
+            if self._el:
+                self._el.log_step("tick_refresh_failed", {
+                    "error": "tick_source_mismatch",
+                    "reason": "stop_loss",
+                    "ws_tick_size": str(exc.ws_tick_size),
+                    "http_tick_size": str(exc.tick_api_size),
+                    "book_tick_size": str(exc.book_tick_size),
+                    "action": "stop_event",
+                    "utc": self._utc_str(),
+                }, phase="exit_risk")
+            self._close_exit_failed("sell_failed", phase="exit_risk", extra={
+                "failure_reason": "sell_placement_failed",
+                "error": "tick_source_mismatch",
+                "error_signature": classify_sell_error("failed", "tick size mismatch"),
+            })
+            return
         except TickSizeFetchError as exc:
             logger.error("Tick size refresh failed before risk SELL: token=%s err=%s", self.token_id, exc)
             if self._el:

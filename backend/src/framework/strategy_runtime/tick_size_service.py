@@ -23,6 +23,23 @@ class TickSizeFetchError(RuntimeError):
     """Raised when an authoritative tick size cannot be fetched."""
 
 
+class TickSizeConsensusError(TickSizeFetchError):
+    """Raised when the WS, tick API, and order-book sources disagree."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        ws_tick_size: Optional[Decimal],
+        tick_api_size: Optional[Decimal],
+        book_tick_size: Optional[Decimal],
+    ) -> None:
+        super().__init__(message)
+        self.ws_tick_size = ws_tick_size
+        self.tick_api_size = tick_api_size
+        self.book_tick_size = book_tick_size
+
+
 class TickSizeService:
     """Short-TTL HTTP cache for per-token minimum tick sizes."""
 
@@ -57,6 +74,45 @@ class TickSizeService:
     def invalidate(self, token_id: str) -> None:
         """Drop the cached value, typically after a WS tick-size change."""
         self._cache.pop(token_id, None)
+
+    async def refresh_book_tick_size(self, token_id: str) -> Decimal:
+        """Force-fetch the tick size exposed by CLOB /book."""
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                return await asyncio.to_thread(
+                    self._fetch_book_tick_size_sync, token_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.1 * (attempt + 1))
+
+        raise TickSizeFetchError(
+            f"Failed to fetch /book tick size for {token_id[:8]}: {last_error}"
+        ) from last_error
+
+    async def refresh_consensus(
+        self,
+        token_id: str,
+        ws_tick_size: Optional[Decimal],
+    ) -> Decimal:
+        """Refresh WS, /tick-size, and /book and return their agreed value."""
+        tick_api_size, book_tick_size = await asyncio.gather(
+            self.refresh(token_id),
+            self.refresh_book_tick_size(token_id),
+        )
+        values = (ws_tick_size, tick_api_size, book_tick_size)
+        if any(value is None for value in values) or len(set(values)) != 1:
+            raise TickSizeConsensusError(
+                "Tick sources disagree",
+                ws_tick_size=ws_tick_size,
+                tick_api_size=tick_api_size,
+                book_tick_size=book_tick_size,
+            )
+        return tick_api_size
 
     async def _refresh(
         self,
@@ -115,4 +171,21 @@ class TickSizeService:
         tick_size = Decimal(str(raw_tick_size))
         if tick_size <= 0:
             raise ValueError(f"invalid tick size: {tick_size}")
+        return tick_size
+
+    def _fetch_book_tick_size_sync(self, token_id: str) -> Decimal:
+        response = requests.get(
+            f"{self._clob_api_url}/book",
+            params={"token_id": token_id},
+            timeout=REQUEST_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        raw_tick_size = payload.get("tick_size") if isinstance(payload, dict) else None
+        if raw_tick_size is None:
+            raise ValueError("/book response missing tick_size")
+
+        tick_size = Decimal(str(raw_tick_size))
+        if tick_size <= 0:
+            raise ValueError(f"invalid /book tick size: {tick_size}")
         return tick_size
