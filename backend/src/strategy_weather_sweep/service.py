@@ -95,6 +95,7 @@ class SweepTrade:
         self._event_start_ms = int(time.time() * 1000)
         self._entry_cost = Decimal("0")
         self._exit_revenue = Decimal("0")
+        self._exit_filled_shares = Decimal("0")
         self._exit_failure_reported = False
 
         # Fill tracking
@@ -738,6 +739,7 @@ class SweepTrade:
         source: str, sell_fill_count: int = 0, trade_id: Optional[str] = None,
     ) -> None:
         self.position_shares -= filled
+        self._exit_filled_shares += filled
         self._exit_revenue += filled * price
 
         if self._el:
@@ -754,7 +756,7 @@ class SweepTrade:
 
         self._update_trade_summary({
             "exit_price": str(price),
-            "exit_shares": str(self._exit_revenue / price) if price > 0 else None,
+            "exit_shares": str(self._exit_filled_shares),
             "exit_revenue": str(self._exit_revenue),
             "exit_order_id": order_id,
             "exited_at": datetime.now(timezone.utc).replace(tzinfo=None),
@@ -767,7 +769,7 @@ class SweepTrade:
         if self._el:
             self._el.log_step("sell_complete", {
                 "order_id": order_id,
-                "total_filled": str(self._order_size - self.position_shares),
+                "total_filled": str(self._exit_filled_shares),
                 "remaining_position": str(self.position_shares),
                 "fill_count": fill_count,
                 "elapsed_ms": elapsed_ms,
@@ -968,7 +970,7 @@ class SweepTrade:
                         if self._el:
                             self._el.log_step("sell_complete", {
                                 "order_id": result.order_id,
-                                "total_filled": str(sell_size),
+                                "total_filled": str(self._exit_filled_shares),
                                 "remaining_position": "0",
                                 "fill_count": risk_fill_count,
                                 "elapsed_ms": 0,
@@ -1024,6 +1026,7 @@ class SweepTrade:
         self, order_id: str, filled: Decimal, price: Decimal,
     ) -> None:
         self.position_shares -= filled
+        self._exit_filled_shares += filled
         self._exit_revenue += filled * price
 
         if self._el:
@@ -1037,6 +1040,7 @@ class SweepTrade:
 
         self._update_trade_summary({
             "exit_price": str(price),
+            "exit_shares": str(self._exit_filled_shares),
             "exit_revenue": str(self._exit_revenue),
             "exit_order_id": order_id,
             "exited_at": datetime.now(timezone.utc).replace(tzinfo=None),

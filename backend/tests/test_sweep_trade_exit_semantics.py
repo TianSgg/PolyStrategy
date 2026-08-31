@@ -280,6 +280,27 @@ def test_force_exit_with_open_position_uses_exit_failed():
     assert exit_failed["manual_action_required"] is True
 
 
+def test_sell_complete_uses_exit_fill_accumulator():
+    trade, _, event_logger, _ = make_trade()
+    trade.position_shares = Decimal("20")
+    trade._order_size = Decimal("20")
+
+    trade._record_sell_fill(
+        "sell-1", Decimal("7.5"), Decimal("0.999"), source="clob_response",
+    )
+    trade._record_sell_fill(
+        "sell-1", Decimal("2.5"), Decimal("0.999"), source="ws_order_update",
+    )
+    trade._record_sell_complete("sell-1", 2, 0)
+
+    complete = next(
+        detail for _, step, detail in event_logger.steps if step == "sell_complete"
+    )
+    assert Decimal(complete["total_filled"]) == Decimal("10")
+    assert Decimal(complete["remaining_position"]) == Decimal("10")
+    assert trade._exit_filled_shares == Decimal("10")
+
+
 def test_strategy_pauses_after_three_exit_failures():
     class FakeConfigDAO:
         def __init__(self):
