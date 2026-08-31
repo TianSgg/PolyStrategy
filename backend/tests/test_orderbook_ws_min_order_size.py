@@ -1,7 +1,8 @@
-import asyncio
 import sys
 from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -32,7 +33,8 @@ class FakeSession:
         return None
 
 
-def test_orderbook_resync_caches_min_order_size():
+@pytest.mark.asyncio
+async def test_orderbook_resync_caches_min_order_size():
     ws = OrderBookWS()
     ws._books["token"] = LocalOrderBook()
     ws._http_session = FakeSession({
@@ -41,7 +43,7 @@ def test_orderbook_resync_caches_min_order_size():
         "min_order_size": "5",
     })
 
-    ok = asyncio.run(ws._fetch_and_replace("token", ws._books["token"]))
+    ok = await ws._fetch_and_replace("token", ws._books["token"])
 
     assert ok is True
     assert ws.get_min_order_size("token") == Decimal("5")
