@@ -33,18 +33,38 @@
 
 WS 收到 `tick_size_change` 且值为 `0.001` 时，只作为候选触发。`TickVerifier` 会持续请求 `/tick-size` 和 `/book`，并要求三个来源一致且都为 `0.001`。
 
-校验成功记录 `tick_verified`：
+校验成功后，每个来源各记录一条 `tick_verified`，共三条。每条 event 只描述一个来源的确认结果：
+
+| `source` | 来源，取值为 `market_ws` / `tick_size_api` / `book_api` |
+| `token_id` | 被确认的 token |
+| `tick_size` | 该来源返回或维护的 tick size |
+| `confirmed` | 该来源是否确认成功 |
+| `utc` | 事件记录的 UTC 时间 |
+
+示例：
+
+```json
+{
+  "step": "tick_verified",
+  "source": "market_ws",
+  "token_id": "123456",
+  "tick_size": "0.001",
+  "confirmed": true
+}
+```
+
+三条记录的 `tick_size` 必须都为 `0.001`。不再使用一条合并的 `ws+tick-size+book` 记录，避免前端无法区分具体来源。
+
+校验超时或始终不一致时，记录一条汇总的 `tick_verify_failed`，用于说明三源没有形成共识：
 
 | 字段 | 含义 |
 | --- | --- |
-| `confirmed` | 是否三源一致且等于目标值 |
+| `confirmed` | 固定为 `false` |
 | `ws_tick_size` | Market WS 内存中的 tick size |
-| `http_tick_size` | `/tick-size` 返回的 `minimum_tick_size` |
-| `book_tick_size` | `/book` 返回的 `tick_size` |
-| `source` | 固定为 `ws+tick-size+book` |
+| `http_tick_size` | `/tick-size` 返回值 |
+| `book_tick_size` | `/book` 返回值 |
+| `error` | 失败原因，例如 `tick_source_mismatch` 或 `timeout` |
 | `utc` | 事件记录的 UTC 时间 |
-
-校验超时或始终不一致记录 `tick_verify_failed`，字段含义同上，另外用 `error` 说明失败原因。
 
 ### 2. SELL 前刷新
 
@@ -103,5 +123,6 @@ invalid tick 的长等待会延长该轮卖出的 deadline，保证第三次 `60
 - `backend/src/framework/strategy_runtime/tick_verifier.py`
   - 在 WS 值为 `0.001` 时持续验证三源
 - `backend/src/strategy_weather_sweep/service.py`
-  - 记录 `tick_verified`、`tick_verify_failed`、`tick_refresh_failed`
+  - 三源确认成功时记录三条 `tick_verified`
+  - 记录 `tick_verify_failed`、`tick_refresh_failed`
   - 实现 invalid tick 的 `120s / 300s / 600s` 重试

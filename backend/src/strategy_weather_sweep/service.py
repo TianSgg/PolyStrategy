@@ -320,6 +320,30 @@ class SweepTrade:
         value = getter(self.token_id)
         return Decimal(str(value)) if value is not None else None
 
+    def _log_tick_source_verified(
+        self,
+        *,
+        ws_tick_size: Decimal,
+        tick_api_size: Decimal,
+        book_tick_size: Decimal,
+    ) -> None:
+        if not self._el:
+            return
+
+        sources = (
+            ("market_ws", ws_tick_size),
+            ("tick_size_api", tick_api_size),
+            ("book_api", book_tick_size),
+        )
+        for source, tick_size in sources:
+            self._el.log_step("tick_verified", {
+                "token_id": self.token_id,
+                "source": source,
+                "tick_size": str(tick_size),
+                "confirmed": True,
+                "utc": self._utc_str(),
+            }, phase="monitor")
+
     def _log_sell_retry_exhausted(
         self,
         snapshot: SellFailureSnapshot,
@@ -633,16 +657,11 @@ class SweepTrade:
             if result.confirmed:
                 self._tick_verified = True
                 self._tick_size = result.actual_tick or new_tick
-                if self._el:
-                    self._el.log_step("tick_verified", {
-                        "token_id": self.token_id,
-                        "confirmed": True,
-                        "ws_tick_size": str(new_tick),
-                        "http_tick_size": str(result.tick_api_size or result.actual_tick or new_tick),
-                        "book_tick_size": str(result.book_tick_size or result.actual_tick or new_tick),
-                        "source": "ws+tick-size+book",
-                        "utc": self._utc_str(),
-                    }, phase="monitor")
+                self._log_tick_source_verified(
+                    ws_tick_size=result.ws_tick_size or new_tick,
+                    tick_api_size=result.tick_api_size or result.actual_tick or new_tick,
+                    book_tick_size=result.book_tick_size or result.actual_tick or new_tick,
+                )
                 await self._start_normal_exit()
             elif self._el:
                 self._el.log_step("tick_verify_failed", {
