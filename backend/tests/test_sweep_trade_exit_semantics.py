@@ -89,9 +89,18 @@ class FakeTickSizeService:
         return None
 
 
+class FakeOrderBookWS:
+    def __init__(self, min_order_size=None):
+        self.min_order_size = min_order_size
+
+    def get_min_order_size(self, token_id):
+        return self.min_order_size
+
+
 def make_trade(
     sell_result=None, sell_results=None, final_matched=Decimal("0"), on_exit_failed=None,
     cancel_query_failed=False, cancel_cancelled=True,
+    orderbook_ws=None,
 ):
     executor = FakeExecutor(
         sell_result=sell_result, sell_results=sell_results,
@@ -106,7 +115,7 @@ def make_trade(
         market_slug="market",
         config={},
         executor=executor,
-        orderbook_ws=None,
+        orderbook_ws=orderbook_ws,
         event_logger=event_logger,
         on_closed=closed.append,
         on_exit_failed=on_exit_failed,
@@ -299,6 +308,29 @@ def test_insufficient_balance_retries_once_for_settlement():
     assert ("exit", "event_closed") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
+
+
+def test_dust_position_stops_before_placing_sell():
+    trade, executor, event_logger, closed = make_trade(
+        orderbook_ws=FakeOrderBookWS(min_order_size=Decimal("5")),
+    )
+    trade.position_shares = Decimal("4.9")
+    trade._tick_size = Decimal("0.01")
+
+    run(trade._start_normal_exit())
+
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert executor.placed_orders == []
+    dust = next(
+        detail for _, step, detail in event_logger.steps if step == "dust_position"
+    )
+    assert dust["position_shares"] == "4.9"
+    assert dust["min_order_size"] == "5"
+    exit_failed = next(
+        detail for _, step, detail in event_logger.steps if step == "exit_failed"
+    )
+    assert exit_failed["failure_reason"] == "dust_position"
 
 
 def test_force_exit_reconciles_sell_fill_and_closes():

@@ -107,6 +107,7 @@ class OrderBookWS:
         self._subscribed_on_wire: set[str] = set()
         self._books: dict[str, LocalOrderBook] = {}
         self._tick_sizes: dict[str, Decimal] = {}
+        self._min_order_sizes: dict[str, Decimal] = {}
         self._ws: Any = None
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -147,6 +148,7 @@ class OrderBookWS:
         self._ws = None
         self._subscribed_on_wire.clear()
         self._books.clear()
+        self._min_order_sizes.clear()
 
     async def subscribe(
         self,
@@ -183,6 +185,7 @@ class OrderBookWS:
                 self._subscribed_on_wire.discard(sub.asset_id)
                 self._books.pop(sub.asset_id, None)
                 self._tick_sizes.pop(sub.asset_id, None)
+                self._min_order_sizes.pop(sub.asset_id, None)
                 if self._ws:
                     await self._send_unsubscribe(sub.asset_id)
 
@@ -199,6 +202,17 @@ class OrderBookWS:
 
     def get_tick_size(self, asset_id: str) -> Optional[Decimal]:
         return self._tick_sizes.get(asset_id)
+
+    def get_min_order_size(self, asset_id: str) -> Optional[Decimal]:
+        return self._min_order_sizes.get(asset_id)
+
+    async def refresh_min_order_size(self, asset_id: str) -> Optional[Decimal]:
+        """Refresh /book and return the market's minimum order size."""
+        book = self._books.get(asset_id)
+        if not book:
+            return None
+        await self.resync(asset_id)
+        return self.get_min_order_size(asset_id)
 
     # ==================== WS Connection ====================
 
@@ -403,6 +417,15 @@ class OrderBookWS:
 
             old_bid, old_ask = book.best_bid, book.best_ask
             book.apply_snapshot(data.get("bids", []), data.get("asks", []))
+            raw_min_size = data.get("min_order_size")
+            if raw_min_size is not None:
+                try:
+                    self._min_order_sizes[asset_id] = Decimal(str(raw_min_size))
+                except Exception:
+                    logger.warning(
+                        "[OrderBookWS] Invalid min_order_size for %s: %s",
+                        asset_id[:10], raw_min_size,
+                    )
             new_bid, new_ask = book.best_bid, book.best_ask
 
             if old_bid != new_bid or old_ask != new_ask:

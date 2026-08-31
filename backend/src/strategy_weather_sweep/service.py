@@ -188,6 +188,49 @@ class SweepTrade:
             return "sell_fill_parse_error"
         return "sell_placement_failed"
 
+    async def _load_min_order_size(self) -> Optional[Decimal]:
+        if not self._orderbook_ws:
+            return None
+
+        value = self._orderbook_ws.get_min_order_size(self.token_id)
+        if value is not None:
+            return Decimal(str(value))
+
+        refresh = getattr(self._orderbook_ws, "refresh_min_order_size", None)
+        if refresh is not None:
+            value = await refresh(self.token_id)
+            if value is not None:
+                return Decimal(str(value))
+        return None
+
+    async def _close_if_dust_position(
+        self, min_order_size: Optional[Decimal], *, phase: str, trigger: str,
+    ) -> bool:
+        if (
+            min_order_size is None
+            or self.position_shares <= 0
+            or self.position_shares >= min_order_size
+        ):
+            return False
+
+        if self._el:
+            self._el.log_step("dust_position", {
+                "trigger": trigger,
+                "position_shares": str(self.position_shares),
+                "min_order_size": str(min_order_size),
+                "manual_action_required": True,
+                "utc": self._utc_str(),
+            }, phase=phase)
+        await self.risk.stop()
+        self._close_exit_failed("sell_failed", phase=phase, extra={
+            "failure_reason": "dust_position",
+            "trigger": trigger,
+            "position_shares": str(self.position_shares),
+            "min_order_size": str(min_order_size),
+            "manual_action_required": True,
+        })
+        return True
+
     @staticmethod
     def _bbo_from_signal_snapshot(snapshot: dict, offset_origin_ms: int) -> dict:
         best_bid = snapshot.get("best_bid")
@@ -605,6 +648,12 @@ class SweepTrade:
             })
             return
 
+        min_order_size = await self._load_min_order_size()
+        if await self._close_if_dust_position(
+            min_order_size, phase="exit", trigger="normal_exit",
+        ):
+            return
+
         sell_price = Decimal("1") - self._tick_size
         sell_timeout_s = 180
         sell_backoff_base = 2.0
@@ -622,6 +671,10 @@ class SweepTrade:
                 return
 
             attempt += 1
+            if await self._close_if_dust_position(
+                min_order_size, phase="exit", trigger="normal_exit",
+            ):
+                return
             sell_size = self.position_shares
             if attempt == 1:
                 self._update_trade_summary({"exit_order_size": str(sell_size)})
@@ -991,6 +1044,12 @@ class SweepTrade:
             })
             return
 
+        min_order_size = await self._load_min_order_size()
+        if await self._close_if_dust_position(
+            min_order_size, phase="exit_risk", trigger="stop_loss",
+        ):
+            return
+
         if self.position_shares > 0:
             risk_origin_ms = int(time.time() * 1000)
             risk_timeout_s = 180
@@ -1005,6 +1064,10 @@ class SweepTrade:
                 if self.state == "closed":
                     return
                 risk_attempt += 1
+                if await self._close_if_dust_position(
+                    min_order_size, phase="exit_risk", trigger="stop_loss",
+                ):
+                    return
                 sell_size = self.position_shares
                 sell_start_shares = self.position_shares
                 if risk_attempt == 1:
@@ -1319,6 +1382,11 @@ class SweepTrade:
             return
         finally:
             if self.position_shares > 0:
+                min_order_size = await self._load_min_order_size()
+                if await self._close_if_dust_position(
+                    min_order_size, phase="exit_force", trigger="force_exit",
+                ):
+                    return
                 self._close_exit_failed("force_exit", phase="exit_force", extra={
                     "failure_reason": "exit_order_unfilled",
                     "trigger": "user",
