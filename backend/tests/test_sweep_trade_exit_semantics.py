@@ -38,11 +38,12 @@ class FakeExecutor:
 
     def __init__(
         self, sell_result=None, final_matched=Decimal("0"),
-        cancel_query_failed=False,
+        cancel_query_failed=False, cancel_cancelled=True,
     ):
         self.sell_result = sell_result
         self.final_matched = final_matched
         self.cancel_query_failed = cancel_query_failed
+        self.cancel_cancelled = cancel_cancelled
         self.user_ws = FakeUserWS()
         self.placed_orders = []
 
@@ -56,7 +57,7 @@ class FakeExecutor:
     async def cancel_order_with_fill_check(self, order_id):
         return CancelResult(
             order_id=order_id,
-            cancelled=True,
+            cancelled=self.cancel_cancelled,
             final_matched=self.final_matched,
             status="query_failed" if self.cancel_query_failed else "CANCELED",
             query_failed=self.cancel_query_failed,
@@ -86,11 +87,12 @@ class FakeTickSizeService:
 
 def make_trade(
     sell_result=None, final_matched=Decimal("0"), on_exit_failed=None,
-    cancel_query_failed=False,
+    cancel_query_failed=False, cancel_cancelled=True,
 ):
     executor = FakeExecutor(
         sell_result=sell_result, final_matched=final_matched,
         cancel_query_failed=cancel_query_failed,
+        cancel_cancelled=cancel_cancelled,
     )
     event_logger = FakeEventLogger()
     closed = []
@@ -248,6 +250,7 @@ def test_invalid_tick_sell_refreshes_once_then_stops():
     assert exit_failed["position_open"] is True
     assert exit_failed["position_shares"] == "10"
     assert exit_failed["manual_action_required"] is True
+    assert exit_failed["failure_reason"] == "sell_placement_failed"
 
     steps = {(step, detail.get("stop_reason")) for _, step, detail in event_logger.steps}
     assert ("tick_refreshed", None) in steps
@@ -289,6 +292,7 @@ def test_force_exit_with_open_position_uses_exit_failed():
     assert exit_failed["position_open"] is True
     assert exit_failed["position_shares"] == "10"
     assert exit_failed["manual_action_required"] is True
+    assert exit_failed["failure_reason"] == "exit_order_unfilled"
 
 
 def test_sell_complete_uses_exit_fill_accumulator():
@@ -332,6 +336,36 @@ def test_entry_timeout_cancel_query_failure_fails_closed():
         detail for _, step, detail in event_logger.steps if step == "exit_failed"
     )
     assert exit_failed["query_status"] == "query_failed"
+    assert exit_failed["failure_reason"] == "exit_reconcile_failed"
+
+
+def test_entry_timeout_cancel_failure_fails_closed():
+    trade, _, event_logger, closed = make_trade(cancel_cancelled=False)
+    trade.entry_order_id = "buy-1"
+
+    run(trade._entry_timeout(0))
+
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert ("entry", "cancel_failed") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    exit_failed = next(
+        detail for _, step, detail in event_logger.steps if step == "exit_failed"
+    )
+    assert exit_failed["failure_reason"] == "cancel_failed"
+
+
+def test_sell_failure_reason_detects_parse_error():
+    result = OrderResult(
+        order_id="sell-1",
+        status="failed",
+        filled_size="0",
+        error="matched CLOB response missing fill amount: {}",
+    )
+
+    assert SweepTrade._sell_failure_reason(result) == "sell_fill_parse_error"
+    assert SweepTrade._sell_failure_reason(None) == "sell_placement_failed"
 
 
 def test_strategy_pauses_after_three_exit_failures():
