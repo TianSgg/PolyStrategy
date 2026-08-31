@@ -52,6 +52,8 @@ from strategy_weather_sweep.internal.sell_failure import (
 
 logger = logging.getLogger(__name__)
 
+INVALID_TICK_RETRY_WAIT_S = (120.0, 300.0, 600.0)
+
 
 # ============================================================
 # SweepTrade — 单笔交易的完整生命周期
@@ -729,7 +731,7 @@ class SweepTrade:
         attempt = 0
         exit_origin_ms = int(time.time() * 1000)
         failure_tracker = SellFailureTracker(max_elapsed_ms=sell_timeout_s * 1000)
-        invalid_tick_refreshed = False
+        invalid_tick_retries = 0
         balance_settlement_retried = False
 
         while time.monotonic() < deadline:
@@ -784,7 +786,24 @@ class SweepTrade:
                     await asyncio.sleep(3.0)
                     continue
 
-                if error_signature == "invalid_tick_size" and not invalid_tick_refreshed:
+                if (
+                    error_signature == "invalid_tick_size"
+                    and invalid_tick_retries < len(INVALID_TICK_RETRY_WAIT_S)
+                ):
+                    wait_s = INVALID_TICK_RETRY_WAIT_S[invalid_tick_retries]
+                    invalid_tick_retries += 1
+                    if deadline < time.monotonic() + wait_s:
+                        deadline = time.monotonic() + wait_s + 1.0
+                    if self._el:
+                        self._el.log_step("sell_retry_start", {
+                            "attempt": attempt,
+                            "error": result.error,
+                            "error_signature": error_signature,
+                            "wait_ms": int(wait_s * 1000),
+                            "utc": self._utc_str(),
+                        }, phase="exit")
+                    await asyncio.sleep(wait_s)
+
                     old_tick = self._tick_size
                     new_tick = await self._refresh_tick_after_invalid_sell(
                         old_tick, phase="exit", reason="normal_exit",
@@ -798,12 +817,11 @@ class SweepTrade:
                             "stop_reason": "tick_refresh_failed",
                         })
                         return
-                    invalid_tick_refreshed = True
                     sell_price = Decimal("1") - new_tick
                     continue
 
                 stop_reason = failure.stop_reason
-                if error_signature == "invalid_tick_size" and invalid_tick_refreshed:
+                if error_signature == "invalid_tick_size":
                     stop_reason = "invalid_tick_retry_exhausted"
                 if stop_reason:
                     self._log_sell_retry_exhausted(
@@ -1147,7 +1165,7 @@ class SweepTrade:
             risk_attempt = 0
             risk_sell_wait_s = 30
             failure_tracker = SellFailureTracker(max_elapsed_ms=risk_timeout_s * 1000)
-            invalid_tick_refreshed = False
+            invalid_tick_retries = 0
             balance_settlement_retried = False
 
             while self.position_shares > 0 and time.monotonic() < risk_deadline:
@@ -1202,7 +1220,25 @@ class SweepTrade:
                         await asyncio.sleep(3.0)
                         continue
 
-                    if error_signature == "invalid_tick_size" and not invalid_tick_refreshed:
+                    if (
+                        error_signature == "invalid_tick_size"
+                        and invalid_tick_retries < len(INVALID_TICK_RETRY_WAIT_S)
+                    ):
+                        wait_s = INVALID_TICK_RETRY_WAIT_S[invalid_tick_retries]
+                        invalid_tick_retries += 1
+                        if risk_deadline < time.monotonic() + wait_s:
+                            risk_deadline = time.monotonic() + wait_s + 1.0
+                        if self._el:
+                            self._el.log_step("sell_retry_start", {
+                                "attempt": risk_attempt,
+                                "error": result.error,
+                                "error_signature": error_signature,
+                                "wait_ms": int(wait_s * 1000),
+                                "reason": "stop_loss",
+                                "utc": self._utc_str(),
+                            }, phase="exit_risk")
+                        await asyncio.sleep(wait_s)
+
                         new_tick = await self._refresh_tick_after_invalid_sell(
                             risk_tick_size, phase="exit_risk", reason="stop_loss",
                         )
@@ -1215,12 +1251,11 @@ class SweepTrade:
                                 "stop_reason": "tick_refresh_failed",
                             })
                             return
-                        invalid_tick_refreshed = True
                         risk_tick_size = new_tick
                         continue
 
                     stop_reason = failure.stop_reason
-                    if error_signature == "invalid_tick_size" and invalid_tick_refreshed:
+                    if error_signature == "invalid_tick_size":
                         stop_reason = "invalid_tick_retry_exhausted"
                     if stop_reason:
                         self._log_sell_retry_exhausted(

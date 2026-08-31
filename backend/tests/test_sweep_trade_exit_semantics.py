@@ -256,7 +256,7 @@ def test_full_fill_after_tick_starts_normal_exit():
     assert close_reason(event_logger) == "normal_exit"
 
 
-def test_invalid_tick_sell_refreshes_once_then_stops():
+def test_invalid_tick_sell_uses_dedicated_long_retry_waits():
     sell_result = OrderResult(
         order_id="sell-failed",
         status="failed",
@@ -267,13 +267,20 @@ def test_invalid_tick_sell_refreshes_once_then_stops():
     trade.position_shares = Decimal("10")
     trade._tick_size = Decimal("0.01")
 
-    run(trade._start_normal_exit())
+    sleeps = []
 
-    assert len(executor.placed_orders) == 2
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    with patch("strategy_weather_sweep.service.asyncio.sleep", record_sleep):
+        run(trade._start_normal_exit())
+
+    assert len(executor.placed_orders) == 4
     assert executor.placed_orders[0]["price"] == "0.999"
     assert executor.placed_orders[0]["tick_size"] == "0.001"
-    assert executor.placed_orders[1]["price"] == "0.999"
-    assert executor.placed_orders[1]["tick_size"] == "0.001"
+    assert executor.placed_orders[3]["price"] == "0.999"
+    assert executor.placed_orders[3]["tick_size"] == "0.001"
+    assert sleeps == [120.0, 300.0, 600.0]
     assert trade.state == "closed"
     assert closed == ["token"]
     assert close_reason(event_logger) == "sell_failed"
@@ -285,8 +292,8 @@ def test_invalid_tick_sell_refreshes_once_then_stops():
     assert exit_failed["manual_action_required"] is True
     assert exit_failed["failure_reason"] == "sell_placement_failed"
 
-    steps = {(step, detail.get("stop_reason")) for _, step, detail in event_logger.steps}
-    assert ("tick_refreshed", None) in steps
+    steps = [(step, detail.get("stop_reason")) for _, step, detail in event_logger.steps]
+    assert steps.count(("tick_refreshed", None)) == 3
     assert ("sell_retry_exhausted", "invalid_tick_retry_exhausted") in steps
 
 
@@ -311,12 +318,18 @@ def test_insufficient_balance_retries_once_for_settlement():
     trade.position_shares = Decimal("10")
     trade._tick_size = Decimal("0.01")
 
-    with patch("strategy_weather_sweep.service.asyncio.sleep", no_sleep):
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    with patch("strategy_weather_sweep.service.asyncio.sleep", record_sleep):
         run(trade._start_normal_exit())
 
     assert trade.state == "closed"
     assert closed == ["token"]
     assert len(executor.placed_orders) == 2
+    assert sleeps == [3.0]
     assert ("exit", "balance_settlement_retry") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
