@@ -33,6 +33,13 @@
 
 WS 收到 `tick_size_change` 且值为 `0.001` 时，只作为候选触发。`TickVerifier` 会持续请求 `/tick-size` 和 `/book`，并要求三个来源一致且都为 `0.001`。
 
+检测到候选变化时记录 `tick_detect`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `tick_size` | WS 推送的候选 tick size |
+| `source` | 固定为 `market_ws` |
+
 校验成功后，每个来源各记录一条 `tick_verified`，共三条。每条 event 只描述一个来源的确认结果：
 
 | `source` | 来源，取值为 `market_ws` / `tick_size_api` / `book_api` |

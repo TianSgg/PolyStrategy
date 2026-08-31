@@ -167,6 +167,16 @@ def test_zero_fill_waits_for_entry_timeout_after_tick_change():
     assert trade.state == "entry_working"
     assert trade._tick_verified is True
     assert closed == []
+    assert ("monitor", "tick_detect") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    tick_detect = next(
+        detail for _, step, detail in event_logger.steps if step == "tick_detect"
+    )
+    assert tick_detect == {
+        "tick_size": "0.001",
+        "source": "market_ws",
+    }
     tick_verified = [
         detail for _, step, detail in event_logger.steps if step == "tick_verified"
     ]

@@ -644,9 +644,9 @@ class SweepTrade:
         if new_tick == Decimal("0.001"):
             self._tick_size = Decimal("0.001")
             if self._el:
-                self._el.log_step("tick_detected", {
+                self._el.log_step("tick_detect", {
                     "tick_size": "0.001",
-                    "source": "risk_ws",
+                    "source": "market_ws",
                 }, phase="monitor")
 
             result = await self.tick_verifier.verify(
