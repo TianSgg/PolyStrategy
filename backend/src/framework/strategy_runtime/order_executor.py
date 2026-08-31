@@ -214,7 +214,9 @@ class OrderExecutor:
                 error=str(e),
             )
 
-        parsed = self._parse_result(order_id, result, send_ns, Decimal(size))
+        parsed = self._parse_result(
+            order_id, result, send_ns, Decimal(size), side.upper()
+        )
         if parsed.status == "failed":
             asyncio.create_task(poller.refresh())
         return parsed
@@ -261,6 +263,7 @@ class OrderExecutor:
     def _parse_result(
         self, order_id: str, result: Optional[Dict[str, Any]], send_ns: int,
         order_size: Decimal,
+        side: str,
     ) -> OrderResult:
         latency_ms = (time.monotonic_ns() - send_ns) / 1_000_000
         logger.debug("Order response latency: %.1fms", latency_ms)
@@ -280,9 +283,22 @@ class OrderExecutor:
         if raw_status == "matched":
             taking = Decimal(taking_str or 0)
             making = Decimal(making_str or 0)
-            filled = taking if taking > 0 else making
+            # For BUY, taker amount is outcome shares; for SELL, maker amount
+            # is outcome shares while taker amount is USDC proceeds.
+            filled = taking if side == "BUY" else making
+            if filled <= 0:
+                return OrderResult(
+                    order_id=clob_order_id,
+                    status="failed",
+                    filled_size="0",
+                    filled_price=None,
+                    error=f"matched CLOB response missing fill amount: {result}",
+                    clob_status=raw_status,
+                    clob_taking=taking_str,
+                    clob_making=making_str,
+                )
             # partial = some filled but remaining rests on book
-            is_partial = filled > 0 and filled < order_size
+            is_partial = filled < order_size
             return OrderResult(
                 order_id=clob_order_id,
                 status="partial" if is_partial else "filled",

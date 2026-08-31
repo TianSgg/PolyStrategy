@@ -41,6 +41,7 @@ def test_place_order_uses_authoritative_tick_size():
             "status": "matched",
             "orderID": "0xorder",
             "takingAmount": "10",
+            "makingAmount": "10",
         }
 
     with patch(

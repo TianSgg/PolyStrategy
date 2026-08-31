@@ -141,7 +141,8 @@ def test_partial_fill_uses_normal_exit_after_entry_timeout():
         status="filled",
         filled_size="15",
         clob_status="matched",
-        clob_taking="15",
+        clob_taking="14.985",
+        clob_making="15",
     )
     trade, executor, event_logger, closed = make_trade(
         sell_result=sell_result, final_matched=Decimal("15")
@@ -181,7 +182,8 @@ def test_full_fill_after_tick_starts_normal_exit():
         status="filled",
         filled_size="20",
         clob_status="matched",
-        clob_taking="20",
+        clob_taking="19.98",
+        clob_making="20",
     )
     trade, executor, event_logger, closed = make_trade(sell_result=sell_result)
     trade.entry_order_id = "buy-1"
