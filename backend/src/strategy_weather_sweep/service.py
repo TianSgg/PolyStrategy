@@ -742,18 +742,17 @@ class SweepTrade:
             return
 
         sell_price = Decimal("1") - self._tick_size
-        sell_timeout_s = 180
+        sell_order_wait_s = 120
         sell_backoff_base = 2.0
         sell_backoff_cap = 60.0
 
-        deadline = time.monotonic() + sell_timeout_s
         attempt = 0
         exit_origin_ms = int(time.time() * 1000)
-        failure_tracker = SellFailureTracker(max_elapsed_ms=sell_timeout_s * 1000)
+        failure_tracker = SellFailureTracker()
         invalid_tick_retries = 0
         balance_settlement_retried = False
 
-        while time.monotonic() < deadline:
+        while self.position_shares > 0:
             if self.state != "exit_working":
                 return
 
@@ -811,8 +810,6 @@ class SweepTrade:
                 ):
                     wait_s = INVALID_TICK_RETRY_WAIT_S[invalid_tick_retries]
                     invalid_tick_retries += 1
-                    if deadline < time.monotonic() + wait_s:
-                        deadline = time.monotonic() + wait_s + 1.0
                     if self._el:
                         self._el.log_step("sell_retry_start", {
                             "attempt": attempt,
@@ -855,17 +852,16 @@ class SweepTrade:
                     })
                     return
 
-                if time.monotonic() < deadline:
-                    backoff = (
-                        2.0 if error_signature == "insufficient_balance"
-                        else min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
-                    )
-                    if self._el:
-                        self._el.log_step("sell_retry_start", {
-                            "attempt": attempt,
-                            "error": result.error,
-                        }, phase="exit")
-                    await asyncio.sleep(backoff)
+                backoff = (
+                    2.0 if error_signature == "insufficient_balance"
+                    else min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
+                )
+                if self._el:
+                    self._el.log_step("sell_retry_start", {
+                        "attempt": attempt,
+                        "error": result.error,
+                    }, phase="exit")
+                await asyncio.sleep(backoff)
                 continue
 
             # --- Layer 1: sell_order_placed ---
@@ -921,8 +917,7 @@ class SweepTrade:
             )
 
             try:
-                remaining = deadline - time.monotonic()
-                await asyncio.wait_for(sell_done.wait(), timeout=max(remaining, 0))
+                await asyncio.wait_for(sell_done.wait(), timeout=sell_order_wait_s)
             except asyncio.TimeoutError:
                 user_ws.unwatch_order(result.order_id)
                 cancel_result = await self._executor.cancel_order_with_fill_check(result.order_id)
@@ -965,28 +960,7 @@ class SweepTrade:
             return
 
         await self.risk.stop()
-        if self.position_shares <= 0:
-            self._close("normal_exit", phase="exit")
-            return
-
-        failure = failure_tracker.snapshot()
-        stop_reason = failure.stop_reason or "deadline_exceeded"
-        self._log_sell_retry_exhausted(
-            failure, phase="exit", reason="normal_exit", stop_reason=stop_reason,
-        )
-        if self._el:
-            self._el.log_step("sell_give_up", {
-                "attempts": attempt,
-                "timeout_sec": sell_timeout_s,
-                "remaining_position": str(self.position_shares),
-                "last_error": result.error if result else None,
-            }, phase="exit")
-        self._close_exit_failed("sell_failed", phase="exit", extra={
-            "failure_reason": "exit_order_unfilled",
-            "error": result.error if result else None,
-            "error_signature": failure.error_signature,
-            "stop_reason": stop_reason,
-        })
+        self._close("normal_exit", phase="exit")
 
     def _record_sell_fill(
         self, order_id: str, filled: Decimal, price: Decimal, *,
@@ -1179,15 +1153,13 @@ class SweepTrade:
 
         if self.position_shares > 0:
             risk_origin_ms = int(time.time() * 1000)
-            risk_timeout_s = 180
-            risk_deadline = time.monotonic() + risk_timeout_s
             risk_attempt = 0
             risk_sell_wait_s = 30
-            failure_tracker = SellFailureTracker(max_elapsed_ms=risk_timeout_s * 1000)
+            failure_tracker = SellFailureTracker()
             invalid_tick_retries = 0
             balance_settlement_retried = False
 
-            while self.position_shares > 0 and time.monotonic() < risk_deadline:
+            while self.position_shares > 0:
                 if self.state == "closed":
                     return
                 risk_attempt += 1
@@ -1245,8 +1217,6 @@ class SweepTrade:
                     ):
                         wait_s = INVALID_TICK_RETRY_WAIT_S[invalid_tick_retries]
                         invalid_tick_retries += 1
-                        if risk_deadline < time.monotonic() + wait_s:
-                            risk_deadline = time.monotonic() + wait_s + 1.0
                         if self._el:
                             self._el.log_step("sell_retry_start", {
                                 "attempt": risk_attempt,
@@ -1290,12 +1260,11 @@ class SweepTrade:
                         })
                         return
 
-                    if time.monotonic() < risk_deadline:
-                        backoff = (
-                            2.0 if error_signature == "insufficient_balance"
-                            else min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
-                        )
-                        await asyncio.sleep(backoff)
+                    backoff = (
+                        2.0 if error_signature == "insufficient_balance"
+                        else min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
+                    )
+                    await asyncio.sleep(backoff)
                     continue
 
                 if self._el:
@@ -1345,8 +1314,7 @@ class SweepTrade:
                 )
 
                 try:
-                    remaining = min(risk_sell_wait_s, risk_deadline - time.monotonic())
-                    await asyncio.wait_for(sell_done.wait(), timeout=max(remaining, 0))
+                    await asyncio.wait_for(sell_done.wait(), timeout=risk_sell_wait_s)
                 except asyncio.TimeoutError:
                     pass
 
@@ -1371,21 +1339,6 @@ class SweepTrade:
                     self._record_sell_fill_risk(result.order_id, missed, Decimal("0.01"))
                 if self.position_shares <= 0:
                     break
-
-        if self.position_shares > 0:
-            failure = failure_tracker.snapshot()
-            stop_reason = failure.stop_reason or "deadline_exceeded"
-            self._log_sell_retry_exhausted(
-                failure, phase="exit_risk", reason="stop_loss", stop_reason=stop_reason,
-            )
-            await self.risk.stop()
-            self._close_exit_failed("sell_failed", phase="exit_risk", extra={
-                "failure_reason": "exit_order_unfilled",
-                "error": failure.last_error,
-                "error_signature": failure.error_signature,
-                "stop_reason": stop_reason,
-            })
-            return
 
         await self.risk.stop()
         self._close("stop_loss", phase="exit_risk")
