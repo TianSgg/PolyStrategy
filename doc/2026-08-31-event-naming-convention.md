@@ -122,7 +122,6 @@ phase 保持 5 个，不建议合并：
 
 | 目标 step | 含义 | 可重复 |
 |---|---|---|
-| `tick_detect` | 某个来源发现 tick 变化。 | 是 |
 | `tick_verify_failed` | tick 验证失败。 | 是 |
 | `tick_verified` | tick 变化被确认。 | 否 |
 | `normal_exit_deferred` | 已发现可退出条件，但按规则延迟退出。 | 否 |
@@ -192,7 +191,7 @@ phase 保持 5 个，不建议合并：
 | `order_placed` | `buy_order_placed` | 明确 BUY。 |
 | `order_failed` | `buy_order_failed` | 明确 BUY。 |
 | `buy_order_failed` 且 `detail.status=no_cash` | `buy_order_skipped` | 资金不足未下单，不归类为失败。 |
-| `tick_detected` | `tick_detect` | 统一检测动作名。 |
+| `tick_detected` | 废弃，不再记录 | 候选变化不落 event；三源成功时只记录三条 `tick_verified`。 |
 | `fill_reconcile` | `fill_reconciled` | 表示校准结果。 |
 | `sell_retry_start` | `sell_retry_started` | 使用完成态。 |
 | `risk_sell_order_placed` | `sell_order_placed` | phase 已表达 risk，trigger 放 detail。 |
@@ -336,7 +335,6 @@ entry / signal_received
 entry / buy_order_placed
 entry / buy_filled
 entry / entry_complete
-monitor / tick_detect
 monitor / tick_verified
 exit / sell_order_placed
 exit / sell_filled

@@ -29,7 +29,7 @@ class SweepRiskMonitor:
         orderbook_ws: OrderBookWS,
         stop_loss_ratio: Decimal = Decimal("0.60"),
         on_trigger: Optional[Callable[[], Awaitable[None]]] = None,
-        on_tick_change: Optional[Callable[[Decimal], Awaitable[None]]] = None,
+        on_tick_change: Optional[Callable[[Decimal, str], Awaitable[None]]] = None,
         tick_size_service: Optional[TickSizeService] = None,
     ) -> None:
         self._orderbook_ws = orderbook_ws
@@ -139,7 +139,7 @@ class SweepRiskMonitor:
             return
         self._tick_size_service.invalidate(asset_id)
         if self._on_tick_change:
-            asyncio.create_task(self._on_tick_change(tick_size))
+            asyncio.create_task(self._on_tick_change(tick_size, "market_ws"))
 
     # ==================== Tick HTTP 保险 ====================
 
@@ -154,7 +154,7 @@ class SweepRiskMonitor:
                     "[RiskMonitor] HTTP tick check: token=%s tick already 0.001, firing callback",
                     self._token_id[:10],
                 )
-                asyncio.create_task(self._on_tick_change(tick))
+                asyncio.create_task(self._on_tick_change(tick, "tick_size_api"))
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -174,7 +174,7 @@ class SweepRiskMonitor:
                             "[RiskMonitor] Tick poll: token=%s tick=0.001, firing callback",
                             self._token_id[:10],
                         )
-                        asyncio.create_task(self._on_tick_change(tick))
+                        asyncio.create_task(self._on_tick_change(tick, "tick_size_api"))
                         return
                 except asyncio.CancelledError:
                     raise

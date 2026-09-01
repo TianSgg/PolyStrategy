@@ -167,8 +167,7 @@ ORDER BY sequence_no ASC;
 | `entry` | `buy_filled` | `order_id`、`filled_size`、`fill_price`、`total_position`、`source`、`trade_id`。 |
 | `entry` | `entry_complete` | `order_id`、`total_filled`、`total_position`、`fill_count`、`elapsed_ms`。 |
 | `entry` | `entry_timeout` | `wait_ms`、`cancelled_order_id`、`final_position`、`unfilled_size`。 |
-| `monitor` | `tick_detect` | `tick_size`、`source`。 |
-| `monitor` | `tick_verified` | `token_id`、`confirmed`、`ws_tick_size`、`http_tick_size`、`source`、`utc`。 |
+| `monitor` | `tick_verified` | `token_id`、`source`、`tick_size`、`confirmed`、`utc`。三源成功时只写 `market_ws`、`tick_size_api`、`book_api` 三条。 |
 | `monitor` | `normal_exit_deferred` | `trigger`、`reason`、`position_shares`、`entry_order_id`。 |
 | `exit` | `tick_refresh_failed` | `error`、`action`、`utc`。 |
 | `exit` | `dust_position_detected` | `trigger`、`position_shares`、`min_order_size`、`manual_action_required`、`utc`。 |

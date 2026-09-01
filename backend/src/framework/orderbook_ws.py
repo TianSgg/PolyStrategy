@@ -318,6 +318,7 @@ class OrderBookWS:
                 self._books[asset_id].apply_snapshot(
                     data.get("bids", []), data.get("asks", [])
                 )
+                self._cache_market_params(asset_id, data)
                 self._notify_bbo(asset_id)
 
     def _handle_snapshot(self, data: list) -> None:
@@ -327,6 +328,7 @@ class OrderBookWS:
                 self._books[asset_id].apply_snapshot(
                     item.get("bids", []), item.get("asks", [])
                 )
+                self._cache_market_params(asset_id, item)
                 self._notify_bbo(asset_id)
 
     def _handle_price_change(self, data: dict) -> None:
@@ -344,13 +346,38 @@ class OrderBookWS:
     def _handle_tick_change(self, data: dict) -> None:
         asset_id = data.get("asset_id")
         tick_raw = data.get("tick_size") or data.get("new_tick_size")
-        if not asset_id or not tick_raw or asset_id not in self._asset_subs:
+        if not asset_id or tick_raw is None or asset_id not in self._asset_subs:
             return
         tick = Decimal(str(tick_raw))
         self._tick_sizes[asset_id] = tick
         for sub in self._asset_subs.get(asset_id, []):
             if sub.on_tick:
                 asyncio.create_task(sub.on_tick(asset_id, tick))
+
+    def _cache_market_params(self, asset_id: str, data: dict) -> None:
+        tick_raw = (
+            data.get("tick_size")
+            or data.get("min_tick_size")
+            or data.get("minimum_tick_size")
+        )
+        if tick_raw is not None:
+            try:
+                self._tick_sizes[asset_id] = Decimal(str(tick_raw))
+            except Exception:
+                logger.warning(
+                    "[OrderBookWS] Invalid tick_size for %s: %s",
+                    asset_id[:10], tick_raw,
+                )
+
+        min_order_raw = data.get("min_order_size") or data.get("minimum_order_size")
+        if min_order_raw is not None:
+            try:
+                self._min_order_sizes[asset_id] = Decimal(str(min_order_raw))
+            except Exception:
+                logger.warning(
+                    "[OrderBookWS] Invalid min_order_size for %s: %s",
+                    asset_id[:10], min_order_raw,
+                )
 
     # ==================== Drift Detection ====================
 
@@ -417,15 +444,7 @@ class OrderBookWS:
 
             old_bid, old_ask = book.best_bid, book.best_ask
             book.apply_snapshot(data.get("bids", []), data.get("asks", []))
-            raw_min_size = data.get("min_order_size")
-            if raw_min_size is not None:
-                try:
-                    self._min_order_sizes[asset_id] = Decimal(str(raw_min_size))
-                except Exception:
-                    logger.warning(
-                        "[OrderBookWS] Invalid min_order_size for %s: %s",
-                        asset_id[:10], raw_min_size,
-                    )
+            self._cache_market_params(asset_id, data)
             new_bid, new_ask = book.best_bid, book.best_ask
 
             if old_bid != new_bid or old_ask != new_ask:

@@ -90,7 +90,9 @@ class FakeExecutor:
 
 
 class FakeTickVerifier:
-    async def verify(self, token_id, ws_tick_size=None):
+    async def verify(self, token_id, ws_tick_size=None, ws_tick_size_getter=None):
+        if ws_tick_size_getter:
+            ws_tick_size = ws_tick_size_getter()
         return TickVerifyResult(
             confirmed=True,
             actual_tick=Decimal("0.001"),
@@ -130,6 +132,19 @@ class FakeOrderBookWS:
 
     def get_tick_size(self, token_id):
         return self.tick_size
+
+
+class MismatchTickVerifier:
+    async def verify(self, token_id, ws_tick_size=None, ws_tick_size_getter=None):
+        if ws_tick_size_getter:
+            ws_tick_size = ws_tick_size_getter()
+        return TickVerifyResult(
+            confirmed=False,
+            ws_tick_size=ws_tick_size,
+            tick_api_size=Decimal("0.001"),
+            book_tick_size=Decimal("0.001"),
+            error="tick_source_mismatch",
+        )
 
 
 def make_trade(
@@ -254,16 +269,9 @@ def test_zero_fill_waits_for_entry_timeout_after_tick_change():
     assert trade.state == "entry_working"
     assert trade._tick_verified is True
     assert closed == []
-    assert ("monitor", "tick_detect") in [
+    assert ("monitor", "tick_detect") not in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
-    tick_detect = next(
-        detail for _, step, detail in event_logger.steps if step == "tick_detect"
-    )
-    assert tick_detect == {
-        "tick_size": "0.001",
-        "source": "market_ws",
-    }
     tick_verified = [
         detail for _, step, detail in event_logger.steps if step == "tick_verified"
     ]
@@ -285,6 +293,25 @@ def test_zero_fill_waits_for_entry_timeout_after_tick_change():
     assert ("entry", "event_closed") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
+
+
+def test_http_tick_callback_does_not_masquerade_as_market_ws():
+    trade, _, event_logger, _ = make_trade(orderbook_ws=FakeOrderBookWS(tick_size=None))
+    trade.tick_verifier = MismatchTickVerifier()
+
+    run(trade._on_tick_change(Decimal("0.001"), source="tick_size_api"))
+
+    assert trade._tick_verified is False
+    assert ("monitor", "tick_detect") not in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    tick_verify_failed = next(
+        detail for _, step, detail in event_logger.steps if step == "tick_verify_failed"
+    )
+    assert tick_verify_failed["ws_tick_size"] is None
+    assert tick_verify_failed["http_tick_size"] == "0.001"
+    assert tick_verify_failed["book_tick_size"] == "0.001"
+    assert tick_verify_failed["error"] == "tick_source_mismatch"
 
 
 def test_partial_fill_uses_normal_exit_after_entry_timeout():

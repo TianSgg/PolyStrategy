@@ -93,6 +93,7 @@ class SweepTrade:
         self.exit_order_id: Optional[str] = None
         self._entry_timer: Optional[asyncio.Task] = None
         self._tick_verified = False
+        self._tick_verifying = False
         self._normal_exit_started = False
         self._tick_size = Decimal("0.01")
         self._event_start_ms = int(time.time() * 1000)
@@ -648,23 +649,31 @@ class SweepTrade:
 
     # ==================== Monitor & Exit ====================
 
-    async def _on_tick_change(self, new_tick: Decimal) -> None:
+    async def _on_tick_change(self, new_tick: Decimal, source: str = "market_ws") -> None:
         if self._tick_verified or self.state not in ("entry_working", "exit_working"):
             return
-        if self._tick_size == new_tick:
+        if self._tick_verifying:
             return
 
         if new_tick == Decimal("0.001"):
-            self._tick_size = Decimal("0.001")
-            if self._el:
-                self._el.log_step("tick_detect", {
-                    "tick_size": "0.001",
-                    "source": "market_ws",
-                }, phase="monitor")
+            self._tick_verifying = True
 
-            result = await self.tick_verifier.verify(
-                self.token_id, ws_tick_size=new_tick
-            )
+            def current_ws_tick_size() -> Optional[Decimal]:
+                latest = self._latest_ws_tick_size()
+                if latest is not None:
+                    return latest
+                if source == "market_ws":
+                    return new_tick
+                return None
+
+            try:
+                result = await self.tick_verifier.verify(
+                    self.token_id,
+                    ws_tick_size=current_ws_tick_size(),
+                    ws_tick_size_getter=current_ws_tick_size,
+                )
+            finally:
+                self._tick_verifying = False
             if self.state not in ("entry_working", "exit_working"):
                 return
             if result.confirmed:
@@ -679,7 +688,7 @@ class SweepTrade:
             elif self._el:
                 self._el.log_step("tick_verify_failed", {
                     "confirmed": False,
-                    "ws_tick_size": str(result.ws_tick_size or new_tick),
+                    "ws_tick_size": str(result.ws_tick_size) if result.ws_tick_size is not None else None,
                     "http_tick_size": str(result.tick_api_size) if result.tick_api_size is not None else None,
                     "book_tick_size": str(result.book_tick_size) if result.book_tick_size is not None else None,
                     "error": result.error,

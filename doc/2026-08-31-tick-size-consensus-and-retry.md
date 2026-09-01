@@ -29,16 +29,11 @@
 
 ## 校验流程
 
-### 1. WS 首次发现 tick 变化
+### 1. 发现 tick 变化并三源确认
 
-WS 收到 `tick_size_change` 且值为 `0.001` 时，只作为候选触发。`TickVerifier` 会持续请求 `/tick-size` 和 `/book`，并要求三个来源一致且都为 `0.001`。
+Market WS 或 HTTP 后备检查发现 tick 已经变为 `0.001` 时，只作为候选触发。`TickVerifier` 会持续读取 Market WS 内存值，并请求 `/tick-size` 和 `/book`，要求三个来源一致且都为 `0.001`。
 
-检测到候选变化时记录 `tick_detect`：
-
-| 字段 | 含义 |
-| --- | --- |
-| `tick_size` | WS 推送的候选 tick size |
-| `source` | 固定为 `market_ws` |
+候选变化本身不再单独记录 `tick_detect`。三源确认成功时只写三条 `tick_verified`，避免一次 tick 变化在 event 表中出现四个 monitor step。
 
 校验成功后，每个来源各记录一条 `tick_verified`，共三条。每条 event 只描述一个来源的确认结果：
 
@@ -60,7 +55,7 @@ WS 收到 `tick_size_change` 且值为 `0.001` 时，只作为候选触发。`Ti
 }
 ```
 
-三条记录的 `tick_size` 必须都为 `0.001`。不再使用一条合并的 `ws+tick-size+book` 记录，避免前端无法区分具体来源。
+三条记录的 `tick_size` 必须都为 `0.001`。`market_ws` 必须来自真实 Market WS 内存缓存，HTTP 初检或轮询不能把自己的结果记录为 `market_ws`。
 
 校验超时或始终不一致时，记录一条汇总的 `tick_verify_failed`，用于说明三源没有形成共识：
 
@@ -130,6 +125,6 @@ invalid tick 的长等待会延长该轮卖出的 deadline，保证第三次 `60
 - `backend/src/framework/strategy_runtime/tick_verifier.py`
   - 在 WS 值为 `0.001` 时持续验证三源
 - `backend/src/strategy_weather_sweep/service.py`
-  - 三源确认成功时记录三条 `tick_verified`
+  - 三源确认成功时只记录三条 `tick_verified`
   - 记录 `tick_verify_failed`、`tick_refresh_failed`
   - 实现 invalid tick 的 `120s / 300s / 600s` 重试

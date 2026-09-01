@@ -9,7 +9,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 import time
 
 from framework.strategy_runtime.tick_size_service import (
@@ -50,7 +50,8 @@ class TickVerifier:
     async def verify(
         self,
         token_id: str,
-        ws_tick_size: Decimal,
+        ws_tick_size: Optional[Decimal],
+        ws_tick_size_getter: Optional[Callable[[], Optional[Decimal]]] = None,
     ) -> TickVerifyResult:
         """持续校验直到三个来源都确认 tick_size=0.001，最长 30 分钟。"""
         deadline = time.monotonic() + self._max_duration_s
@@ -63,16 +64,17 @@ class TickVerifier:
 
         while time.monotonic() < deadline:
             attempt += 1
+            current_ws_tick_size = ws_tick_size_getter() if ws_tick_size_getter else ws_tick_size
             try:
                 actual = await self._tick_size_service.refresh_consensus(
-                    token_id, ws_tick_size
+                    token_id, current_ws_tick_size
                 )
 
                 if actual == TARGET_TICK:
                     return TickVerifyResult(
                         confirmed=True,
                         actual_tick=actual,
-                        ws_tick_size=ws_tick_size,
+                        ws_tick_size=current_ws_tick_size,
                         tick_api_size=actual,
                         book_tick_size=actual,
                     )
@@ -84,7 +86,7 @@ class TickVerifier:
                 last_result = TickVerifyResult(
                     confirmed=False,
                     actual_tick=actual,
-                    ws_tick_size=ws_tick_size,
+                    ws_tick_size=current_ws_tick_size,
                     tick_api_size=actual,
                     book_tick_size=actual,
                     error="unexpected_tick_size",
@@ -113,7 +115,7 @@ class TickVerifier:
                 )
                 last_result = TickVerifyResult(
                     confirmed=False,
-                    ws_tick_size=ws_tick_size,
+                    ws_tick_size=current_ws_tick_size,
                     error=str(e),
                 )
 
