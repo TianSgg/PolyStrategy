@@ -190,12 +190,12 @@ async def weather_live_orderbooks(request: Request) -> StreamingResponse:
             while True:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=15)
-                except (TimeoutError, asyncio.CancelledError):
+                except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
                     continue
+                except asyncio.CancelledError:
+                    raise
                 yield f"event: orderbook\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
-        except (asyncio.CancelledError, GeneratorExit):
-            pass
         finally:
             service.unsubscribe_live_orderbooks(queue)
 
@@ -218,12 +218,12 @@ async def weather_signal_counts_live(request: Request) -> StreamingResponse:
             while True:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=15)
-                except (TimeoutError, asyncio.CancelledError):
+                except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
                     continue
+                except asyncio.CancelledError:
+                    raise
                 yield f"event: notification-count\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
-        except (asyncio.CancelledError, GeneratorExit):
-            pass
         finally:
             service.unsubscribe_signal_counts(queue)
 
