@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { apiFetch } from '../api'
 import { useBalance } from '../contexts/BalanceContext'
 import SweepTrades from './SweepTrades'
+import { badgeStyle, exitBadge, iconStyle, lifecycleBadge } from '../tradePresentation'
 
 interface Account {
   id: number
@@ -44,16 +45,6 @@ const DEFAULT_FORM = {
   direction_filter: 'all',
   stop_loss_ratio: 0.6,
   exit_wait_ms: 5000,
-}
-
-const CLOSE_REASON_LABELS: Record<string, string> = {
-  normal_exit: '正常退出 normal_exit',
-  tick_exit: '旧版Tick退出 tick_exit',
-  stop_loss: '止损 stop_loss',
-  force_exit: '强制退出 force_exit',
-  buy_failed: '买入失败 buy_failed',
-  timeout_no_fill: '入场超时 timeout_no_fill',
-  sell_failed: '卖出失败 sell_failed',
 }
 
 export default function StrategyDashboard({ darkMode }: Props) {
@@ -448,7 +439,10 @@ export default function StrategyDashboard({ darkMode }: Props) {
                   <div style={{ color: textSecondary, textAlign: 'center', padding: '12px' }}>暂无交易记录</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {configTrades.map((t: any) => (
+                    {configTrades.map((t: any) => {
+                      const lifecycle = lifecycleBadge(t)
+                      const exit = exitBadge(t)
+                      return (
                       <div key={t.event_id}>
                         <div
                           onClick={() => handleExpandTrade(t.event_id)}
@@ -462,14 +456,17 @@ export default function StrategyDashboard({ darkMode }: Props) {
                           }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px' }}>
-                            <span style={{
-                              fontSize: '11px', padding: '2px 6px', borderRadius: '4px', fontWeight: 500,
-                              background: t.status === 'exit_failed' ? '#ef444420' : t.status === 'closed' ? '#64748b20' : t.status === 'exit_working' ? '#f59e0b20' : '#3b82f620',
-                              color: t.status === 'exit_failed' ? '#ef4444' : t.status === 'closed' ? '#64748b' : t.status === 'exit_working' ? '#f59e0b' : '#3b82f6',
-                            }}>
-                              {t.status === 'entry_working' ? '入场中' : t.status === 'exit_working' ? '出场中' : t.status === 'exit_failed' ? '退出失败' : '已平仓'}
+                            <span style={badgeStyle(lifecycle.tone, darkMode)}>
+                              <span style={iconStyle(lifecycle.tone, darkMode)}>{lifecycle.icon}</span>
+                              {lifecycle.label}
                             </span>
-                            {t.close_reason && <span style={{ fontSize: '11px', color: textSecondary }}>({CLOSE_REASON_LABELS[t.close_reason] || t.close_reason})</span>}
+                            {exit && (
+                              <span style={badgeStyle(exit.tone, darkMode)} title={[t.close_reason, t.failure_reason].filter(Boolean).join(' / ')}>
+                                <span style={iconStyle(exit.tone, darkMode)}>{exit.icon}</span>
+                                {exit.label}
+                                {exit.detail && <span style={{ opacity: 0.75 }}>{exit.detail}</span>}
+                              </span>
+                            )}
                             <span style={{ fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {t.event_slug ? (
                                 <a
@@ -573,7 +570,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                           </div>
                         )}
                       </div>
-                    ))}
+                    )})}
                   </div>
                 )}
               </div>

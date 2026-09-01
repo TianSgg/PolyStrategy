@@ -18,7 +18,7 @@
 phase            这个动作发生在哪个执行阶段？
 step             这个动作本身是什么？
 lifecycle_status 这笔交易现在是否还在运行？
-outcome          这笔交易最终是完成还是失败？
+trade_outcome    这笔交易最终是完成还是失败？
 close_reason     这笔交易为什么结束？
 failure_reason   如果失败，具体失败在哪里？
 ```
@@ -38,7 +38,7 @@ failure_reason   如果失败，具体失败在哪里？
     │
     └── strategy_weather_sweep_trades：交易摘要，一行
         ├── lifecycle_status：当前生命周期状态
-        ├── outcome：最终结果
+        ├── trade_outcome：最终结果
         ├── close_reason：最终关闭原因
         ├── failure_reason：失败细分原因
         └── needs_attention：是否需要人工处理
@@ -52,7 +52,7 @@ failure_reason   如果失败，具体失败在哪里？
 | `step` | event 行字段 | 发生了什么动作 | 每条 event 行 |
 | `sequence_no` | event 行字段 | 动作顺序 | 每条 event 行 |
 | `lifecycle_status` | trades 行字段 | 交易是否仍在执行 | 实时更新 |
-| `outcome` | trades 行字段 | 最终是完成还是失败 | 终态时写入 |
+| `trade_outcome` | trades 行字段 | 最终是完成还是失败 | 终态时写入 |
 | `close_reason` | trades 行字段 | 为什么关闭 | 终态时写入 |
 | `failure_reason` | trades 行字段 / event detail | 失败细分原因 | 失败终态时写入 |
 | `needs_attention` | trades 行字段 | 是否有未解决问题 | 终态时写入 |
@@ -210,13 +210,13 @@ fill_reconcile_failed
 
 ## 7. trades 表目标字段
 
-推荐把 `status` 重命名为 `lifecycle_status`，并新增终态字段：
+落地时保留旧 `status` 作为兼容字段，新增 `lifecycle_status` 和终态字段：
 
 ```sql
 ALTER TABLE strategy_weather_sweep_trades
-  CHANGE COLUMN status lifecycle_status
+  ADD COLUMN lifecycle_status
     ENUM('entry_working', 'exit_working', 'closed') NOT NULL DEFAULT 'entry_working',
-  ADD COLUMN outcome ENUM('completed', 'failed') NULL,
+  ADD COLUMN trade_outcome ENUM('completed', 'failed') NULL,
   ADD COLUMN failure_reason VARCHAR(64) NULL,
   ADD COLUMN needs_attention TINYINT(1) NOT NULL DEFAULT 0;
 ```
@@ -228,17 +228,17 @@ ALTER TABLE strategy_weather_sweep_trades
 | `lifecycle_status` | `entry_working` | 仍在入场阶段。 |
 |  | `exit_working` | 仍在退出阶段。 |
 |  | `closed` | 生命周期已结束，不再执行动作。 |
-| `outcome` | `completed` | 按预期规则到达终态，无未解决仓位或订单。 |
+| `trade_outcome` | `completed` | 按预期规则到达终态，无未解决仓位或订单。 |
 |  | `failed` | 因动作失败或存在未解决状态到达终态。 |
 | `close_reason` | 见第 8 节 | 关闭原因。 |
-| `failure_reason` | 见第 9 节 | 失败细分原因；`outcome=failed` 时必填。 |
+| `failure_reason` | 见第 9 节 | 失败细分原因；`trade_outcome=failed` 时必填。 |
 | `needs_attention` | `0 / 1` | 是否需要人工确认订单、仓位或对账结果。 |
 
 约束建议：
 
-1. `lifecycle_status != 'closed'` 时，`outcome`、`close_reason`、`failure_reason` 必须为空。
-2. `lifecycle_status = 'closed'` 时，`outcome`、`close_reason` 必填。
-3. `outcome = 'failed'` 时，`failure_reason` 必填。
+1. `lifecycle_status != 'closed'` 时，`trade_outcome`、`close_reason`、`failure_reason` 必须为空。
+2. `lifecycle_status = 'closed'` 时，`trade_outcome`、`close_reason` 必填。
+3. `trade_outcome = 'failed'` 时，`failure_reason` 必填。
 4. `needs_attention = 1` 时，最终 `event_closed.detail` 必须说明原因。
 
 MySQL 可以先在应用层保证这些约束；如果数据库版本支持，再补充 CHECK 约束。
@@ -247,7 +247,7 @@ MySQL 可以先在应用层保证这些约束；如果数据库版本支持，�
 
 `close_reason` 只表示“为什么关闭”，不表示是否成功：
 
-| close_reason | 含义 | 常见 outcome |
+| close_reason | 含义 | 常见 trade_outcome |
 |---|---|---|
 | `normal_exit` | tick 验证后按正常卖出流程关闭。 | `completed` |
 | `stop_loss` | 风控触发后清仓关闭。 | 清仓完成为 `completed`，清仓失败为 `failed` |
@@ -262,11 +262,11 @@ MySQL 可以先在应用层保证这些约束；如果数据库版本支持，�
 tick_exit -> normal_exit
 ```
 
-`timeout_no_fill` 是预期规则触发的关闭，不建议归为失败；是否有盈利机会损失由策略指标分析，不由 `outcome` 表达。
+`timeout_no_fill` 是预期规则触发的关闭，不建议归为失败；是否有盈利机会损失由策略指标分析，不由 `trade_outcome` 表达。
 
 ## 9. failure_reason 规范
 
-`failure_reason` 是失败细分原因，只用于 `outcome='failed'`：
+`failure_reason` 是失败细分原因，只用于 `trade_outcome='failed'`：
 
 | failure_reason | 含义 |
 |---|---|
@@ -396,20 +396,20 @@ closed        -> lifecycle_status=closed
 exit_failed   -> lifecycle_status=closed
 ```
 
-`outcome` 迁移规则：
+`trade_outcome` 迁移规则：
 
-| 旧 status + close_reason | 新 outcome |
+| 旧 status + close_reason | 新 trade_outcome |
 |---|---|
-| `closed + normal_exit` | `completed` |
-| `closed + tick_exit` | `completed`，并迁移为 `normal_exit` |
-| `closed + timeout_no_fill` | `completed` |
-| `closed + stop_loss` | 默认 `completed`，若有仓位残留则 `failed` |
-| `closed + buy_failed` | `failed`，`failure_reason=buy_placement_failed` |
-| `closed + sell_failed` | `failed` |
-| `exit_failed + sell_failed` | `failed` |
-| `exit_failed + force_exit` | 默认 `failed`，`failure_reason=exit_order_unfilled` |
+| `closed + normal_exit` | `trade_outcome='completed'` |
+| `closed + tick_exit` | `trade_outcome='completed'`，并迁移为 `normal_exit` |
+| `closed + timeout_no_fill` | `trade_outcome='completed'` |
+| `closed + stop_loss` | 默认 `trade_outcome='completed'`，若有仓位残留则 `failed` |
+| `closed + buy_failed` | `trade_outcome='failed'`，`failure_reason=buy_placement_failed` |
+| `closed + sell_failed` | `trade_outcome='failed'` |
+| `exit_failed + sell_failed` | `trade_outcome='failed'` |
+| `exit_failed + force_exit` | 默认 `trade_outcome='failed'`，`failure_reason=exit_order_unfilled` |
 
-历史 `closed + sell_failed` 是旧数据，应迁移为 `outcome='failed'`。
+历史 `closed + sell_failed` 是旧数据，应迁移为 `trade_outcome='failed'`。
 
 ### 12.2 events 表
 
@@ -438,7 +438,7 @@ ORDER BY sequence_no ASC;
 SELECT event_id, token_id, market_slug, close_reason, failure_reason, closed_at
 FROM strategy_weather_sweep_trades
 WHERE lifecycle_status = 'closed'
-  AND outcome = 'failed'
+  AND trade_outcome = 'failed'
   AND needs_attention = 1
 ORDER BY closed_at DESC;
 ```
@@ -459,12 +459,12 @@ ORDER BY event_id, sequence_no;
 | `phase` | 过程分组或时间线分组。 |
 | `step` | 时间线节点。 |
 | `lifecycle_status` | 列表运行状态。 |
-| `outcome` | 成功 / 失败标识。 |
+| `trade_outcome` | 成功 / 失败标识。 |
 | `close_reason` | 关闭原因标签。 |
 | `failure_reason` | 失败详情标签。 |
 | `needs_attention` | 人工处理入口。 |
 
-前端不要把 `step=force_exit_requested` 展示为最终结果，也不要把 `phase=exit_force` 当作 close_reason。最终结果只读 trades 表的 `outcome` 和 `close_reason`。
+前端不要把 `step=force_exit_requested` 展示为最终结果，也不要把 `phase=exit_force` 当作 close_reason。最终结果只读 trades 表的 `trade_outcome` 和 `close_reason`。
 
 ## 15. 实施步骤
 
@@ -487,7 +487,7 @@ ORDER BY event_id, sequence_no;
 ## 16. 维护规则
 
 1. 新增 step 时必须先补充本文的 phase-step 矩阵。
-2. 新增 close_reason 或 failure_reason 时必须说明与 outcome 的关系。
+2. 新增 close_reason 或 failure_reason 时必须说明与 trade_outcome 的关系。
 3. 禁止新增 `stage` 字段或展示文案。
 4. 禁止把最终分类写入普通过程 step。
 5. 禁止在 events 每行重复写入 trades 终态字段。

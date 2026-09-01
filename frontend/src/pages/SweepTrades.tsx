@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { apiFetch } from '../api'
+import { badgeStyle, exitBadge, iconStyle, lifecycleBadge } from '../tradePresentation'
 
 interface Trade {
   id: number
@@ -14,7 +15,11 @@ interface Trade {
   city: string | null
   direction: string | null
   status: 'entry_working' | 'exit_working' | 'closed' | 'exit_failed'
+  lifecycle_status?: 'entry_working' | 'exit_working' | 'closed' | null
+  trade_outcome?: 'completed' | 'failed' | null
   close_reason: string | null
+  failure_reason?: string | null
+  needs_attention?: boolean | number | null
   entry_price: string | null
   entry_shares: string | null
   entry_cost: string | null
@@ -44,30 +49,6 @@ interface Props {
   darkMode: boolean
   proxyWallet?: string
   onBack?: () => void
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  entry_working: '入场中',
-  exit_working: '出场中',
-  closed: '已平仓',
-  exit_failed: '退出失败',
-}
-
-const STATUS_COLORS: Record<string, string> = {
-  entry_working: '#3b82f6',
-  exit_working: '#f59e0b',
-  closed: '#64748b',
-  exit_failed: '#ef4444',
-}
-
-const CLOSE_REASON_LABELS: Record<string, string> = {
-  normal_exit: '正常退出 normal_exit',
-  tick_exit: '旧版Tick退出 tick_exit',
-  stop_loss: '止损 stop_loss',
-  force_exit: '强制退出 force_exit',
-  buy_failed: '买入失败 buy_failed',
-  timeout_no_fill: '入场超时 timeout_no_fill',
-  sell_failed: '卖出失败 sell_failed',
 }
 
 const PHASE_COLORS: Record<string, string> = {
@@ -123,7 +104,15 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
       const params = new URLSearchParams()
       if (proxyWallet) params.set('proxy_wallet', proxyWallet)
       else if (walletFilter) params.set('proxy_wallet', walletFilter)
-      if (statusFilter) params.set('status', statusFilter)
+      if (statusFilter === 'entry_working' || statusFilter === 'exit_working' || statusFilter === 'closed') {
+        params.set('lifecycle_status', statusFilter)
+      } else if (statusFilter === 'failed' || statusFilter === 'completed') {
+        params.set('trade_outcome', statusFilter)
+      } else if (statusFilter === 'needs_attention') {
+        params.set('needs_attention', 'true')
+      } else if (statusFilter) {
+        params.set('status', statusFilter)
+      }
       if (directionFilter) params.set('direction', directionFilter)
       if (search) params.set('search', search)
       if (timeRange) {
@@ -230,8 +219,10 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
           <option value="">全部状态</option>
           <option value="entry_working">入场中</option>
           <option value="exit_working">出场中</option>
-          <option value="closed">已平仓</option>
-          <option value="exit_failed">退出失败</option>
+          <option value="closed">已结束</option>
+          <option value="completed">完成</option>
+          <option value="failed">失败</option>
+          <option value="needs_attention">需处理</option>
         </select>
         {!proxyWallet && accounts.length > 0 && (
           <select
@@ -293,7 +284,10 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
         <div style={{ color: textSecondary, padding: '40px', textAlign: 'center' }}>暂无交易记录</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {trades.map(t => (
+          {trades.map(t => {
+            const lifecycle = lifecycleBadge(t)
+            const exit = exitBadge(t)
+            return (
             <div key={t.event_id}>
               <div
                 onClick={() => handleExpand(t.event_id)}
@@ -308,16 +302,15 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
               >
                 {/* Row 1: status + market + time */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                  <span style={{
-                    fontSize: '11px', padding: '2px 8px', borderRadius: '4px', fontWeight: 500,
-                    background: `${STATUS_COLORS[t.status]}20`,
-                    color: STATUS_COLORS[t.status],
-                  }}>
-                    {STATUS_LABELS[t.status]}
+                  <span style={badgeStyle(lifecycle.tone, darkMode)}>
+                    <span style={iconStyle(lifecycle.tone, darkMode)}>{lifecycle.icon}</span>
+                    {lifecycle.label}
                   </span>
-                  {t.close_reason && (
-                    <span style={{ fontSize: '11px', color: textSecondary }}>
-                      ({CLOSE_REASON_LABELS[t.close_reason] || t.close_reason})
+                  {exit && (
+                    <span style={badgeStyle(exit.tone, darkMode)} title={[t.close_reason, t.failure_reason].filter(Boolean).join(' / ')}>
+                      <span style={iconStyle(exit.tone, darkMode)}>{exit.icon}</span>
+                      {exit.label}
+                      {exit.detail && <span style={{ opacity: 0.75 }}>{exit.detail}</span>}
                     </span>
                   )}
                   <span style={{ fontSize: '13px', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -428,7 +421,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
                 </div>
               )}
             </div>
-          ))}
+          )})}
         </div>
       )}
 

@@ -125,6 +125,9 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
 @router.get("/trades")
 async def list_trades(
     status: Optional[str] = Query(default=None),
+    lifecycle_status: Optional[str] = Query(default=None),
+    trade_outcome: Optional[str] = Query(default=None),
+    needs_attention: Optional[bool] = Query(default=None),
     search: Optional[str] = Query(default=None),
     proxy_wallet: Optional[str] = Query(default=None),
     direction: Optional[str] = Query(default=None),
@@ -137,6 +140,9 @@ async def list_trades(
     trades = _trade_dao.list_trades(
         owner_user_ids=owner_ids,
         status=status,
+        lifecycle_status=lifecycle_status,
+        trade_outcome=trade_outcome,
+        needs_attention=needs_attention,
         search=search,
         proxy_wallet=proxy_wallet,
         direction=direction,
@@ -147,6 +153,9 @@ async def list_trades(
     total = _trade_dao.count_trades(
         owner_user_ids=owner_ids,
         status=status,
+        lifecycle_status=lifecycle_status,
+        trade_outcome=trade_outcome,
+        needs_attention=needs_attention,
         search=search,
         proxy_wallet=proxy_wallet,
         direction=direction,

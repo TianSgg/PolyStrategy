@@ -13,8 +13,8 @@
   4. 入场超时无持仓 → timeout_no_fill；有持仓 → 等待 tick=0.001
   5. HTTP 校验通过 → SELL@(1 - tick_size)；风控触发 → 强制退出
 
-Event log 三层分离（参见 doc/2026-08-28-event-log-storage-design.md）：
-  挂单结果: order_placed / order_failed
+Event log 三层分离（参见 doc/2026-08-31-event-naming-convention.md）：
+  挂单结果: buy_order_placed / buy_order_failed / sell_order_placed / sell_order_failed
   成交通知: buy_filled / sell_filled
   阶段终态: entry_complete / entry_timeout / sell_complete / sell_failed
 
@@ -149,7 +149,7 @@ class SweepTrade:
         cancel_result: CancelResult,
     ) -> None:
         if self._el:
-            self._el.log_step("exit_reconcile_failed", {
+            self._el.log_step("fill_reconcile_failed", {
                 "side": side,
                 "order_id": order_id,
                 "cancelled": cancel_result.cancelled,
@@ -159,7 +159,7 @@ class SweepTrade:
             }, phase=phase)
         await self.risk.stop()
         self._close_exit_failed("sell_failed", phase=phase, extra={
-            "failure_reason": "exit_reconcile_failed",
+            "failure_reason": "fill_reconcile_failed",
             "order_id": order_id,
             "side": side,
             "query_status": cancel_result.status,
@@ -169,8 +169,9 @@ class SweepTrade:
         self, *, phase: str, side: str, order_id: str,
         cancel_result: CancelResult,
     ) -> None:
+        failure_reason = "buy_cancel_failed" if side.upper() == "BUY" else "sell_cancel_failed"
         if self._el:
-            self._el.log_step("cancel_failed", {
+            self._el.log_step(failure_reason, {
                 "side": side,
                 "order_id": order_id,
                 "query_status": cancel_result.status,
@@ -179,7 +180,7 @@ class SweepTrade:
             }, phase=phase)
         await self.risk.stop()
         self._close_exit_failed("sell_failed", phase=phase, extra={
-            "failure_reason": "cancel_failed",
+            "failure_reason": failure_reason,
             "order_id": order_id,
             "side": side,
             "query_status": cancel_result.status,
@@ -217,7 +218,7 @@ class SweepTrade:
             return False
 
         if self._el:
-            self._el.log_step("dust_position", {
+            self._el.log_step("dust_position_detected", {
                 "trigger": trigger,
                 "position_shares": str(self.position_shares),
                 "min_order_size": str(min_order_size),
@@ -409,18 +410,19 @@ class SweepTrade:
             }, phase="entry")
             self._insert_trade_summary(signal)
 
-        # --- Layer 1: order_failed (no cash) ---
+        # --- Layer 1: buy_order_failed (no cash) ---
         if actual_shares <= 0:
             logger.warning("No available cash for %s, closing", self.token_id[:10])
             if self._el:
-                self._el.log_step("order_failed", {
+                self._el.log_step("buy_order_failed", {
                     "status": "no_cash",
                     "requested_size": str(fixed_shares),
                     "available_cash": str(available),
                 }, phase="entry")
             self._close("buy_failed", phase="entry", extra={
+                "failure_reason": "buy_placement_failed",
                 "error": f"no_cash: requested={fixed_shares}, available={available}",
-            })
+            }, outcome="failed")
             return
 
         try:
@@ -428,12 +430,15 @@ class SweepTrade:
         except TickSizeFetchError as exc:
             logger.error("Tick size lookup failed before BUY: token=%s err=%s", self.token_id, exc)
             if self._el:
-                self._el.log_step("order_failed", {
+                self._el.log_step("buy_order_failed", {
                     "status": "tick_refresh_failed",
                     "error": str(exc),
                     "requested_size": str(actual_shares),
                 }, phase="entry")
-            self._close("buy_failed", phase="entry", extra={"error": str(exc)})
+            self._close("buy_failed", phase="entry", extra={
+                "failure_reason": "tick_refresh_failed",
+                "error": str(exc),
+            }, outcome="failed")
             return
 
         order_task = asyncio.create_task(self._executor.place_order(
@@ -459,10 +464,10 @@ class SweepTrade:
         self._order_placed_ms = int(time.time() * 1000)
         self._update_trade_summary({"entry_order_size": str(actual_shares)})
 
-        # --- Layer 1: order_failed (CLOB rejected) ---
+        # --- Layer 1: buy_order_failed (CLOB rejected) ---
         if result.status in ("failed", "insufficient_balance"):
             if self._el:
-                self._el.log_step("order_failed", {
+                self._el.log_step("buy_order_failed", {
                     "status": result.status,
                     "error": result.error,
                     "order": self._order_obj(
@@ -472,14 +477,15 @@ class SweepTrade:
                     "aft_bbo": aft_bbo,
                 }, phase="entry")
             self._close("buy_failed", phase="entry", extra={
+                "failure_reason": "buy_placement_failed",
                 "error": result.error,
-            })
+            }, outcome="failed")
             return
 
-        # --- Layer 1: order_placed (CLOB accepted) ---
+        # --- Layer 1: buy_order_placed (CLOB accepted) ---
         self.entry_order_id = result.order_id
         if self._el:
-            self._el.log_step("order_placed", {
+            self._el.log_step("buy_order_placed", {
                 "order": self._order_obj(
                     result.order_id, "BUY", str(buy_price), str(actual_shares), enter_origin_ms,
                 ),
@@ -558,7 +564,10 @@ class SweepTrade:
                 "elapsed_ms": elapsed_ms,
             }, phase="entry")
         self.state = "exit_working"
-        self._update_trade_summary({"status": "exit_working"})
+        self._update_trade_summary({
+            "status": "exit_working",
+            "lifecycle_status": "exit_working",
+        })
 
         if self._tick_verified:
             await self._start_normal_exit()
@@ -607,7 +616,7 @@ class SweepTrade:
                 self._record_buy_fill(order_id, missed, self.buy_price,
                                       source="cancel_reconcile")
                 if self._el:
-                    self._el.log_step("fill_reconcile", {
+                    self._el.log_step("fill_reconciled", {
                         "side": "BUY", "order_id": order_id,
                         "clob_matched": str(cancel_result.final_matched),
                         "memory_before": str(self.position_shares - missed),
@@ -629,7 +638,10 @@ class SweepTrade:
             self._close("timeout_no_fill", phase="entry")
         else:
             self.state = "exit_working"
-            self._update_trade_summary({"status": "exit_working"})
+            self._update_trade_summary({
+                "status": "exit_working",
+                "lifecycle_status": "exit_working",
+            })
             if self._tick_verified:
                 await self._start_normal_exit()
 
@@ -691,7 +703,10 @@ class SweepTrade:
 
         self._normal_exit_started = True
         self.state = "exit_working"
-        self._update_trade_summary({"status": "exit_working"})
+        self._update_trade_summary({
+            "status": "exit_working",
+            "lifecycle_status": "exit_working",
+        })
 
         try:
             self._tick_size = await self._tick_size_service.refresh_consensus(
@@ -811,7 +826,7 @@ class SweepTrade:
                     wait_s = INVALID_TICK_RETRY_WAIT_S[invalid_tick_retries]
                     invalid_tick_retries += 1
                     if self._el:
-                        self._el.log_step("sell_retry_start", {
+                        self._el.log_step("sell_retry_started", {
                             "attempt": attempt,
                             "error": result.error,
                             "error_signature": error_signature,
@@ -857,7 +872,7 @@ class SweepTrade:
                     else min(sell_backoff_base * (2 ** (attempt - 1)), sell_backoff_cap)
                 )
                 if self._el:
-                    self._el.log_step("sell_retry_start", {
+                    self._el.log_step("sell_retry_started", {
                         "attempt": attempt,
                         "error": result.error,
                     }, phase="exit")
@@ -943,7 +958,7 @@ class SweepTrade:
                     self._record_sell_fill(result.order_id, missed, self.sell_price,
                                            source="cancel_reconcile")
                     if self._el:
-                        self._el.log_step("fill_reconcile", {
+                        self._el.log_step("fill_reconciled", {
                             "side": "SELL", "order_id": result.order_id,
                             "clob_matched": str(sold_by_clob),
                             "memory_before": str(sold_by_memory),
@@ -1056,10 +1071,11 @@ class SweepTrade:
                 )
                 return
             if self._el:
-                self._el.log_step("risk_cancel_buy", {
+                self._el.log_step("buy_cancelled", {
                     "order_id": order_id,
                     "success": cancel_result.cancelled,
                     "final_matched": str(cancel_result.final_matched),
+                    "trigger": "stop_loss",
                 }, phase="exit_risk")
             self.entry_order_id = None
             if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
@@ -1068,7 +1084,7 @@ class SweepTrade:
                                       getattr(self, 'buy_price', Decimal("0.99")),
                                       source="cancel_reconcile")
                 if self._el:
-                    self._el.log_step("fill_reconcile", {
+                    self._el.log_step("fill_reconciled", {
                         "side": "BUY", "order_id": order_id,
                         "clob_matched": str(cancel_result.final_matched),
                         "memory_before": str(self.position_shares - missed),
@@ -1095,10 +1111,11 @@ class SweepTrade:
                 )
                 return
             if self._el:
-                self._el.log_step("risk_cancel_sell", {
+                self._el.log_step("sell_cancelled", {
                     "order_id": order_id,
                     "success": cancel_result.cancelled,
                     "final_matched": str(cancel_result.final_matched),
+                    "trigger": "stop_loss",
                 }, phase="exit_risk")
             self.exit_order_id = None
 
@@ -1218,7 +1235,7 @@ class SweepTrade:
                         wait_s = INVALID_TICK_RETRY_WAIT_S[invalid_tick_retries]
                         invalid_tick_retries += 1
                         if self._el:
-                            self._el.log_step("sell_retry_start", {
+                            self._el.log_step("sell_retry_started", {
                                 "attempt": risk_attempt,
                                 "error": result.error,
                                 "error_signature": error_signature,
@@ -1268,7 +1285,7 @@ class SweepTrade:
                     continue
 
                 if self._el:
-                    self._el.log_step("risk_sell_order_placed", {
+                    self._el.log_step("sell_order_placed", {
                         "order": self._order_obj(
                             result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
                         ),
@@ -1276,6 +1293,7 @@ class SweepTrade:
                         "clob_taking": result.clob_taking,
                         "clob_making": result.clob_making,
                         "reason": "stop_loss",
+                        "trigger": "stop_loss",
                         "attempt": risk_attempt,
                     }, phase="exit_risk")
                 self.sell_price = Decimal("0.01")
@@ -1385,7 +1403,7 @@ class SweepTrade:
         await self.risk.stop()
 
         if self._el:
-            self._el.log_step("force_exit", {
+            self._el.log_step("force_exit_requested", {
                 "reason": reason,
                 "trigger": "user",
                 "state_at_exit": self.state,
@@ -1462,7 +1480,7 @@ class SweepTrade:
                         source="cancel_reconcile",
                     )
                     if self._el:
-                        self._el.log_step("fill_reconcile", {
+                        self._el.log_step("fill_reconciled", {
                             "side": "SELL",
                             "order_id": order_id,
                             "clob_matched": str(cancel_result.final_matched),
@@ -1472,7 +1490,7 @@ class SweepTrade:
         except Exception as exc:
             logger.error("force_exit cancel orders failed: %s", exc)
             self._close_exit_failed("force_exit", phase="exit_force", extra={
-                "failure_reason": "exit_reconcile_failed",
+                "failure_reason": "fill_reconcile_failed",
                 "trigger": "user",
                 "error": str(exc),
             })
@@ -1526,14 +1544,14 @@ class SweepTrade:
                     "trigger_token_id": self.token_id,
                     "utc": self._utc_str(),
                     **pause_detail,
-                }, phase="exit")
+                }, phase=phase)
 
         self._close(
             reason,
             phase=phase,
             extra=detail,
             status="exit_failed",
-            event_step="exit_failed",
+            outcome="failed",
         )
 
     def _close(
@@ -1544,6 +1562,7 @@ class SweepTrade:
         *,
         status: str = "closed",
         event_step: str = "event_closed",
+        outcome: str | None = None,
     ) -> None:
         if self.state == "closed":
             return
@@ -1562,9 +1581,17 @@ class SweepTrade:
             pnl = self._exit_revenue - self._entry_cost
             pnl_pct = (pnl / self._entry_cost * 100).quantize(Decimal("0.01"))
 
+        failure_reason = (extra or {}).get("failure_reason")
+        resolved_outcome = outcome or ("failed" if status == "exit_failed" or failure_reason else "completed")
+        needs_attention = bool((extra or {}).get("manual_action_required", False))
+
         self._update_trade_summary({
             "status": status,
+            "lifecycle_status": "closed" if status in ("closed", "exit_failed") else status,
+            "trade_outcome": resolved_outcome,
             "close_reason": reason,
+            "failure_reason": failure_reason,
+            "needs_attention": 1 if needs_attention else 0,
             "pnl": str(pnl) if pnl is not None else None,
             "pnl_pct": str(pnl_pct) if pnl_pct is not None else None,
             "duration_ms": duration_ms,
@@ -1574,7 +1601,11 @@ class SweepTrade:
         if self._el:
             detail = {
                 "reason": reason,
+                "close_reason": reason,
+                "outcome": resolved_outcome,
                 "total_position": str(self.position_shares),
+                "position_open": self.position_shares > 0,
+                "manual_action_required": needs_attention,
                 "duration_ms": duration_ms,
             }
             if extra:
@@ -1604,6 +1635,10 @@ class SweepTrade:
                 "temperature_label": signal.payload.get("temperature_label"),
                 "is_from_main": 1 if signal.payload.get("is_from_main", True) else 0,
                 "status": "entry_working",
+                "lifecycle_status": "entry_working",
+                "trade_outcome": None,
+                "failure_reason": None,
+                "needs_attention": 0,
                 "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
             })
         except Exception:

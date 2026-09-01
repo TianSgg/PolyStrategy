@@ -303,6 +303,9 @@ class WeatherSweepTradeDAO:
         *,
         owner_user_ids: Optional[List[int]] = None,
         status: Optional[str] = None,
+        lifecycle_status: Optional[str] = None,
+        trade_outcome: Optional[str] = None,
+        needs_attention: Optional[bool] = None,
         search: Optional[str] = None,
         proxy_wallet: Optional[str] = None,
         direction: Optional[str] = None,
@@ -323,6 +326,15 @@ class WeatherSweepTradeDAO:
         if status:
             conditions.append("status = %s")
             params.append(status)
+        if lifecycle_status:
+            conditions.append("lifecycle_status = %s")
+            params.append(lifecycle_status)
+        if trade_outcome:
+            conditions.append("trade_outcome = %s")
+            params.append(trade_outcome)
+        if needs_attention is not None:
+            conditions.append("needs_attention = %s")
+            params.append(1 if needs_attention else 0)
         if direction:
             conditions.append("direction = %s")
             params.append(direction)
@@ -345,13 +357,16 @@ class WeatherSweepTradeDAO:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 columns = [desc[0] for desc in cur.description]
-                return [dict(zip(columns, row)) for row in cur.fetchall()]
+                return [self._format_trade_row(dict(zip(columns, row))) for row in cur.fetchall()]
 
     def count_trades(
         self,
         *,
         owner_user_ids: Optional[List[int]] = None,
         status: Optional[str] = None,
+        lifecycle_status: Optional[str] = None,
+        trade_outcome: Optional[str] = None,
+        needs_attention: Optional[bool] = None,
         search: Optional[str] = None,
         proxy_wallet: Optional[str] = None,
         direction: Optional[str] = None,
@@ -370,6 +385,15 @@ class WeatherSweepTradeDAO:
         if status:
             conditions.append("status = %s")
             params.append(status)
+        if lifecycle_status:
+            conditions.append("lifecycle_status = %s")
+            params.append(lifecycle_status)
+        if trade_outcome:
+            conditions.append("trade_outcome = %s")
+            params.append(trade_outcome)
+        if needs_attention is not None:
+            conditions.append("needs_attention = %s")
+            params.append(1 if needs_attention else 0)
         if direction:
             conditions.append("direction = %s")
             params.append(direction)
@@ -394,4 +418,18 @@ class WeatherSweepTradeDAO:
                 cur.execute(sql, (event_id,))
                 columns = [desc[0] for desc in cur.description]
                 row = cur.fetchone()
-                return dict(zip(columns, row)) if row else None
+                return self._format_trade_row(dict(zip(columns, row))) if row else None
+
+    @staticmethod
+    def _format_trade_row(d: Dict[str, Any]) -> Dict[str, Any]:
+        status = d.get("status")
+        lifecycle_status = d.get("lifecycle_status") or status
+        if lifecycle_status == "exit_failed":
+            lifecycle_status = "closed"
+        d["lifecycle_status"] = lifecycle_status
+
+        if d.get("trade_outcome") is None and lifecycle_status == "closed":
+            d["trade_outcome"] = "failed" if status == "exit_failed" or d.get("close_reason") in ("buy_failed", "sell_failed") else "completed"
+        if d.get("needs_attention") is None:
+            d["needs_attention"] = 1 if status == "exit_failed" else 0
+        return d

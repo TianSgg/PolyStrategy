@@ -251,15 +251,23 @@ CREATE TABLE strategy_weather_sweep_trades (
   event_slug VARCHAR(255) NULL,
   city VARCHAR(100) NULL,
   direction VARCHAR(16) NULL,
+  outcome VARCHAR(8) NULL COMMENT 'Polymarket outcome: yes/no',
+  temperature_label VARCHAR(100) NULL,
+  is_from_main TINYINT(1) NOT NULL DEFAULT 1,
 
   -- 状态
   status ENUM('entry_working', 'exit_working', 'closed', 'exit_failed') NOT NULL DEFAULT 'entry_working',
+  lifecycle_status ENUM('entry_working', 'exit_working', 'closed') NOT NULL DEFAULT 'entry_working',
+  trade_outcome ENUM('completed', 'failed') NULL,
   close_reason VARCHAR(64) NULL,
+  failure_reason VARCHAR(64) NULL,
+  needs_attention TINYINT(1) NOT NULL DEFAULT 0,
 
   -- 入场
   entry_price DECIMAL(10,4) NULL,
   entry_shares DECIMAL(20,4) NULL,
   entry_cost DECIMAL(20,6) NULL,
+  entry_order_size DECIMAL(20,4) NULL,
   entry_order_id VARCHAR(128) NULL,
   entered_at DATETIME(3) NULL,
 
@@ -267,6 +275,7 @@ CREATE TABLE strategy_weather_sweep_trades (
   exit_price DECIMAL(10,4) NULL,
   exit_shares DECIMAL(20,4) NULL,
   exit_revenue DECIMAL(20,6) NULL,
+  exit_order_size DECIMAL(20,4) NULL,
   exit_order_id VARCHAR(128) NULL,
   exited_at DATETIME(3) NULL,
 
@@ -282,6 +291,7 @@ CREATE TABLE strategy_weather_sweep_trades (
   PRIMARY KEY (id),
   UNIQUE KEY uq_event_id (event_id),
   KEY idx_config_status (config_id, status),
+  KEY idx_lifecycle_outcome (lifecycle_status, trade_outcome, needs_attention),
   KEY idx_owner (owner_user_id, closed_at DESC),
   KEY idx_event_slug (event_slug, started_at DESC),
   KEY idx_status (status),
