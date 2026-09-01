@@ -258,7 +258,7 @@ CREATE TABLE strategy_weather_sweep_trades (
   -- 状态
   status ENUM('entry_working', 'exit_working', 'closed', 'exit_failed') NOT NULL DEFAULT 'entry_working',
   lifecycle_status ENUM('entry_working', 'exit_working', 'closed') NOT NULL DEFAULT 'entry_working',
-  trade_outcome ENUM('completed', 'failed') NULL,
+  trade_outcome ENUM('completed', 'failed', 'skipped') NULL,
   close_reason VARCHAR(64) NULL,
   failure_reason VARCHAR(64) NULL,
   needs_attention TINYINT(1) NOT NULL DEFAULT 0,

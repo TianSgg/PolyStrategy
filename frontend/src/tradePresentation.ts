@@ -42,6 +42,7 @@ const CLOSE_REASON_LABELS: Record<string, string> = {
   stop_loss: '止损退出',
   force_exit: '强制退出',
   buy_failed: '买入失败',
+  no_cash: '资金不足',
   timeout_no_fill: '入场超时',
   sell_failed: '卖出失败',
 }
@@ -74,6 +75,7 @@ export function lifecycleStatus(trade: TradeLike) {
 
 export function tradeOutcome(trade: TradeLike) {
   if (trade.trade_outcome) return trade.trade_outcome
+  if (trade.close_reason === 'no_cash') return 'skipped'
   if (trade.status === 'exit_failed') return 'failed'
   if (trade.close_reason === 'buy_failed' || trade.close_reason === 'sell_failed') return 'failed'
   return lifecycleStatus(trade) === 'closed' ? 'completed' : null
@@ -93,6 +95,10 @@ export function exitBadge(trade: TradeLike): Badge | null {
   const failed = tradeOutcome(trade) === 'failed'
   const attention = isAttention(trade.needs_attention)
   const failureDetail = trade.failure_reason ? FAILURE_LABELS[trade.failure_reason] || trade.failure_reason : undefined
+
+  if (reason === 'no_cash' || tradeOutcome(trade) === 'skipped') {
+    return { icon: '∅', label: CLOSE_REASON_LABELS[reason] || '已跳过', detail: '未下单', tone: 'slate' }
+  }
 
   if (failed || attention) {
     return {

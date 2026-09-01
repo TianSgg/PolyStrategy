@@ -557,7 +557,10 @@ export default function StrategyDashboard({ darkMode }: Props) {
                                       </div>
                                       {step.detail && Object.keys(step.detail).length > 0 && (
                                         <div style={{ fontSize: '11px', color: textSecondary, background: darkMode ? '#0f172a' : '#f1f5f9', padding: '4px 8px', borderRadius: '4px', fontFamily: 'monospace', lineHeight: '1.4' }}>
-                                          {Object.entries(step.detail).map(([k, v]) => (
+                                          {[
+                                            ['event_id', step.event_id],
+                                            ...Object.entries(step.detail || {}).filter(([key]) => key !== 'event_id'),
+                                          ].map(([k, v]) => (
                                             <div key={k}><span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: {typeof v === 'object' ? JSON.stringify(v) : String(v)}</div>
                                           ))}
                                         </div>

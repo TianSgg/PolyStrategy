@@ -429,7 +429,10 @@ class WeatherSweepTradeDAO:
         d["lifecycle_status"] = lifecycle_status
 
         if d.get("trade_outcome") is None and lifecycle_status == "closed":
-            d["trade_outcome"] = "failed" if status == "exit_failed" or d.get("close_reason") in ("buy_failed", "sell_failed") else "completed"
+            if d.get("close_reason") == "no_cash":
+                d["trade_outcome"] = "skipped"
+            else:
+                d["trade_outcome"] = "failed" if status == "exit_failed" or d.get("close_reason") in ("buy_failed", "sell_failed") else "completed"
         if d.get("needs_attention") is None:
             d["needs_attention"] = 1 if status == "exit_failed" else 0
         return d

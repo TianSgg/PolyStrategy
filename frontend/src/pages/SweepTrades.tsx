@@ -16,7 +16,7 @@ interface Trade {
   direction: string | null
   status: 'entry_working' | 'exit_working' | 'closed' | 'exit_failed'
   lifecycle_status?: 'entry_working' | 'exit_working' | 'closed' | null
-  trade_outcome?: 'completed' | 'failed' | null
+  trade_outcome?: 'completed' | 'failed' | 'skipped' | null
   close_reason: string | null
   failure_reason?: string | null
   needs_attention?: boolean | number | null
@@ -71,6 +71,13 @@ const PHASE_LABELS: Record<string, string> = {
 
 const PAGE_SIZE = 30
 
+function stepDetailEntries(step: EventStep): [string, any][] {
+  return [
+    ['event_id', step.event_id],
+    ...Object.entries(step.detail || {}).filter(([key]) => key !== 'event_id'),
+  ]
+}
+
 export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
   const [trades, setTrades] = useState<Trade[]>([])
   const [total, setTotal] = useState(0)
@@ -106,7 +113,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
       else if (walletFilter) params.set('proxy_wallet', walletFilter)
       if (statusFilter === 'entry_working' || statusFilter === 'exit_working' || statusFilter === 'closed') {
         params.set('lifecycle_status', statusFilter)
-      } else if (statusFilter === 'failed' || statusFilter === 'completed') {
+      } else if (statusFilter === 'failed' || statusFilter === 'completed' || statusFilter === 'skipped') {
         params.set('trade_outcome', statusFilter)
       } else if (statusFilter === 'needs_attention') {
         params.set('needs_attention', 'true')
@@ -221,6 +228,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
           <option value="exit_working">出场中</option>
           <option value="closed">已结束</option>
           <option value="completed">完成</option>
+          <option value="skipped">跳过</option>
           <option value="failed">失败</option>
           <option value="needs_attention">需处理</option>
         </select>
@@ -407,7 +415,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
                               padding: '6px 10px', borderRadius: '5px',
                               fontFamily: 'monospace', wordBreak: 'break-all', lineHeight: '1.5',
                             }}>
-                              {Object.entries(step.detail).map(([k, v]) => (
+                              {stepDetailEntries(step).map(([k, v]) => (
                                 <div key={k}>
                                   <span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: <span style={{ color: textPrimary }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
                                 </div>

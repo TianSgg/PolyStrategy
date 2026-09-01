@@ -161,6 +161,7 @@ ORDER BY sequence_no ASC;
 | phase | step | 关键 detail |
 |---|---|---|
 | `entry` | `signal_received` | `signal_id`、`token_id`、`city`、`direction`、`utc`、`risk_ref_mid`、`risk_threshold`。 |
+| `entry` | `buy_order_skipped` | `status=no_cash`、`requested_size`、`available_cash`。 |
 | `entry` | `buy_order_failed` | `status`、`error`、`order`、`requested_size`、`available_cash`、BBO。 |
 | `entry` | `buy_order_placed` | `order`、`clob_status`、`clob_taking`、`clob_making`、BBO。 |
 | `entry` | `buy_filled` | `order_id`、`filled_size`、`fill_price`、`total_position`、`source`、`trade_id`。 |
@@ -230,7 +231,7 @@ ORDER BY sequence_no ASC;
 | `status` | 旧兼容字段：`entry_working`、`exit_working`、`closed`、`exit_failed`。 |
 | `lifecycle_status` | 生命周期字段：`entry_working`、`exit_working`、`closed`。 |
 | `outcome` | Polymarket outcome：`yes` / `no`。 |
-| `trade_outcome` | 交易最终结果：`completed` / `failed`。 |
+| `trade_outcome` | 交易最终结果：`completed` / `failed` / `skipped`。 |
 | `close_reason` | 摘要级关闭原因；SELL 失败仍为 `sell_failed`，细分看 `failure_reason`。 |
 | `failure_reason` / `needs_attention` | 失败细分和是否需要人工确认。 |
 | `entry_order_size` / `entry_price` / `entry_shares` / `entry_cost` / `entry_order_id` / `entered_at` | 入场委托与累计成交。 |

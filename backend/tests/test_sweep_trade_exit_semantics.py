@@ -7,6 +7,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from framework.strategy_runtime.interfaces import CancelResult, OrderResult  # noqa: E402
+from framework.strategy_runtime.interfaces import Signal  # noqa: E402
 from framework.strategy_runtime.tick_verifier import TickVerifyResult  # noqa: E402
 from framework.user_ws import FillEvent  # noqa: E402
 from strategy_weather_sweep.internal.sell_failure import SellErrorCircuitBreaker  # noqa: E402
@@ -18,6 +19,12 @@ class FakeEventLogger:
 
     def __init__(self):
         self.steps = []
+        self._config_id = 1
+        self._owner_user_id = 1
+        self._proxy_wallet = "wallet"
+
+    def start_event(self, **kwargs):
+        self.started = kwargs
 
     def log_step(self, step, detail, phase="entry"):
         self.steps.append((phase, step, detail))
@@ -202,6 +209,40 @@ def test_trade_summary_writes_lifecycle_and_trade_outcome_fields():
     )
     assert event_closed["outcome"] == "failed"
     assert event_closed["failure_reason"] == "sell_placement_failed"
+
+
+def test_no_cash_entry_is_skipped_not_failed():
+    trade_dao = FakeTradeDAO()
+    trade, executor, event_logger, closed = make_trade(trade_dao=trade_dao)
+    executor.available_cash = Decimal("0")
+    signal = Signal(
+        signal_id="signal-1",
+        signal_type="sweep",
+        token_id="token",
+        market_slug="market",
+        occurred_at_ms=0,
+        source="test",
+        payload={"event_slug": "event", "city": "city", "direction": "highest"},
+    )
+
+    run(trade.enter(signal))
+
+    assert closed == ["token"]
+    event_id, update = trade_dao.updates[-1]
+    assert event_id == "event-1"
+    assert update["status"] == "closed"
+    assert update["trade_outcome"] == "skipped"
+    assert update["close_reason"] == "no_cash"
+    assert update["failure_reason"] is None
+    assert update["needs_attention"] == 0
+    assert ("entry", "buy_order_skipped") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    event_closed = next(
+        detail for _, step, detail in event_logger.steps if step == "event_closed"
+    )
+    assert event_closed["outcome"] == "skipped"
+    assert event_closed["close_reason"] == "no_cash"
 
 
 def test_zero_fill_waits_for_entry_timeout_after_tick_change():

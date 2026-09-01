@@ -414,15 +414,16 @@ class SweepTrade:
         if actual_shares <= 0:
             logger.warning("No available cash for %s, closing", self.token_id[:10])
             if self._el:
-                self._el.log_step("buy_order_failed", {
+                self._el.log_step("buy_order_skipped", {
                     "status": "no_cash",
                     "requested_size": str(fixed_shares),
                     "available_cash": str(available),
                 }, phase="entry")
-            self._close("buy_failed", phase="entry", extra={
-                "failure_reason": "buy_placement_failed",
-                "error": f"no_cash: requested={fixed_shares}, available={available}",
-            }, outcome="failed")
+            self._close("no_cash", phase="entry", extra={
+                "requested_size": str(fixed_shares),
+                "available_cash": str(available),
+                "status": "no_cash",
+            }, outcome="skipped")
             return
 
         try:

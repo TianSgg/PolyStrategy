@@ -112,6 +112,7 @@ phase 保持 5 个，不建议合并：
 | `signal_received` | 收到交易信号。 | 否 |
 | `buy_order_placed` | BUY 订单被 CLOB 接受。 | 否 |
 | `buy_order_failed` | BUY 下单失败或未发送。 | 否 |
+| `buy_order_skipped` | BUY 未发起，例如入场前资金不足。 | 否 |
 | `buy_filled` | 一笔 BUY 成交。 | 是 |
 | `fill_reconciled` | 通过 REST 或重连校准累计成交。 | 是 |
 | `entry_complete` | 入场阶段完成，通常为全部买入。 | 否 |
@@ -190,6 +191,7 @@ phase 保持 5 个，不建议合并：
 |---|---|---|
 | `order_placed` | `buy_order_placed` | 明确 BUY。 |
 | `order_failed` | `buy_order_failed` | 明确 BUY。 |
+| `buy_order_failed` 且 `detail.status=no_cash` | `buy_order_skipped` | 资金不足未下单，不归类为失败。 |
 | `tick_detected` | `tick_detect` | 统一检测动作名。 |
 | `fill_reconcile` | `fill_reconciled` | 表示校准结果。 |
 | `sell_retry_start` | `sell_retry_started` | 使用完成态。 |
@@ -216,7 +218,7 @@ fill_reconcile_failed
 ALTER TABLE strategy_weather_sweep_trades
   ADD COLUMN lifecycle_status
     ENUM('entry_working', 'exit_working', 'closed') NOT NULL DEFAULT 'entry_working',
-  ADD COLUMN trade_outcome ENUM('completed', 'failed') NULL,
+  ADD COLUMN trade_outcome ENUM('completed', 'failed', 'skipped') NULL,
   ADD COLUMN failure_reason VARCHAR(64) NULL,
   ADD COLUMN needs_attention TINYINT(1) NOT NULL DEFAULT 0;
 ```
@@ -229,6 +231,7 @@ ALTER TABLE strategy_weather_sweep_trades
 |  | `exit_working` | 仍在退出阶段。 |
 |  | `closed` | 生命周期已结束，不再执行动作。 |
 | `trade_outcome` | `completed` | 按预期规则到达终态，无未解决仓位或订单。 |
+|  | `skipped` | 策略未发起交易，例如资金不足。 |
 |  | `failed` | 因动作失败或存在未解决状态到达终态。 |
 | `close_reason` | 见第 8 节 | 关闭原因。 |
 | `failure_reason` | 见第 9 节 | 失败细分原因；`trade_outcome=failed` 时必填。 |
@@ -252,6 +255,7 @@ MySQL 可以先在应用层保证这些约束；如果数据库版本支持，�
 | `normal_exit` | tick 验证后按正常卖出流程关闭。 | `completed` |
 | `stop_loss` | 风控触发后清仓关闭。 | 清仓完成为 `completed`，清仓失败为 `failed` |
 | `buy_failed` | BUY 下单失败。 | `failed` |
+| `no_cash` | 入场前可用现金不足，未发起 BUY。 | `skipped` |
 | `timeout_no_fill` | 入场等待超时且没有成交。 | `completed` |
 | `sell_failed` | SELL 或退出流程失败。 | `failed` |
 | `force_exit` | 用户或配置禁用触发强制退出。 | 无残留为 `completed`，有残留为 `failed` |
@@ -403,6 +407,7 @@ exit_failed   -> lifecycle_status=closed
 | `closed + normal_exit` | `trade_outcome='completed'` |
 | `closed + tick_exit` | `trade_outcome='completed'`，并迁移为 `normal_exit` |
 | `closed + timeout_no_fill` | `trade_outcome='completed'` |
+| `closed + no_cash` | `trade_outcome='skipped'` |
 | `closed + stop_loss` | 默认 `trade_outcome='completed'`，若有仓位残留则 `failed` |
 | `closed + buy_failed` | `trade_outcome='failed'`，`failure_reason=buy_placement_failed` |
 | `closed + sell_failed` | `trade_outcome='failed'` |
