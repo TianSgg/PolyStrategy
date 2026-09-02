@@ -68,13 +68,9 @@ class SellFailureTracker:
         self,
         *,
         max_consecutive_same_error: int = 3,
-        max_total_failures: int = 0,
-        max_elapsed_ms: int = 0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._max_consecutive_same_error = max_consecutive_same_error
-        self._max_total_failures = max_total_failures
-        self._max_elapsed_ms = max_elapsed_ms
         self._clock = clock
         self._started_at = clock()
         self._attempt_count = 0
@@ -96,10 +92,6 @@ class SellFailureTracker:
         stop_reason: Optional[str] = None
         if self._max_consecutive_same_error and self._consecutive_same_error >= self._max_consecutive_same_error:
             stop_reason = "same_error_repeated"
-        elif self._max_total_failures and self._attempt_count >= self._max_total_failures:
-            stop_reason = "total_failures_exceeded"
-        elif self._max_elapsed_ms and self.elapsed_ms >= self._max_elapsed_ms:
-            stop_reason = "deadline_exceeded"
         return SellFailureSnapshot(
             attempt_count=self._attempt_count,
             consecutive_same_error=self._consecutive_same_error,

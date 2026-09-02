@@ -17,7 +17,6 @@ load_dotenv(_project_root / ".env", override=True)
 from py_clob_client_v2 import ClobClient
 from py_clob_client_v2.clob_types import (
     ApiCreds, PartialCreateOrderOptions, OrderType, OrderPayload,
-    BuilderOperatorSignature,
 )
 from py_clob_client_v2.clob_types import OrderArgsV2 as OrderArgs
 from py_clob_client_v2.order_builder.constants import BUY, SELL
@@ -70,7 +69,7 @@ def create_client(private_key: str) -> ClobClient:
     return client
 
 
-def test_connectivity(client: ClobClient):
+def check_connectivity(client: ClobClient):
     print("\n═══ 连接测试 ═══")
     try:
         server_time = client.get_server_time()
@@ -81,7 +80,7 @@ def test_connectivity(client: ClobClient):
     return True
 
 
-def test_market_info(client: ClobClient, token_id: str):
+def check_market_info(client: ClobClient, token_id: str):
     print(f"\n═══ 市场信息 (token: {token_id[:16]}...) ═══")
     try:
         book = client.get_order_book(token_id)
@@ -115,7 +114,7 @@ def test_market_info(client: ClobClient, token_id: str):
     return tick_size, neg_risk
 
 
-def test_place_order(client: ClobClient, token_id: str, tick_size: str, neg_risk: bool):
+def check_place_order(client: ClobClient, token_id: str, tick_size: str, neg_risk: bool):
     expiration = int(time.time()) + 1800
 
     print(f"\n═══ 下单测试 ═══")
@@ -200,12 +199,12 @@ def main():
 
     client = create_client(PRIVATE_KEY)
 
-    if not test_connectivity(client):
+    if not check_connectivity(client):
         sys.exit(1)
 
-    tick_size, neg_risk = test_market_info(client, TOKEN_ID)
+    tick_size, neg_risk = check_market_info(client, TOKEN_ID)
 
-    test_place_order(client, TOKEN_ID, tick_size, neg_risk)
+    check_place_order(client, TOKEN_ID, tick_size, neg_risk)
 
     print("\n═══ 测试完成 ═══")
 

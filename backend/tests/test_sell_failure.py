@@ -39,25 +39,27 @@ def test_tracker_stops_after_three_same_errors():
     assert third.consecutive_same_error == 3
 
 
-def test_tracker_stops_after_five_total_errors():
+def test_tracker_does_not_stop_for_mixed_errors():
     tracker = SellFailureTracker()
-    signatures = ["network_timeout", "authentication_error", "unknown_api_error", "network_timeout"]
+    signatures = [
+        "network_timeout", "authentication_error", "unknown_api_error",
+        "network_timeout", "invalid_order_params",
+    ]
 
     for signature in signatures:
         assert tracker.record(signature, signature).stop_reason is None
 
-    final = tracker.record("invalid_order_params", "invalid order price")
-    assert final.stop_reason == "total_failures_exceeded"
-    assert final.consecutive_same_error == 1
+    assert tracker.snapshot().attempt_count == 5
+    assert tracker.snapshot().consecutive_same_error == 1
 
 
-def test_tracker_stops_when_deadline_exceeded():
+def test_tracker_does_not_stop_on_elapsed_time():
     now = [0.0]
     tracker = SellFailureTracker(clock=lambda: now[0])
     tracker.record("network_timeout", "timeout")
 
     now[0] = 180.0
-    assert tracker.snapshot().stop_reason == "deadline_exceeded"
+    assert tracker.snapshot().stop_reason is None
 
 
 def test_global_breaker_requires_three_events_in_window():
