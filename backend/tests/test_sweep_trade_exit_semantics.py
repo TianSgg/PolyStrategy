@@ -309,7 +309,7 @@ def test_zero_fill_waits_for_entry_timeout_after_tick_change():
     ]
     assert all(item["token_id"] == "token" for item in tick_verified)
     assert all(item["tick_size"] == "0.001" for item in tick_verified)
-    assert ("entry", "normal_exit_deferred") in [
+    assert ("entry", "exit_trigger_deferred") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
 

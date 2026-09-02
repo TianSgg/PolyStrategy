@@ -736,7 +736,7 @@ class SweepTrade:
         # The final close_reason for a successful exit is always normal_exit.
         if self.position_shares <= 0 or self.entry_order_id:
             if self._el:
-                self._el.log_step("normal_exit_deferred", {
+                self._el.log_step("exit_trigger_deferred", {
                     "trigger": "tick_size_change",
                     "reason": "no_position" if self.position_shares <= 0 else "entry_order_pending",
                     "position_shares": str(self.position_shares),
