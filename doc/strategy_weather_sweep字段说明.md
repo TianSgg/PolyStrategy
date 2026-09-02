@@ -21,16 +21,8 @@ ORDER BY sequence_no ASC;
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `id` | BIGINT | 自增主键，仅作物理行 ID。 |
-| `owner_user_id` | INT | 配置归属用户，用于权限过滤。 |
-| `proxy_wallet` | VARCHAR | 执行本笔交易的代理钱包。 |
-| `config_id` | BIGINT | 策略配置 ID。 |
-| `config_snapshot` | JSON | 创建 event logger 时保存的配置快照，可为空。 |
 | `event_id` | CHAR(36) | 一笔交易生命周期的 UUID；同一笔交易所有 step 相同。 |
-| `signal_id` | VARCHAR | 触发交易的信号 ID，与信号源和 trades 表保持一致。 |
-| `token_id` | VARCHAR | Polymarket outcome token ID。 |
-| `market_slug` | VARCHAR | 市场 slug。 |
-| `event_slug` | VARCHAR | Polymarket event slug。 |
-| `phase` | ENUM | 执行阶段：`entry`、`monitor`、`exit`、`exit_risk`、`exit_force`。 |
+| `phase` | ENUM | 执行阶段：`entry` 或 `exit`。 |
 | `step` | VARCHAR | 阶段内的具体动作或状态。 |
 | `sequence_no` | INT | 同一 `event_id` 内递增的 step 序号。 |
 | `detail` | JSON | step 详情，字段见下文。 |
@@ -41,12 +33,10 @@ ORDER BY sequence_no ASC;
 | phase | 含义 |
 |---|---|
 | `entry` | 收到信号、买入、买入成交与入场终态。 |
-| `monitor` | 等待 tick 变化、HTTP 验证、风控监控。 |
-| `exit` | tick 验证后的正常卖出流程。 |
-| `exit_risk` | 风控触发后的强制清仓流程。 |
-| `exit_force` | 用户或配置禁用触发的强制退出流程。 |
+| `exit` | 第一次 SELL 下单尝试开始后，执行正常卖出、止损卖出或强制退出。 |
 
-`strategy_paused` 目前写入 `exit` phase。它表示某个 event 的 SELL 失败触发了策略级熔断，不表示新的数据库 phase。
+`entry` 包含 tick 监听和确认，以及买入订单的等待与回查。第一次 SELL 下单尝试前，不因 tick 变化或风控触发而切换阶段。
+`strategy_paused` 写入 `exit` phase，表示某个 event 的 SELL 失败触发了策略级熔断，不表示新的数据库 phase。
 
 ## 4. detail 通用字段
 
@@ -137,13 +127,12 @@ ORDER BY sequence_no ASC;
 | `error_signature` | 稳定错误签名，用于单 event 重试和跨 event 熔断。 |
 | `attempt` | 当前尝试次数，从 1 开始。 |
 | `stop_reason` | 重试停止原因。 |
-| `failure_reason` | `event_closed` 失败终态的细分原因，见第 7 节。 |
 | `manual_action_required` | 是否需要人工确认仓位或订单。 |
 | `position_open` | 是否仍有持仓。 |
 
 常见 `error_signature`：`insufficient_balance`、`invalid_tick_size`、`network_timeout`、`authentication_error`、`invalid_order_params`、`unknown_api_error`。
 
-常见 `stop_reason`：`same_error_repeated`、`total_failures_exceeded`、`deadline_exceeded`、`invalid_tick_retry_exhausted`、`tick_refresh_failed`。
+常见 `stop_reason`：`same_error_repeated`、`invalid_tick_retry_exhausted`、`tick_refresh_failed`。当前不会因总失败次数或总耗时达到上限而停止 SELL。
 
 ### 4.8 tick 与最小下单量
 
@@ -167,15 +156,15 @@ ORDER BY sequence_no ASC;
 | `entry` | `buy_filled` | `order_id`、`filled_size`、`fill_price`、`total_position`、`source`、`trade_id`。 |
 | `entry` | `entry_complete` | `order_id`、`total_filled`、`total_position`、`fill_count`、`elapsed_ms`。 |
 | `entry` | `entry_timeout` | `wait_ms`、`cancelled_order_id`、`final_position`、`unfilled_size`。 |
-| `monitor` | `tick_verified` | `token_id`、`source`、`tick_size`、`confirmed`、`utc`。三源成功时只写 `market_ws`、`tick_size_api`、`book_api` 三条。 |
-| `monitor` | `normal_exit_deferred` | `trigger`、`reason`、`position_shares`、`entry_order_id`。 |
+| `entry` | `tick_verified` | `token_id`、`source`、`tick_size`、`confirmed`、`utc`。三源成功时只写 `market_ws`、`tick_size_api`、`book_api` 三条。 |
+| `entry` | `exit_trigger_deferred` | `trigger`、`reason`、`position_shares`、`entry_order_id`。 |
 | `exit` | `tick_refresh_failed` | `error`、`action`、`utc`。 |
 | `exit` | `dust_position_detected` | `trigger`、`position_shares`、`min_order_size`、`manual_action_required`、`utc`。 |
 | `exit` | `sell_order_failed` | `status`、`error`、`error_signature`、`order`、`attempt`。 |
 | `exit` | `balance_settlement_retry` | `attempt`、`error`、`wait_ms`、`utc`。 |
 | `exit` | `sell_retry_started` | `attempt`、`error`。 |
 | `exit` | `tick_refreshed` | `old_tick_size`、`new_tick_size`、`reason`。 |
-| `exit` | `sell_retry_exhausted` | `trigger`、`stop_reason`、错误统计。 |
+| `exit` | `sell_circuit_breaker_triggered` | `trigger`、`stop_reason`、错误统计。 |
 | `exit` | `sell_order_placed` | `order`、CLOB 原始响应、`trigger`、`attempt`。 |
 | `exit` | `sell_filled` | `order_id`、`filled_size`、`fill_price`、`remaining_position`、`source`、`trade_id`。 |
 | `exit` | `fill_reconciled` | `side`、`order_id`、`clob_matched`、`memory_before`、`reconciled`。 |
@@ -183,9 +172,9 @@ ORDER BY sequence_no ASC;
 | `exit` | `fill_reconcile_failed` | `side`、`order_id`、`cancelled`、`query_status`、`final_matched`、`utc`。 |
 | `exit` | `buy_cancel_failed` / `sell_cancel_failed` | `side`、`order_id`、`query_status`、`final_matched`、`utc`。 |
 | `exit` | `strategy_paused` | `reason`、`trigger_token_id`、`error_signature`、`event_count`、`window_sec`、`config_disabled`。 |
-| `exit` | `event_closed` | `outcome`、`close_reason`、`failure_reason`、`position_open`、`manual_action_required`、`duration_ms`。 |
+| `exit` | `event_closed` | `close_reason`、`position_open`、`manual_action_required`、`duration_ms`。错误原文和重试上下文仍放在 detail 中。 |
 
-`exit_risk` 会复用 `sell_order_failed`、`sell_filled`、`fill_reconciled`、`sell_complete` 等 step，另有关键 step：
+止损流程使用 `exit` phase，并复用 `sell_order_failed`、`sell_filled`、`fill_reconciled`、`sell_complete` 等 step，另有关键 step：
 
 | step | 关键 detail |
 |---|---|
@@ -193,7 +182,7 @@ ORDER BY sequence_no ASC;
 | `buy_cancelled` / `sell_cancelled` | `order_id`、`success`、`final_matched`、`trigger="stop_loss"`。 |
 | `sell_order_placed` | `order`、CLOB 原始响应、`reason="stop_loss"`、`trigger="stop_loss"`、`attempt`。 |
 
-`exit_force` 的关键 step：
+强制退出流程使用 `exit` phase，关键 step：
 
 | step | 关键 detail |
 |---|---|
@@ -205,34 +194,31 @@ ORDER BY sequence_no ASC;
 | 字段 | 出现位置 | 说明 |
 |---|---|---|
 | `entry_complete.total_filled` | entry | 入场阶段累计买入份额。 |
-| `sell_complete.total_filled` | exit / exit_risk | 退出阶段累计卖出份额，不使用买入委托量反推。 |
+| `sell_complete.total_filled` | exit | 退出阶段累计卖出份额，不使用买入委托量反推。 |
 | `exit_shares` | trades 摘要 | 退出阶段累计卖出份额。 |
-| `remaining_position` | exit / exit_risk | 终态时剩余持仓。 |
-| `reason` | `event_closed` | 摘要 close reason，例如 `normal_exit`、`timeout_no_fill`、`buy_failed`、`sell_failed`、`stop_loss`、`force_exit`。当前系统不再写 `tick_exit`。 |
+| `remaining_position` | exit | 终态时剩余持仓。 |
+| `close_reason` | `event_closed` | 摘要 close reason，例如 `normal_exit`、`timeout_no_fill`、`no_cash`、`dust_position`、`stop_loss`、`force_exit`。当前系统不再写 `tick_exit`。 |
 
-## 7. 失败终态的 failure_reason
+## 7. close_reason 语义
 
-交易表保留旧 `status=exit_failed` 兼容字段；新语义使用 `lifecycle_status=closed`、`trade_outcome=failed`，细分原因写在 `event_closed.detail.failure_reason` 和 trades 的 `failure_reason`。
+交易摘要只使用 `phase` 和 `close_reason` 表达状态与终态原因。接口、程序、解析、撤单和对账异常直接使用对应的 `close_reason`，不再额外套一层 `failure_reason`。
 
-| failure_reason | 含义 | 处理结果 |
+| close_reason | 含义 | 处理结果 |
 |---|---|---|
-| `sell_placement_failed` | SELL 请求没有成功挂出，包括 CLOB 拒绝、网络失败、tick 刷新失败。 | 停止该 event，保留 `error_signature` 和 `stop_reason`。 |
-| `exit_order_unfilled` | 卖单已挂出或曾尝试挂出，但截止时间后仍有仓位。 | 停止该 event，记录剩余仓位。 |
+| `sell_placement_failed` | SELL 请求没有成功挂出。 | 停止该 event，保留 `error_signature` 和 `stop_reason`。 |
+| `exit_order_unfilled` | 卖单已挂出或曾尝试挂出，但重试停止后仍有仓位。 | 停止该 event，记录剩余仓位。 |
 | `sell_fill_parse_error` | CLOB 返回 matched，但无法按 side 解析成交份额。 | 不把该响应当成交，停止该 event。 |
 | `fill_reconcile_failed` | 撤单后无法通过 REST 回查确认最终成交。 | `final_matched=-1` 仅表示未知，停止该 event。 |
 | `buy_cancel_failed` / `sell_cancel_failed` | 撤单请求失败，订单可能仍 LIVE。 | 停止该 event，人工确认订单。 |
-| `dust_position` | 剩余仓位低于 `/book.min_order_size`。 | 不再重复挂卖，人工确认剩余仓位。 |
+| `dust_position` | 剩余仓位低于 `/book.min_order_size`。 | 不再重复挂卖，记录剩余仓位。 |
 
 ## 8. trades 摘要字段
 
 | 字段 | 说明 |
 |---|---|
-| `status` | 旧兼容字段：`entry_working`、`exit_working`、`closed`、`exit_failed`。 |
-| `lifecycle_status` | 生命周期字段：`entry_working`、`exit_working`、`closed`。 |
+| `phase` | 生命周期阶段：`entry`、`exit`、`closed`。 |
 | `outcome` | Polymarket outcome：`yes` / `no`。 |
-| `trade_outcome` | 交易最终结果：`completed` / `failed` / `skipped`。 |
-| `close_reason` | 摘要级关闭原因；SELL 失败仍为 `sell_failed`，细分看 `failure_reason`。 |
-| `failure_reason` / `needs_attention` | 失败细分和是否需要人工确认。 |
+| `close_reason` | 摘要级关闭原因，使用平铺枚举。 |
 | `entry_order_size` / `entry_price` / `entry_shares` / `entry_cost` / `entry_order_id` / `entered_at` | 入场委托与累计成交。 |
 | `exit_order_size` / `exit_price` / `exit_shares` / `exit_revenue` / `exit_order_id` / `exited_at` | 退出委托与累计卖出。 |
 | `pnl` / `pnl_pct` | 有入场成本和退出收入时计算。 |
