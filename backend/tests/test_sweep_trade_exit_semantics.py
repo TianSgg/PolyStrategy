@@ -378,7 +378,7 @@ def test_full_fill_before_tick_waits_for_tick():
 
     run(trade._record_entry_complete("buy-1"))
 
-    assert trade.state == "exit_working"
+    assert trade.state == "entry"
     assert executor.placed_orders == []
     assert closed == []
 
@@ -538,24 +538,36 @@ def test_force_exit_reconciles_sell_fill_and_closes():
     ]
 
 
-def test_force_exit_with_open_position_uses_exit_failed():
-    trade, _, event_logger, closed = make_trade(final_matched=Decimal("0"))
+def test_force_exit_with_open_position_stops_on_sell_circuit_breaker():
+    failed = OrderResult(
+        order_id="sell-failed",
+        status="failed",
+        filled_size="0",
+        error="network timeout",
+    )
+    trade, executor, event_logger, closed = make_trade(
+        sell_results=[failed, failed, failed],
+        final_matched=Decimal("0"),
+    )
     trade.position_shares = Decimal("10")
     trade.exit_order_id = "sell-1"
     trade.sell_price = Decimal("0.999")
 
-    run(trade.force_exit("config_disabled"))
+    with patch("strategy_weather_sweep.service.asyncio.sleep", no_sleep):
+        run(trade.force_exit("config_disabled"))
 
     assert trade.position_shares == Decimal("10")
     assert trade.state == "closed"
     assert closed == ["token"]
-    assert close_reason(event_logger) == "force_exit"
+    assert len(executor.placed_orders) == 3
+    assert close_reason(event_logger) == "sell_placement_failed"
     event_closed = next(
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
     assert event_closed["position_open"] is True
     assert event_closed["position_shares"] == "10"
-    assert event_closed["close_reason"] == "exit_order_unfilled"
+    assert event_closed["close_reason"] == "sell_placement_failed"
+    assert event_closed["stop_reason"] == "same_error_repeated"
 
 
 def test_sell_complete_uses_exit_fill_accumulator():
