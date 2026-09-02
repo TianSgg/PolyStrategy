@@ -259,11 +259,7 @@ MySQL 可以先在应用层保证这些约束；如果数据库版本支持，�
 | `sell_failed` | SELL 或退出流程失败。 | `failed` |
 | `force_exit` | 用户或配置禁用触发强制退出。 | 无残留为 `completed`，有残留为 `failed` |
 
-历史值迁移：
-
-```text
-tick_exit -> normal_exit
-```
+历史值迁移：`tick_exit` 仅作为旧数据别名，当前代码统一写 `normal_exit`。
 
 `timeout_no_fill` 是预期规则触发的关闭，不建议归为失败；是否有盈利机会损失由策略指标分析，不由 `trade_outcome` 表达。
 
@@ -403,7 +399,6 @@ exit_failed   -> lifecycle_status=closed
 | 旧 status + close_reason | 新 trade_outcome |
 |---|---|
 | `closed + normal_exit` | `trade_outcome='completed'` |
-| `closed + tick_exit` | `trade_outcome='completed'`，并迁移为 `normal_exit` |
 | `closed + timeout_no_fill` | `trade_outcome='completed'` |
 | `closed + no_cash` | `trade_outcome='skipped'` |
 | `closed + stop_loss` | 默认 `trade_outcome='completed'`，若有仓位残留则 `failed` |
@@ -420,7 +415,7 @@ exit_failed   -> lifecycle_status=closed
 2. 将最终 `exit_failed` / `sell_give_up` 行改为 `event_closed`。
 3. 为最终行补充 `detail.outcome`、`detail.close_reason`、`detail.failure_reason`。
 4. 非最终行的 detail 不补终态字段，避免过程行伪装成摘要行。
-5. `tick_exit` 对应的历史 close_reason 改为 `normal_exit`。
+5. 历史 `tick_exit` 统一归并为 `normal_exit`；当前代码不再写入 `tick_exit`。
 
 如果历史 JSON 迁移成本过高，可以保留旧 event 行，只迁移 trades 摘要；查询层按第 6 节做旧名映射。构建阶段更推荐直接迁移，减少长期兼容分支。
 
@@ -468,6 +463,8 @@ ORDER BY event_id, sequence_no;
 | `needs_attention` | 人工处理入口。 |
 
 前端不要把 `step=force_exit_requested` 展示为最终结果，也不要把 `phase=exit_force` 当作 close_reason。最终结果只读 trades 表的 `trade_outcome` 和 `close_reason`。
+
+列表中的红色状态只用于需要关注的执行异常：接口/程序错误、订单或成交校准异常、未清仓风险，以及 `force_exit` 强制退出。资金不足、未下单、买入无成交、买入部分成交后正常结束、入场超时和止损退出不使用红色；这些状态分别使用灰色、琥珀色或绿色表达结果，不制造失败告警。部分成交本身按绿色处理，只有系统异常才升级为红色。
 
 ## 15. 实施步骤
 

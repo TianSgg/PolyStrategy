@@ -697,7 +697,7 @@ sell_order_placed
 | sell_failed | 卖出超时失败 |
 | force_exit | 强制退出 |
 
-历史数据中可能存在 `tick_exit`，表示旧版“tick 变化且正常卖出完成”的合并语义；
+历史数据中可能存在 `tick_exit`，表示旧版“tick 变化且正常卖出完成”的合并语义；当前系统统一使用 `normal_exit`。
 新数据不再写入该值，前端仅作只读兼容展示。
 
 trades 表：最终 UPDATE `status = closed, close_reason = reason, pnl = ..., pnl_pct = ..., duration_ms = ..., closed_at = ...`。

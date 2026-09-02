@@ -208,7 +208,7 @@ ORDER BY sequence_no ASC;
 | `sell_complete.total_filled` | exit / exit_risk | 退出阶段累计卖出份额，不使用买入委托量反推。 |
 | `exit_shares` | trades 摘要 | 退出阶段累计卖出份额。 |
 | `remaining_position` | exit / exit_risk | 终态时剩余持仓。 |
-| `reason` | `event_closed` | 摘要 close reason，例如 `normal_exit`、`timeout_no_fill`、`buy_failed`、`sell_failed`、`stop_loss`、`force_exit`。 |
+| `reason` | `event_closed` | 摘要 close reason，例如 `normal_exit`、`timeout_no_fill`、`buy_failed`、`sell_failed`、`stop_loss`、`force_exit`。当前系统不再写 `tick_exit`。 |
 
 ## 7. 失败终态的 failure_reason
 
