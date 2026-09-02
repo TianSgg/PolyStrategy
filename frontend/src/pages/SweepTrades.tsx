@@ -14,12 +14,8 @@ interface Trade {
   event_slug: string | null
   city: string | null
   direction: string | null
-  status: 'entry_working' | 'exit_working' | 'closed' | 'exit_failed'
-  lifecycle_status?: 'entry_working' | 'exit_working' | 'closed' | null
-  trade_outcome?: 'completed' | 'failed' | 'skipped' | null
+  phase: 'entry' | 'exit' | 'closed'
   close_reason: string | null
-  failure_reason?: string | null
-  needs_attention?: boolean | number | null
   entry_price: string | null
   entry_shares: string | null
   entry_cost: string | null
@@ -53,20 +49,12 @@ interface Props {
 
 const PHASE_COLORS: Record<string, string> = {
   entry: '#3b82f6',
-  monitor: '#8b5cf6',
   exit: '#22c55e',
-  exit_risk: '#ef4444',
-  exit_force: '#f59e0b',
-  strategy: '#f97316',
 }
 
 const PHASE_LABELS: Record<string, string> = {
   entry: '入场',
-  monitor: '监控',
   exit: '退出',
-  exit_risk: '风控退出',
-  exit_force: '强制退出',
-  strategy: '策略',
 }
 
 const PAGE_SIZE = 30
@@ -111,15 +99,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
       const params = new URLSearchParams()
       if (proxyWallet) params.set('proxy_wallet', proxyWallet)
       else if (walletFilter) params.set('proxy_wallet', walletFilter)
-      if (statusFilter === 'entry_working' || statusFilter === 'exit_working' || statusFilter === 'closed') {
-        params.set('lifecycle_status', statusFilter)
-      } else if (statusFilter === 'failed' || statusFilter === 'completed' || statusFilter === 'skipped') {
-        params.set('trade_outcome', statusFilter)
-      } else if (statusFilter === 'needs_attention') {
-        params.set('needs_attention', 'true')
-      } else if (statusFilter) {
-        params.set('status', statusFilter)
-      }
+      if (statusFilter) params.set('phase', statusFilter)
       if (directionFilter) params.set('direction', directionFilter)
       if (search) params.set('search', search)
       if (timeRange) {
@@ -224,13 +204,9 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
           style={{ padding: '6px 10px', borderRadius: '6px', border: `1px solid ${border}`, background: darkMode ? '#334155' : '#f1f5f9', color: textPrimary, fontSize: '13px' }}
         >
           <option value="">全部状态</option>
-          <option value="entry_working">入场中</option>
-          <option value="exit_working">出场中</option>
+          <option value="entry">入场中</option>
+          <option value="exit">出场中</option>
           <option value="closed">已结束</option>
-          <option value="completed">完成</option>
-          <option value="skipped">跳过</option>
-          <option value="failed">失败</option>
-          <option value="needs_attention">需处理</option>
         </select>
         {!proxyWallet && accounts.length > 0 && (
           <select
@@ -315,7 +291,7 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
                     {lifecycle.label}
                   </span>
                   {exit && (
-                    <span style={badgeStyle(exit.tone, darkMode)} title={[t.close_reason, t.failure_reason].filter(Boolean).join(' / ')}>
+                    <span style={badgeStyle(exit.tone, darkMode)} title={t.close_reason || undefined}>
                       <span style={iconStyle(exit.tone, darkMode)}>{exit.icon}</span>
                       {exit.label}
                       {exit.detail && <span style={{ opacity: 0.75 }}>{exit.detail}</span>}
@@ -344,14 +320,14 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
                   {t.city && <span>{t.city} {t.direction === 'highest' ? '↑' : t.direction === 'lowest' ? '↓' : ''}</span>}
                   <span>买入: {t.entry_price ? `$${t.entry_price}` : '--'}{' '}
                     {t.entry_order_size ? (
-                      <span style={{ color: t.entry_shares && parseFloat(t.entry_shares) >= parseFloat(t.entry_order_size) ? '#22c55e' : '#f59e0b' }}>
+                      <span style={{ color: t.entry_shares && parseFloat(t.entry_shares) > 0 ? '#22c55e' : '#f59e0b' }}>
                         {t.entry_shares || '0'}/{t.entry_order_size}
                       </span>
                     ) : t.entry_shares ? t.entry_shares : ''}
                   </span>
                   <span>卖出: {t.exit_price ? `$${t.exit_price}` : '--'}{' '}
                     {t.exit_order_size ? (
-                      <span style={{ color: t.exit_shares && parseFloat(t.exit_shares) >= parseFloat(t.exit_order_size) ? '#22c55e' : '#f59e0b' }}>
+                      <span style={{ color: t.exit_shares && parseFloat(t.exit_shares) > 0 ? '#22c55e' : '#f59e0b' }}>
                         {t.exit_shares || '0'}/{t.exit_order_size}
                       </span>
                     ) : t.exit_shares ? t.exit_shares : ''}

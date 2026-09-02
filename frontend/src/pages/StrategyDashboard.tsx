@@ -461,7 +461,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                               {lifecycle.label}
                             </span>
                             {exit && (
-                              <span style={badgeStyle(exit.tone, darkMode)} title={[t.close_reason, t.failure_reason].filter(Boolean).join(' / ')}>
+                              <span style={badgeStyle(exit.tone, darkMode)} title={t.close_reason || undefined}>
                                 <span style={iconStyle(exit.tone, darkMode)}>{exit.icon}</span>
                                 {exit.label}
                                 {exit.detail && <span style={{ opacity: 0.75 }}>{exit.detail}</span>}
@@ -499,14 +499,14 @@ export default function StrategyDashboard({ darkMode }: Props) {
                             {(t.entry_order_size || t.entry_shares) && (
                               <span style={{ fontSize: '11px', color: textSecondary }}>
                                 买{t.entry_order_size ? (
-                                  <span style={{ color: t.entry_shares && parseFloat(t.entry_shares) >= parseFloat(t.entry_order_size) ? '#22c55e' : '#f59e0b', fontWeight: 500 }}>
+                                  <span style={{ color: t.entry_shares && parseFloat(t.entry_shares) > 0 ? '#22c55e' : '#f59e0b', fontWeight: 500 }}>
                                     {' '}{t.entry_shares || '0'}/{t.entry_order_size}
                                   </span>
                                 ) : ` ${t.entry_shares}`}
                                 {(t.exit_order_size || t.exit_shares) && (
                                   <>
                                     {' '}卖{t.exit_order_size ? (
-                                      <span style={{ color: t.exit_shares && parseFloat(t.exit_shares) >= parseFloat(t.exit_order_size) ? '#22c55e' : '#f59e0b', fontWeight: 500 }}>
+                                      <span style={{ color: t.exit_shares && parseFloat(t.exit_shares) > 0 ? '#22c55e' : '#f59e0b', fontWeight: 500 }}>
                                         {' '}{t.exit_shares || '0'}/{t.exit_order_size}
                                       </span>
                                     ) : ` ${t.exit_shares}`}
@@ -542,7 +542,7 @@ export default function StrategyDashboard({ darkMode }: Props) {
                               <div style={{ position: 'relative', paddingLeft: '20px' }}>
                                 <div style={{ position: 'absolute', left: '6px', top: '4px', bottom: '4px', width: '2px', background: darkMode ? '#475569' : '#cbd5e1' }} />
                                 {tradeSteps.map((step: any, idx: number) => {
-                                  const phaseColor = ({ entry: '#3b82f6', monitor: '#8b5cf6', exit: '#22c55e', exit_risk: '#ef4444', exit_force: '#f59e0b' } as any)[step.phase] || '#64748b'
+                                  const phaseColor = ({ entry: '#3b82f6', exit: '#22c55e' } as any)[step.phase] || '#64748b'
                                   return (
                                     <div key={step.id || idx} style={{ position: 'relative', marginBottom: '10px' }}>
                                       <div style={{ position: 'absolute', left: '-18px', top: '5px', width: '8px', height: '8px', borderRadius: '50%', background: phaseColor, border: `2px solid ${darkMode ? '#1e293b' : '#ffffff'}` }} />
