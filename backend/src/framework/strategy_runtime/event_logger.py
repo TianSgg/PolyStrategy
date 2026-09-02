@@ -70,7 +70,7 @@ class EventLogger:
     def log_step(self, step: str, detail: dict[str, Any], phase: str = "entry") -> None:
         """记录一个 step 到数据库（异步写入，不阻塞事件循环）。
 
-        phase: entry / monitor / exit / exit_risk / exit_force
+        phase: entry / exit
         """
         if not self._event_id:
             logger.warning("log_step called before start_event, ignoring")
@@ -79,25 +79,18 @@ class EventLogger:
         self._sequence_no += 1
         now = datetime.now(timezone.utc)
 
+        if phase not in {"entry", "exit"}:
+            raise ValueError(f"Unsupported event phase: {phase}")
+
         sql = f"""
             INSERT INTO {self._table} (
-                owner_user_id, proxy_wallet, config_id, config_snapshot,
-                event_id, signal_id, token_id, market_slug, event_slug,
-                phase, step, sequence_no, detail, occurred_at
+                event_id, phase, step, sequence_no, detail, occurred_at
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s
             )
         """
         params = (
-            self._owner_user_id,
-            self._proxy_wallet,
-            self._config_id,
-            json.dumps(self._config_snapshot, ensure_ascii=False) if self._config_snapshot else None,
             self._event_id,
-            self._signal_id,
-            self._token_id,
-            self._market_slug,
-            self._event_slug,
             phase,
             step,
             self._sequence_no,

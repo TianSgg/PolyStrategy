@@ -201,21 +201,11 @@ COMMENT='Weather Sweep 策略配置（一个配置 = 一个实例）';
 CREATE TABLE strategy_weather_sweep_events (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 
-  -- ① 配置相关
-  owner_user_id INT NOT NULL,
-  proxy_wallet VARCHAR(128) NOT NULL,
-  config_id BIGINT UNSIGNED NOT NULL,
-  config_snapshot JSON NULL,
-
-  -- ② event 上下文
+  -- event 只保存过程关联和过程内容；摘要身份字段在 trades 中保存
   event_id CHAR(36) NOT NULL,
-  signal_id VARCHAR(512) NULL,
-  token_id VARCHAR(128) NULL,
-  market_slug VARCHAR(255) NULL,
-  event_slug VARCHAR(255) NULL,
 
-  -- ③ 执行记录本身
-  phase ENUM('entry','monitor','exit','exit_risk','exit_force') NOT NULL DEFAULT 'entry',
+  -- 执行记录本身
+  phase ENUM('entry','exit') NOT NULL DEFAULT 'entry',
   step VARCHAR(64) NOT NULL,
   sequence_no INT UNSIGNED NOT NULL,
   detail JSON NOT NULL,
@@ -223,11 +213,7 @@ CREATE TABLE strategy_weather_sweep_events (
 
   PRIMARY KEY (id),
   UNIQUE KEY uq_event_seq (event_id, sequence_no),
-  KEY idx_owner_wallet (owner_user_id, proxy_wallet, occurred_at DESC),
-  KEY idx_config_event (config_id, event_id),
   KEY idx_phase (phase),
-  KEY idx_token (token_id, occurred_at DESC),
-  KEY idx_event_slug (event_slug, occurred_at DESC),
   KEY idx_occurred (occurred_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Weather Sweep 执行事件日志';
@@ -241,6 +227,8 @@ CREATE TABLE strategy_weather_sweep_trades (
   -- 关联
   event_id CHAR(36) NOT NULL,
   config_id BIGINT UNSIGNED NOT NULL,
+  params_version INT UNSIGNED NOT NULL DEFAULT 1,
+  config_snapshot JSON NULL,
   owner_user_id INT NOT NULL,
   proxy_wallet VARCHAR(128) NOT NULL,
 
@@ -256,12 +244,8 @@ CREATE TABLE strategy_weather_sweep_trades (
   is_from_main TINYINT(1) NOT NULL DEFAULT 1,
 
   -- 状态
-  status ENUM('entry_working', 'exit_working', 'closed', 'exit_failed') NOT NULL DEFAULT 'entry_working',
-  lifecycle_status ENUM('entry_working', 'exit_working', 'closed') NOT NULL DEFAULT 'entry_working',
-  trade_outcome ENUM('completed', 'failed', 'skipped') NULL,
+  phase ENUM('entry', 'exit', 'closed') NOT NULL DEFAULT 'entry',
   close_reason VARCHAR(64) NULL,
-  failure_reason VARCHAR(64) NULL,
-  needs_attention TINYINT(1) NOT NULL DEFAULT 0,
 
   -- 入场
   entry_price DECIMAL(10,4) NULL,
@@ -269,6 +253,7 @@ CREATE TABLE strategy_weather_sweep_trades (
   entry_cost DECIMAL(20,6) NULL,
   entry_order_size DECIMAL(20,4) NULL,
   entry_order_id VARCHAR(128) NULL,
+  entry_started_at DATETIME(3) NULL,
   entered_at DATETIME(3) NULL,
 
   -- 出场
@@ -277,6 +262,7 @@ CREATE TABLE strategy_weather_sweep_trades (
   exit_revenue DECIMAL(20,6) NULL,
   exit_order_size DECIMAL(20,4) NULL,
   exit_order_id VARCHAR(128) NULL,
+  exit_started_at DATETIME(3) NULL,
   exited_at DATETIME(3) NULL,
 
   -- 盈亏
@@ -290,11 +276,10 @@ CREATE TABLE strategy_weather_sweep_trades (
 
   PRIMARY KEY (id),
   UNIQUE KEY uq_event_id (event_id),
-  KEY idx_config_status (config_id, status),
-  KEY idx_lifecycle_outcome (lifecycle_status, trade_outcome, needs_attention),
+  KEY idx_config_phase (config_id, phase),
   KEY idx_owner (owner_user_id, closed_at DESC),
   KEY idx_event_slug (event_slug, started_at DESC),
-  KEY idx_status (status),
+  KEY idx_phase (phase),
   KEY idx_closed_at (closed_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Weather Sweep 交易摘要';
