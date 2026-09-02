@@ -152,7 +152,7 @@ class SweepTrade:
         }
 
     def _event_phase(self) -> str:
-        return "exit" if self._exit_started else "entry"
+        return "exit" if self._exit_started or self.exit_order_id else "entry"
 
     def _mark_exit_started(self) -> None:
         """Cross the phase boundary immediately before the first SELL attempt."""
@@ -1129,6 +1129,7 @@ class SweepTrade:
         # 缺口②: 撤卖单 + REST 校准
         if self.exit_order_id:
             order_id = self.exit_order_id
+            sell_start_shares = self.position_shares
             user_ws.unwatch_order(order_id)
             cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
             if cancel_result.query_failed:
@@ -1153,6 +1154,23 @@ class SweepTrade:
                     "trigger": trigger,
                 }, phase="exit")
             self.exit_order_id = None
+            sold_by_memory = sell_start_shares - self.position_shares
+            if cancel_result.final_matched > sold_by_memory:
+                missed = cancel_result.final_matched - sold_by_memory
+                self._record_sell_fill(
+                    order_id,
+                    missed,
+                    getattr(self, "sell_price", Decimal("0.01")),
+                    source="cancel_reconcile",
+                )
+                if self._el:
+                    self._el.log_step("fill_reconciled", {
+                        "side": "SELL",
+                        "order_id": order_id,
+                        "clob_matched": str(cancel_result.final_matched),
+                        "memory_before": str(sold_by_memory),
+                        "reconciled": str(missed),
+                    }, phase="exit")
 
         # 缺口③: 清仓循环 — live 时用 WS + asyncio.Event 等待
         try:
