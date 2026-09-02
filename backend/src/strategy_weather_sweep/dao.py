@@ -170,20 +170,24 @@ class WeatherSweepEventDAO:
         params: List[Any] = []
 
         if owner_user_id is not None:
-            conditions.append("owner_user_id = %s")
+            conditions.append("t.owner_user_id = %s")
             params.append(owner_user_id)
         if config_id is not None:
-            conditions.append("config_id = %s")
+            conditions.append("t.config_id = %s")
             params.append(config_id)
         if proxy_wallet:
-            conditions.append("proxy_wallet = %s")
-            params.append(proxy_wallet)
+            conditions.append("t.proxy_wallet = %s")
+            params.append(proxy_wallet.lower())
 
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = f"""
-            SELECT * FROM {self.TABLE}
+            SELECT e.*, t.config_id, t.owner_user_id, t.proxy_wallet,
+                   t.signal_id, t.token_id, t.market_slug, t.event_slug,
+                   t.city, t.direction
+            FROM {self.TABLE} e
+            JOIN strategy_weather_sweep_trades t ON t.event_id = e.event_id
             WHERE {where}
-            ORDER BY occurred_at DESC
+            ORDER BY e.occurred_at DESC
             LIMIT %s OFFSET %s
         """
         params.extend([limit, offset])
@@ -223,33 +227,32 @@ class WeatherSweepEventDAO:
 
         if owner_user_ids is not None:
             placeholders = ",".join(["%s"] * len(owner_user_ids))
-            conditions.append(f"owner_user_id IN ({placeholders})")
+            conditions.append(f"t.owner_user_id IN ({placeholders})")
             params.extend(owner_user_ids)
         elif owner_user_id is not None:
-            conditions.append("owner_user_id = %s")
+            conditions.append("t.owner_user_id = %s")
             params.append(owner_user_id)
         if config_id is not None:
-            conditions.append("config_id = %s")
+            conditions.append("t.config_id = %s")
             params.append(config_id)
         if search:
-            conditions.append("event_slug LIKE %s")
+            conditions.append("t.event_slug LIKE %s")
             params.append(f"%{search}%")
 
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = f"""
-            SELECT e.event_id, e.config_id, e.owner_user_id, e.proxy_wallet,
-                   e.signal_id, e.token_id, e.market_slug, e.event_slug,
-                   MIN(e.occurred_at) AS started_at,
-                   MAX(e.occurred_at) AS ended_at,
-                   COUNT(*) AS step_count,
-                   (SELECT phase FROM {self.TABLE} t
-                    WHERE t.event_id = e.event_id
-                    ORDER BY t.sequence_no DESC LIMIT 1) AS final_phase
+            SELECT t.*,
+                   MIN(e.occurred_at) AS event_started_at,
+                   MAX(e.occurred_at) AS event_ended_at,
+                   COUNT(e.id) AS step_count,
+                   (SELECT e2.phase FROM {self.TABLE} e2
+                    WHERE e2.event_id = t.event_id
+                    ORDER BY e2.sequence_no DESC LIMIT 1) AS final_event_phase
             FROM {self.TABLE} e
+            JOIN strategy_weather_sweep_trades t ON t.event_id = e.event_id
             WHERE {where}
-            GROUP BY e.event_id, e.config_id, e.owner_user_id, e.proxy_wallet,
-                     e.signal_id, e.token_id, e.market_slug, e.event_slug
-            ORDER BY started_at DESC
+            GROUP BY t.id
+            ORDER BY t.started_at DESC
             LIMIT %s OFFSET %s
         """
         params.extend([limit, offset])
@@ -302,10 +305,8 @@ class WeatherSweepTradeDAO:
         self,
         *,
         owner_user_ids: Optional[List[int]] = None,
-        status: Optional[str] = None,
-        lifecycle_status: Optional[str] = None,
-        trade_outcome: Optional[str] = None,
-        needs_attention: Optional[bool] = None,
+        phase: Optional[str] = None,
+        close_reason: Optional[str] = None,
         search: Optional[str] = None,
         proxy_wallet: Optional[str] = None,
         direction: Optional[str] = None,
@@ -323,18 +324,12 @@ class WeatherSweepTradeDAO:
         if proxy_wallet:
             conditions.append("proxy_wallet = %s")
             params.append(proxy_wallet.lower())
-        if status:
-            conditions.append("status = %s")
-            params.append(status)
-        if lifecycle_status:
-            conditions.append("lifecycle_status = %s")
-            params.append(lifecycle_status)
-        if trade_outcome:
-            conditions.append("trade_outcome = %s")
-            params.append(trade_outcome)
-        if needs_attention is not None:
-            conditions.append("needs_attention = %s")
-            params.append(1 if needs_attention else 0)
+        if phase:
+            conditions.append("phase = %s")
+            params.append(phase)
+        if close_reason:
+            conditions.append("close_reason = %s")
+            params.append(close_reason)
         if direction:
             conditions.append("direction = %s")
             params.append(direction)
@@ -363,10 +358,8 @@ class WeatherSweepTradeDAO:
         self,
         *,
         owner_user_ids: Optional[List[int]] = None,
-        status: Optional[str] = None,
-        lifecycle_status: Optional[str] = None,
-        trade_outcome: Optional[str] = None,
-        needs_attention: Optional[bool] = None,
+        phase: Optional[str] = None,
+        close_reason: Optional[str] = None,
         search: Optional[str] = None,
         proxy_wallet: Optional[str] = None,
         direction: Optional[str] = None,
@@ -382,18 +375,12 @@ class WeatherSweepTradeDAO:
         if proxy_wallet:
             conditions.append("proxy_wallet = %s")
             params.append(proxy_wallet.lower())
-        if status:
-            conditions.append("status = %s")
-            params.append(status)
-        if lifecycle_status:
-            conditions.append("lifecycle_status = %s")
-            params.append(lifecycle_status)
-        if trade_outcome:
-            conditions.append("trade_outcome = %s")
-            params.append(trade_outcome)
-        if needs_attention is not None:
-            conditions.append("needs_attention = %s")
-            params.append(1 if needs_attention else 0)
+        if phase:
+            conditions.append("phase = %s")
+            params.append(phase)
+        if close_reason:
+            conditions.append("close_reason = %s")
+            params.append(close_reason)
         if direction:
             conditions.append("direction = %s")
             params.append(direction)
@@ -422,17 +409,6 @@ class WeatherSweepTradeDAO:
 
     @staticmethod
     def _format_trade_row(d: Dict[str, Any]) -> Dict[str, Any]:
-        status = d.get("status")
-        lifecycle_status = d.get("lifecycle_status") or status
-        if lifecycle_status == "exit_failed":
-            lifecycle_status = "closed"
-        d["lifecycle_status"] = lifecycle_status
-
-        if d.get("trade_outcome") is None and lifecycle_status == "closed":
-            if d.get("close_reason") == "no_cash":
-                d["trade_outcome"] = "skipped"
-            else:
-                d["trade_outcome"] = "failed" if status == "exit_failed" or d.get("close_reason") in ("buy_failed", "sell_failed") else "completed"
-        if d.get("needs_attention") is None:
-            d["needs_attention"] = 1 if status == "exit_failed" else 0
+        if isinstance(d.get("config_snapshot"), str):
+            d["config_snapshot"] = json.loads(d["config_snapshot"])
         return d

@@ -114,9 +114,10 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
     steps = _event_dao.list_by_event_id(event_id)
     if not steps:
         raise HTTPException(status_code=404, detail="Event not found")
-    if not current_user.can_view(steps[0]["owner_user_id"]):
+    trade = _trade_dao.get_by_event_id(event_id)
+    if not trade or not current_user.can_view(trade["owner_user_id"]):
         raise HTTPException(status_code=404, detail="Event not found")
-    return {"event_id": event_id, "steps": steps}
+    return {"event_id": event_id, "trade": trade, "steps": steps}
 
 
 # ─── Trades (摘要) ───
@@ -124,10 +125,8 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
 
 @router.get("/trades")
 async def list_trades(
-    status: Optional[str] = Query(default=None),
-    lifecycle_status: Optional[str] = Query(default=None),
-    trade_outcome: Optional[str] = Query(default=None),
-    needs_attention: Optional[bool] = Query(default=None),
+    phase: Optional[str] = Query(default=None),
+    close_reason: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     proxy_wallet: Optional[str] = Query(default=None),
     direction: Optional[str] = Query(default=None),
@@ -139,10 +138,8 @@ async def list_trades(
     owner_ids = current_user.visible_user_ids()
     trades = _trade_dao.list_trades(
         owner_user_ids=owner_ids,
-        status=status,
-        lifecycle_status=lifecycle_status,
-        trade_outcome=trade_outcome,
-        needs_attention=needs_attention,
+        phase=phase,
+        close_reason=close_reason,
         search=search,
         proxy_wallet=proxy_wallet,
         direction=direction,
@@ -152,10 +149,8 @@ async def list_trades(
     )
     total = _trade_dao.count_trades(
         owner_user_ids=owner_ids,
-        status=status,
-        lifecycle_status=lifecycle_status,
-        trade_outcome=trade_outcome,
-        needs_attention=needs_attention,
+        phase=phase,
+        close_reason=close_reason,
         search=search,
         proxy_wallet=proxy_wallet,
         direction=direction,

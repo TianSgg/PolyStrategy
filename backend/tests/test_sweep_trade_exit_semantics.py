@@ -133,6 +133,9 @@ class FakeOrderBookWS:
     def get_tick_size(self, token_id):
         return self.tick_size
 
+    def get_book(self, token_id):
+        return None
+
 
 class MismatchTickVerifier:
     async def verify(self, token_id, ws_tick_size=None, ws_tick_size_getter=None):
@@ -195,26 +198,21 @@ def close_reason(event_logger):
     return None
 
 
-def test_trade_summary_writes_lifecycle_and_trade_outcome_fields():
+def test_trade_summary_writes_phase_and_close_reason_fields():
     trade_dao = FakeTradeDAO()
     trade, _, event_logger, closed = make_trade(trade_dao=trade_dao)
     trade.position_shares = Decimal("10")
 
-    trade._close_exit_failed("sell_failed", extra={
-        "failure_reason": "sell_placement_failed",
-        "manual_action_required": True,
+    trade._close_exit_failed("sell_placement_failed", extra={
+        "error": "timeout",
     })
 
     assert trade.state == "closed"
     assert closed == ["token"]
     event_id, update = trade_dao.updates[-1]
     assert event_id == "event-1"
-    assert update["status"] == "exit_failed"
-    assert update["lifecycle_status"] == "closed"
-    assert update["trade_outcome"] == "failed"
-    assert update["close_reason"] == "sell_failed"
-    assert update["failure_reason"] == "sell_placement_failed"
-    assert update["needs_attention"] == 1
+    assert update["phase"] == "closed"
+    assert update["close_reason"] == "sell_placement_failed"
     assert update["pnl"] is None
     assert update["pnl_pct"] is None
     assert update["duration_ms"] >= 0
@@ -222,8 +220,8 @@ def test_trade_summary_writes_lifecycle_and_trade_outcome_fields():
     event_closed = next(
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
-    assert event_closed["outcome"] == "failed"
-    assert event_closed["failure_reason"] == "sell_placement_failed"
+    assert event_closed["close_reason"] == "sell_placement_failed"
+    assert event_closed["error"] == "timeout"
 
 
 def test_no_cash_entry_is_skipped_not_failed():
@@ -245,19 +243,49 @@ def test_no_cash_entry_is_skipped_not_failed():
     assert closed == ["token"]
     event_id, update = trade_dao.updates[-1]
     assert event_id == "event-1"
-    assert update["status"] == "closed"
-    assert update["trade_outcome"] == "skipped"
+    assert update["phase"] == "closed"
     assert update["close_reason"] == "no_cash"
-    assert update["failure_reason"] is None
-    assert update["needs_attention"] == 0
     assert ("entry", "buy_order_skipped") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
     event_closed = next(
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
-    assert event_closed["outcome"] == "skipped"
     assert event_closed["close_reason"] == "no_cash"
+
+
+def test_insufficient_balance_entry_is_skipped_not_failed():
+    trade_dao = FakeTradeDAO()
+    trade, executor, event_logger, closed = make_trade(
+        trade_dao=trade_dao,
+        sell_result=OrderResult(
+            order_id="buy-1",
+            status="insufficient_balance",
+            filled_size="0",
+        ),
+    )
+    signal = Signal(
+        signal_id="signal-1",
+        signal_type="sweep",
+        token_id="token",
+        market_slug="market",
+        occurred_at_ms=0,
+        source="test",
+        payload={"event_slug": "event", "city": "city", "direction": "highest"},
+    )
+
+    run(trade.enter(signal))
+
+    assert closed == ["token"]
+    _, update = trade_dao.updates[-1]
+    assert update["phase"] == "closed"
+    assert update["close_reason"] == "no_cash"
+    assert ("entry", "buy_order_skipped") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    assert ("entry", "buy_order_failed") not in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
 
 
 def test_zero_fill_waits_for_entry_timeout_after_tick_change():
@@ -266,10 +294,10 @@ def test_zero_fill_waits_for_entry_timeout_after_tick_change():
 
     run(trade._on_tick_change(Decimal("0.001")))
 
-    assert trade.state == "entry_working"
+    assert trade.state == "entry"
     assert trade._tick_verified is True
     assert closed == []
-    assert ("monitor", "tick_detect") not in [
+    assert ("entry", "tick_detect") not in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
     tick_verified = [
@@ -281,7 +309,7 @@ def test_zero_fill_waits_for_entry_timeout_after_tick_change():
     ]
     assert all(item["token_id"] == "token" for item in tick_verified)
     assert all(item["tick_size"] == "0.001" for item in tick_verified)
-    assert ("monitor", "normal_exit_deferred") in [
+    assert ("entry", "normal_exit_deferred") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
 
@@ -302,7 +330,7 @@ def test_http_tick_callback_does_not_masquerade_as_market_ws():
     run(trade._on_tick_change(Decimal("0.001"), source="tick_size_api"))
 
     assert trade._tick_verified is False
-    assert ("monitor", "tick_detect") not in [
+    assert ("entry", "tick_detect") not in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
     tick_verify_failed = next(
@@ -330,7 +358,7 @@ def test_partial_fill_uses_normal_exit_after_entry_timeout():
     trade.position_shares = Decimal("15")
 
     run(trade._on_tick_change(Decimal("0.001")))
-    assert trade.state == "entry_working"
+    assert trade.state == "entry"
 
     run(trade._entry_timeout(0))
 
@@ -416,19 +444,17 @@ def test_invalid_tick_sell_uses_dedicated_long_retry_waits():
     assert sleeps == [120.0, 300.0, 600.0]
     assert trade.state == "closed"
     assert closed == ["token"]
-    assert close_reason(event_logger) == "sell_failed"
+    assert close_reason(event_logger) == "sell_placement_failed"
     event_closed = next(
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
     assert event_closed["position_open"] is True
     assert event_closed["position_shares"] == "10"
-    assert event_closed["manual_action_required"] is True
-    assert event_closed["failure_reason"] == "sell_placement_failed"
-    assert event_closed["outcome"] == "failed"
+    assert event_closed["error_signature"] == "invalid_tick_size"
 
     steps = [(step, detail.get("stop_reason")) for _, step, detail in event_logger.steps]
     assert steps.count(("tick_refreshed", None)) == 3
-    assert ("sell_retry_exhausted", "invalid_tick_retry_exhausted") in steps
+    assert ("sell_circuit_breaker_triggered", "invalid_tick_retry_exhausted") in steps
 
 
 def test_insufficient_balance_retries_once_for_settlement():
@@ -492,7 +518,7 @@ def test_dust_position_stops_before_placing_sell():
     event_closed = next(
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
-    assert event_closed["failure_reason"] == "dust_position"
+    assert event_closed["close_reason"] == "dust_position"
 
 
 def test_force_exit_reconciles_sell_fill_and_closes():
@@ -507,7 +533,7 @@ def test_force_exit_reconciles_sell_fill_and_closes():
     assert trade.state == "closed"
     assert closed == ["token"]
     assert close_reason(event_logger) == "force_exit"
-    assert ("exit_force", "fill_reconciled") in [
+    assert ("exit", "fill_reconciled") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
 
@@ -529,8 +555,7 @@ def test_force_exit_with_open_position_uses_exit_failed():
     )
     assert event_closed["position_open"] is True
     assert event_closed["position_shares"] == "10"
-    assert event_closed["manual_action_required"] is True
-    assert event_closed["failure_reason"] == "exit_order_unfilled"
+    assert event_closed["close_reason"] == "exit_order_unfilled"
 
 
 def test_sell_complete_uses_exit_fill_accumulator():
@@ -574,7 +599,7 @@ def test_entry_timeout_cancel_query_failure_fails_closed():
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
     assert event_closed["query_status"] == "query_failed"
-    assert event_closed["failure_reason"] == "fill_reconcile_failed"
+    assert event_closed["close_reason"] == "fill_reconcile_failed"
 
 
 def test_entry_timeout_cancel_failure_fails_closed():
@@ -591,7 +616,7 @@ def test_entry_timeout_cancel_failure_fails_closed():
     event_closed = next(
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
-    assert event_closed["failure_reason"] == "buy_cancel_failed"
+    assert event_closed["close_reason"] == "buy_cancel_failed"
 
 
 def test_sell_failure_reason_detects_parse_error():
@@ -649,7 +674,7 @@ def test_exit_failure_reports_strategy_pause_event():
     trade, _, event_logger, closed = make_trade(on_exit_failed=on_exit_failed)
     trade.position_shares = Decimal("10")
 
-    trade._close_exit_failed("sell_failed", extra={
+    trade._close_exit_failed("sell_placement_failed", extra={
         "error": "timeout",
         "error_signature": "network_timeout",
     })
