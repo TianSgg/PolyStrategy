@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Awaitable, Callable, Optional
 
@@ -43,6 +45,9 @@ class SweepRiskMonitor:
         self._triggered = False
         self._tick_poll_task: Optional[asyncio.Task] = None
         self._tick_size_service = tick_size_service or TickSizeService()
+        # Event loop-bound objects are created when monitoring starts, not in __init__.
+        self._first_bbo_event: Optional[asyncio.Event] = None
+        self._first_bbo_snapshot: Optional[dict[str, Any]] = None
 
     @property
     def is_active(self) -> bool:
@@ -73,12 +78,16 @@ class SweepRiskMonitor:
         self._reference_mid = mid
         self._active = True
         self._triggered = False
+        self._first_bbo_event = asyncio.Event()
+        self._first_bbo_event.clear()
+        self._first_bbo_snapshot = None
 
         self._sub_id = await self._orderbook_ws.subscribe(
             asset_id=token_id,
             on_bbo=self._on_bbo,
             on_tick=self._on_tick,
         )
+        self._capture_first_bbo(token_id)
 
         logger.info(
             "Risk monitor started: token=%s ref_mid=%s threshold=%s ratio=%s",
@@ -90,6 +99,24 @@ class SweepRiskMonitor:
 
         # 第二重保险：定时 HTTP 轮询 tick_size
         self._tick_poll_task = asyncio.create_task(self._tick_poll_loop())
+
+    async def wait_for_first_bbo(self, timeout: float = 2.0) -> bool:
+        """等待本次风控订阅收到首个市场 WS BBO。"""
+        if self._first_bbo_event is None:
+            return False
+        if self._first_bbo_event.is_set():
+            return True
+        if not self._active:
+            return False
+        try:
+            await asyncio.wait_for(self._first_bbo_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
+
+    def first_bbo_snapshot(self) -> Optional[dict[str, Any]]:
+        """返回首个市场 WS BBO 快照的副本。"""
+        return dict(self._first_bbo_snapshot) if self._first_bbo_snapshot else None
 
     async def stop(self) -> None:
         """停止监控，取消订阅。"""
@@ -116,6 +143,8 @@ class SweepRiskMonitor:
     async def _on_bbo(self, asset_id: str, best_bid: Optional[Decimal], best_ask: Optional[Decimal]) -> None:
         if not self._active or self._triggered:
             return
+
+        self._capture_first_bbo(asset_id, best_bid, best_ask)
 
         bid = best_bid if best_bid is not None else Decimal("0")
         ask = best_ask if best_ask is not None else Decimal("1")
@@ -208,3 +237,42 @@ class SweepRiskMonitor:
                 return Decimal(str(price))
             return None
         return Decimal(str(val))
+
+    def _capture_first_bbo(
+        self,
+        asset_id: str,
+        best_bid: Optional[Decimal] = None,
+        best_ask: Optional[Decimal] = None,
+    ) -> None:
+        if self._first_bbo_snapshot is not None:
+            return
+
+        snapshot = None
+        getter = getattr(self._orderbook_ws, "get_bbo_snapshot", None)
+        if getter:
+            snapshot = getter(asset_id)
+        if snapshot and not any(
+            snapshot.get(key) is not None
+            for key in ("best_bid", "best_ask")
+        ):
+            snapshot = None
+        if snapshot is None and (best_bid is not None or best_ask is not None):
+            snapshot = {
+                "best_bid": float(best_bid) if best_bid is not None else None,
+                "best_bid_size": None,
+                "best_ask": float(best_ask) if best_ask is not None else None,
+                "best_ask_size": None,
+            }
+        if snapshot is None:
+            return
+
+        snapshot["captured_at_ms"] = int(time.time() * 1000)
+        snapshot["utc"] = self._utc_str()
+        self._first_bbo_snapshot = snapshot
+        if self._first_bbo_event is not None:
+            self._first_bbo_event.set()
+
+    @staticmethod
+    def _utc_str() -> str:
+        now = datetime.now(timezone.utc)
+        return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"

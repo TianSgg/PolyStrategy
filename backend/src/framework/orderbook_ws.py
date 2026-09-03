@@ -200,6 +200,20 @@ class OrderBookWS:
         """获取当前内存中的 orderbook（只读）。"""
         return self._books.get(asset_id)
 
+    def get_bbo_snapshot(self, asset_id: str) -> Optional[dict[str, Optional[float]]]:
+        """获取当前内存盘口的统一 BBO 快照。"""
+        book = self._books.get(asset_id)
+        if book is None:
+            return None
+        bids = sorted(book.bids.items(), reverse=True)
+        asks = sorted(book.asks.items())
+        return {
+            "best_bid": bids[0][0] if bids else None,
+            "best_bid_size": bids[0][1] if bids else None,
+            "best_ask": asks[0][0] if asks else None,
+            "best_ask_size": asks[0][1] if asks else None,
+        }
+
     def get_tick_size(self, asset_id: str) -> Optional[Decimal]:
         return self._tick_sizes.get(asset_id)
 
