@@ -208,6 +208,9 @@ class WeatherService:
     def status(self) -> list[dict]:
         return self.coordinator.status()
 
+    def market_ws_status(self) -> dict:
+        return self.coordinator.market_ws_status()
+
     async def dashboard(self) -> list[dict]:
         dashboard = await self.coordinator.dashboard()
         active = self._active_event_slugs()

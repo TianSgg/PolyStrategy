@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
@@ -34,6 +35,10 @@ class SharedMarketWebSocket:
         self.connected = False
         self.reconnects = 0
         self.last_message_at: str | None = None
+        self.last_ping_at: str | None = None
+        self.last_pong_at: str | None = None
+        self.last_rtt_ms: float | None = None
+        self._ping_sent_at: float | None = None
         self._ws: ClientConnection | None = None
 
     async def start(self) -> None:
@@ -49,6 +54,7 @@ class SharedMarketWebSocket:
         self._routing.clear()
         self._pending_unsub.clear()
         self.connected = False
+        self._ping_sent_at = None
 
     async def subscribe(self, token_id: str, monitor: MonitorProtocol, asset_ids: list[str]) -> None:
         """Subscribe one token on the wire; register asset_ids in the routing table."""
@@ -120,6 +126,9 @@ class SharedMarketWebSocket:
             "connected": self.connected,
             "reconnects": self.reconnects,
             "last_message_at": self.last_message_at,
+            "last_ping_at": self.last_ping_at,
+            "last_pong_at": self.last_pong_at,
+            "rtt_ms": self.last_rtt_ms,
             "subscribed_tokens": len(self._subscribed_tokens),
             "pending_initial_dump_tokens": len(self._pending_unsub),
             "routed_assets": len(self._routing),
@@ -179,6 +188,7 @@ class SharedMarketWebSocket:
                     try:
                         async for raw in ws:
                             if raw == "PONG":
+                                self._record_pong()
                                 continue
                             self._dispatch(raw)
                     finally:
@@ -196,6 +206,7 @@ class SharedMarketWebSocket:
             finally:
                 self._ws = None
                 self.connected = False
+                self._ping_sent_at = None
                 self._pending_unsub.clear()
 
     async def _heartbeat(self, ws) -> None:
@@ -203,9 +214,21 @@ class SharedMarketWebSocket:
         while True:
             await asyncio.sleep(10)
             try:
+                sent_at = time.monotonic()
+                self._ping_sent_at = sent_at
+                self.last_ping_at = datetime.now(timezone.utc).isoformat()
                 await ws.send("PING")
             except Exception:
+                if self._ping_sent_at == sent_at:
+                    self._ping_sent_at = None
                 return
+
+    def _record_pong(self) -> None:
+        sent_at = self._ping_sent_at
+        self.last_pong_at = datetime.now(timezone.utc).isoformat()
+        if sent_at is not None:
+            self.last_rtt_ms = round((time.monotonic() - sent_at) * 1000, 1)
+            self._ping_sent_at = None
 
     def _dispatch(self, raw: str) -> None:
         from datetime import datetime, timezone

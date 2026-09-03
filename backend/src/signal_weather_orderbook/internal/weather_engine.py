@@ -469,6 +469,9 @@ class WeatherEngine:
             })
         return result
 
+    def market_ws_status(self) -> dict:
+        return self._shared_ws.status()
+
     async def dashboard(self) -> list[dict]:
         """Frontend-ready city, direction, market, and local-time status."""
         now = datetime.now(timezone.utc)

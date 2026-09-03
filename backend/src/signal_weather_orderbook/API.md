@@ -18,6 +18,31 @@
 
 ---
 
+### GET /api/weather/status
+
+获取共享 Polymarket Market WebSocket 的连接状态和最近一次应用层 `PING`/`PONG` 往返延迟。
+
+**Response:**
+```json
+{
+  "market_ws": {
+    "connected": true,
+    "rtt_ms": 42.3,
+    "last_ping_at": "2026-09-03T12:00:00.000000+00:00",
+    "last_pong_at": "2026-09-03T12:00:00.042300+00:00",
+    "last_message_at": "2026-09-03T12:00:00.042300+00:00",
+    "reconnects": 0,
+    "subscribed_tokens": 10,
+    "pending_initial_dump_tokens": 0,
+    "routed_assets": 10
+  }
+}
+```
+
+`rtt_ms` 是信号服务到 Polymarket Market WebSocket 的应用层探测往返时间，不包含浏览器到本项目 API 的网络耗时。服务每 10 秒发送一次 `PING`，收到 `PONG` 后更新该值。
+
+---
+
 ### GET /api/weather/cities
 
 获取天气监控城市列表 (Dashboard 用)。

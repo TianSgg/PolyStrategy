@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -118,3 +119,14 @@ async def test_stop_clears_subscription_state():
     assert shared_ws._routing == {}
     assert shared_ws._pending_unsub == set()
     assert shared_ws.connected is False
+
+
+def test_pong_records_market_ws_rtt():
+    shared_ws = SharedMarketWebSocket()
+    shared_ws._ping_sent_at = time.monotonic() - 0.125
+
+    shared_ws._record_pong()
+
+    assert shared_ws.last_rtt_ms is not None
+    assert 100 <= shared_ws.last_rtt_ms <= 200
+    assert shared_ws._ping_sent_at is None

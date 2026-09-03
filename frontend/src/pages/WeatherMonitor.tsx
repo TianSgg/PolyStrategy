@@ -77,7 +77,6 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
   const [expandedMarkets, setExpandedMarkets] = useState<Set<string>>(new Set())
   const [liveOrderbooks, setLiveOrderbooks] = useState<LiveBooks>({})
-  const [liveConnected, setLiveConnected] = useState(false)
   const [notificationCounts, setNotificationCounts] = useState<Record<string, number>>({})
   const [showRecent, setShowRecent] = useState(false)
   const [recentLimit, setRecentLimit] = useState(100)
@@ -85,7 +84,8 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
   const [querySlug, setQuerySlug] = useState('')
   const [expandedNotifRows, setExpandedNotifRows] = useState<Set<string>>(new Set())
   const [, setNow] = useState(Date.now())
-  const [latencyMs, setLatencyMs] = useState<number | null>(null)
+  const [marketWsConnected, setMarketWsConnected] = useState(false)
+  const [marketWsLatencyMs, setMarketWsLatencyMs] = useState<number | null>(null)
 
   const liveRef = useRef<EventSource | null>(null)
   const notifRef = useRef<EventSource | null>(null)
@@ -132,9 +132,8 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
     if (liveRef.current) { liveRef.current.close(); liveRef.current = null }
     const es = new EventSource(`${API_BASE}/api/weather/live`)
     liveRef.current = es
-    es.onopen = () => { setLiveConnected(true); refresh() }
+    es.onopen = () => { refresh() }
     es.onerror = () => {
-      setLiveConnected(false)
       es.close()
       liveRef.current = null
       setTimeout(connectLive, 3000)
@@ -143,7 +142,6 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
       const next: LiveBooks = {}
       for (const payload of JSON.parse(event.data)) next[payload.market_slug] = payload.books
       setLiveOrderbooks(next)
-      setLiveConnected(true)
     })
     es.addEventListener('orderbook', (event) => {
       const payload = JSON.parse(event.data)
@@ -173,13 +171,16 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
   }
 
   async function measureLatency() {
-    const start = performance.now()
     try {
-      const res = await fetch(`${API_BASE}/health`, { cache: 'no-store' })
-      if (res.ok) setLatencyMs(Math.round(performance.now() - start))
-      else setLatencyMs(null)
+      const res = await apiFetch('/api/weather/status', { cache: 'no-store' })
+      if (!res.ok) throw new Error('Failed to load market WebSocket status')
+      const data = await res.json()
+      const marketWs = data.market_ws || {}
+      setMarketWsConnected(Boolean(marketWs.connected))
+      setMarketWsLatencyMs(typeof marketWs.rtt_ms === 'number' ? marketWs.rtt_ms : null)
     } catch {
-      setLatencyMs(null)
+      setMarketWsConnected(false)
+      setMarketWsLatencyMs(null)
     }
   }
 
@@ -190,7 +191,7 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
     connectNotificationCounts()
     measureLatency()
     const clockId = window.setInterval(() => setNow(Date.now()), 1000)
-    const pingId = window.setInterval(measureLatency, 60000)
+    const pingId = window.setInterval(measureLatency, 10000)
     return () => {
       window.clearInterval(clockId)
       window.clearInterval(pingId)
@@ -278,10 +279,10 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
           <div className="wm-subtitle">{updatedAt ? `更新于: ${updatedAt}` : ''}</div>
         </div>
         <div className="wm-header-actions">
-          <span className={`wm-latency-badge ${liveConnected ? '' : 'disconnected'}`} onClick={measureLatency} title="点击刷新延迟">
-            <span className="wm-latency-label">{liveConnected ? 'WS-mkt' : '已断开'}</span>
-            <span className={`wm-latency-value ${!liveConnected ? 'off' : latencyMs == null ? 'off' : latencyMs < 100 ? 'good' : latencyMs < 300 ? 'warn' : 'bad'}`}>
-              {latencyMs == null ? '--' : `${latencyMs}ms`}
+          <span className={`wm-latency-badge ${marketWsConnected ? '' : 'disconnected'}`} onClick={measureLatency} title="点击刷新市场 WS 延迟">
+            <span className="wm-latency-label">{marketWsConnected ? 'WS-mkt' : '已断开'}</span>
+            <span className={`wm-latency-value ${!marketWsConnected ? 'off' : marketWsLatencyMs == null ? 'off' : marketWsLatencyMs < 100 ? 'good' : marketWsLatencyMs < 300 ? 'warn' : 'bad'}`}>
+              {marketWsLatencyMs == null ? '--' : `${marketWsLatencyMs}ms`}
             </span>
           </span>
           {onManageCities && (

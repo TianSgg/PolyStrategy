@@ -101,6 +101,12 @@ async def weather_cities(request: Request) -> dict:
     return {"cities": await _service(request).dashboard()}
 
 
+@router.get("/status")
+async def weather_status(request: Request) -> dict:
+    """Return the live status of the shared Polymarket market WebSocket."""
+    return {"market_ws": _service(request).market_ws_status()}
+
+
 @router.get("/cities/{city_slug}/{direction}")
 async def weather_direction(city_slug: str, direction: str, request: Request) -> dict:
     payload = _service(request).direction_detail(city_slug, direction)
