@@ -53,8 +53,10 @@ logger = logging.getLogger(__name__)
 
 def _assert_vendored_clob_client() -> None:
     """Fail fast when the service would run a non-vendored CLOB client."""
-    expected_root = _project_root / "backend" / "vendor" / "py-clob-client-v2"
     actual_path = Path(py_clob_client_v2.__file__).resolve()
+    # The source tree is mounted at different roots locally and in Docker:
+    # .../PolyStrategy/backend/vendor and /app/vendor respectively.
+    expected_root = Path(__file__).resolve().parents[2] / "vendor" / "py-clob-client-v2"
     try:
         actual_path.relative_to(expected_root.resolve())
     except ValueError:
