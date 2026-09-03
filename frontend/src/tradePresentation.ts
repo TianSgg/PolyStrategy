@@ -35,8 +35,8 @@ const DARK_TONES: Record<Tone, { fg: string; bg: string; border: string }> = {
 const CLOSE_REASON_LABELS: Record<string, string> = {
   normal_exit: '正常退出',
   stop_loss: '止损退出',
-  force_exit: '强制退出',
-  buy_placement_failed: '买入挂单失败',
+  force_exit: '强制关闭',
+  buy_placement_failed: '买入未成交',
   no_cash: '资金不足',
   timeout_no_fill: '入场超时 · 无成交',
   dust_position: '低于最小下单量',
@@ -51,8 +51,13 @@ const CLOSE_REASON_LABELS: Record<string, string> = {
   unknown_failure: '未知执行异常',
 }
 
+const AMBER_OUTCOME_REASONS = new Set([
+  'stop_loss',
+  'dust_position',
+  'exit_order_unfilled',
+])
+
 const RED_FAILURE_REASONS = new Set([
-  'buy_placement_failed',
   'sell_placement_failed',
   'sell_fill_parse_error',
   'fill_reconcile_failed',
@@ -77,7 +82,7 @@ export function exitBadge(trade: TradeLike): Badge | null {
   if (trade.phase !== 'closed') return null
 
   const reason = trade.close_reason || ''
-  if (reason === 'force_exit' || RED_FAILURE_REASONS.has(reason)) {
+  if (RED_FAILURE_REASONS.has(reason)) {
     return {
       icon: '!',
       label: CLOSE_REASON_LABELS[reason] || '执行异常',
@@ -86,12 +91,18 @@ export function exitBadge(trade: TradeLike): Badge | null {
   }
 
   if (reason === 'normal_exit') return { icon: '✓', label: '正常退出', tone: 'green' }
-  if (reason === 'stop_loss') return { icon: '↓', label: '止损退出', tone: 'amber' }
-  if (reason === 'dust_position' || reason === 'exit_order_unfilled') {
-    return { icon: '!', label: CLOSE_REASON_LABELS[reason], tone: 'amber' }
+  if (reason === 'buy_placement_failed') {
+    return { icon: '∅', label: CLOSE_REASON_LABELS[reason], tone: 'slate' }
+  }
+  if (reason === 'force_exit') {
+    return { icon: '■', label: CLOSE_REASON_LABELS[reason], tone: 'slate' }
   }
   if (reason === 'no_cash' || reason === 'timeout_no_fill' || reason === 'market_settled') {
     return { icon: '∅', label: CLOSE_REASON_LABELS[reason], tone: 'slate' }
+  }
+  if (AMBER_OUTCOME_REASONS.has(reason)) {
+    const icon = reason === 'stop_loss' ? '↓' : '!'
+    return { icon, label: CLOSE_REASON_LABELS[reason] || reason, tone: 'amber' }
   }
   if (reason) return { icon: '■', label: CLOSE_REASON_LABELS[reason] || reason, tone: 'slate' }
   return { icon: '■', label: '已结束', tone: 'slate' }

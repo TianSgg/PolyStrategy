@@ -14,6 +14,9 @@ interface Trade {
   event_slug: string | null
   city: string | null
   direction: string | null
+  outcome: 'yes' | 'no' | null
+  temperature_label: string | null
+  is_from_main: number | boolean | null
   phase: 'entry' | 'exit' | 'closed'
   close_reason: string | null
   entry_price: string | null
@@ -318,6 +321,27 @@ export default function SweepTrades({ darkMode, proxyWallet, onBack }: Props) {
                 {/* Row 2: city + direction + entry/exit + pnl + duration */}
                 <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: textSecondary, flexWrap: 'wrap', alignItems: 'center' }}>
                   {t.city && <span>{t.city} {t.direction === 'highest' ? '↑' : t.direction === 'lowest' ? '↓' : ''}</span>}
+                  {t.temperature_label && (
+                    <span style={{ color: textPrimary, fontWeight: 600 }}>温度区间: {t.temperature_label}</span>
+                  )}
+                  {t.outcome && (
+                    <span style={{
+                      padding: '1px 6px', borderRadius: '3px', fontWeight: 600,
+                      background: t.outcome === 'yes' ? '#dcfce7' : '#dbeafe',
+                      color: t.outcome === 'yes' ? '#15803d' : '#2563eb',
+                    }}>
+                      结果: {t.outcome.toUpperCase()}
+                    </span>
+                  )}
+                  {t.is_from_main !== null && t.is_from_main !== undefined && (
+                    <span style={{
+                      padding: '1px 6px', borderRadius: '3px', fontWeight: 600,
+                      background: t.is_from_main ? '#f1f5f9' : '#f3e8ff',
+                      color: t.is_from_main ? '#475569' : '#7e22ce',
+                    }}>
+                      监控: {t.is_from_main ? 'Main' : 'Next'}
+                    </span>
+                  )}
                   <span>买入: {t.entry_price ? `$${t.entry_price}` : '--'}{' '}
                     {t.entry_order_size ? (
                       <span style={{ color: t.entry_shares && parseFloat(t.entry_shares) > 0 ? '#22c55e' : '#f59e0b' }}>
