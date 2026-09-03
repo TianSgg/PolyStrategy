@@ -113,6 +113,8 @@ class SweepTrade:
         self._market_settled_requested = False
         self._last_buy_fill_ms = 0
         self._balance_lag_retry_index = 0
+        self._normal_sell_cancelled = False
+        self._normal_sell_matched: dict[str, Decimal] = {}
 
         # Fill tracking
         self._order_size = Decimal("0")        # original buy order size
@@ -881,7 +883,6 @@ class SweepTrade:
             return
 
         sell_price = Decimal("1") - self._tick_size
-        sell_order_wait_s = 120
         sell_backoff_base = 2.0
         sell_backoff_cap = 60.0
 
@@ -1076,56 +1077,43 @@ class SweepTrade:
 
             # live → WS 监听 + 等待全部成交或超时
             self.sell_price = sell_price
-            sell_start_shares = self.position_shares
             user_ws = await self._executor.ensure_user_ws()
             sell_done = asyncio.Event()
             self._sell_done_event = sell_done
+            self._normal_sell_cancelled = False
+            self._normal_sell_matched[result.order_id] = Decimal(result.filled_size)
 
             user_ws.watch_order(
                 order_id=result.order_id, token_id=self.token_id, side="SELL",
                 price=self.sell_price,
                 initial_matched=Decimal(result.filled_size),
                 on_fill=self._on_sell_fill,
+                on_cancel=self._on_normal_sell_cancel,
             )
 
-            try:
-                await asyncio.wait_for(sell_done.wait(), timeout=sell_order_wait_s)
-            except asyncio.TimeoutError:
-                user_ws.unwatch_order(result.order_id)
-                cancel_result = await self._executor.cancel_order_with_fill_check(result.order_id)
-                if cancel_result.query_failed:
-                    if cancel_result.cancelled:
-                        self.exit_order_id = None
-                    await self._stop_for_cancel_query_failure(
-                        phase="exit", side="SELL", order_id=result.order_id,
-                        cancel_result=cancel_result,
-                    )
+            # Keep the accepted order live. Replacing an unchanged order after a
+            # fixed timeout loses queue position and does not improve execution.
+            await sell_done.wait()
+
+            user_ws.unwatch_order(result.order_id)
+            self._normal_sell_matched.pop(result.order_id, None)
+            self.exit_order_id = None
+
+            if self.state == "closed":
+                return
+
+            # A CLOB cancellation is terminal for this order, but not for the
+            # trade. The User WS cancellation payload supplies final matched
+            # size, so retry only the still-open position.
+            if self._normal_sell_cancelled:
+                if self.position_shares <= 0:
+                    self._record_sell_complete(result.order_id, sell_fill_count, sell_placed_ms)
+                    await self.risk.stop()
+                    self._close("normal_exit", phase="exit")
                     return
-                if not cancel_result.cancelled:
-                    await self._stop_for_cancel_failure(
-                        phase="exit", side="SELL", order_id=result.order_id,
-                        cancel_result=cancel_result,
-                    )
-                    return
-                self.exit_order_id = None
-                sold_by_clob = cancel_result.final_matched
-                sold_by_memory = sell_start_shares - self.position_shares
-                if sold_by_clob > sold_by_memory:
-                    missed = sold_by_clob - sold_by_memory
-                    self._record_sell_fill(result.order_id, missed, self.sell_price,
-                                           source="cancel_reconcile")
-                    if self._el:
-                        self._el.log_step("fill_reconciled", {
-                            "side": "SELL", "order_id": result.order_id,
-                            "clob_matched": str(sold_by_clob),
-                            "memory_before": str(sold_by_memory),
-                            "reconciled": str(missed),
-                        }, phase="exit")
                 continue
 
             # 全部成交
-            user_ws.unwatch_order(result.order_id)
-            self.exit_order_id = None
             self._record_sell_complete(result.order_id, sell_fill_count, sell_placed_ms)
             await self.risk.stop()
             self._close("normal_exit", phase="exit")
@@ -1180,14 +1168,73 @@ class SweepTrade:
     async def _on_sell_fill(self, event: FillEvent) -> None:
         if self.state == "closed":
             return
+        self._normal_sell_matched[event.order_id] = max(
+            self._normal_sell_matched.get(event.order_id, Decimal("0")),
+            event.total_matched,
+        )
         self._record_sell_fill(event.order_id, event.fill_size, event.fill_price,
                                source=event.source, trade_id=event.trade_id)
         if self.position_shares <= 0 and hasattr(self, '_sell_done_event'):
             self._sell_done_event.set()
 
+    async def _on_normal_sell_cancel(self, event: Any) -> None:
+        self._normal_sell_cancelled = True
+        known_matched = self._normal_sell_matched.get(event.order_id, Decimal("0"))
+        if event.size_matched > known_matched:
+            self._record_sell_fill(
+                event.order_id,
+                event.size_matched - known_matched,
+                self.sell_price,
+                source="user_ws_cancel",
+            )
+        self._normal_sell_matched.pop(event.order_id, None)
+        if self._el:
+            self._el.log_step("sell_cancelled", {
+                "order_id": event.order_id,
+                "success": True,
+                "size_matched": str(event.size_matched),
+                "source": "user_ws",
+            }, phase="exit")
+        if hasattr(self, "_sell_done_event"):
+            self._sell_done_event.set()
+
     # ==================== Risk Exit ====================
 
+    async def _cancel_order_fast(self, order_id: str, side: str, trigger: str) -> bool:
+        user_ws = getattr(self._executor, "_user_ws", None)
+        if user_ws:
+            user_ws.unwatch_order(order_id)
+
+        try:
+            cancelled = await self._executor.cancel_order(order_id)
+        except Exception as exc:
+            cancelled = False
+            error = str(exc)
+        else:
+            error = None if cancelled else "cancel_order returned false"
+
+        if self._el:
+            if cancelled:
+                step = "buy_cancelled" if side.upper() == "BUY" else "sell_cancelled"
+            else:
+                step = "buy_cancel_failed" if side.upper() == "BUY" else "sell_cancel_failed"
+            detail = {
+                "order_id": order_id,
+                "success": cancelled,
+                "trigger": trigger,
+                "fast_path": True,
+            }
+            if error:
+                detail["error"] = error
+            self._el.log_step(step, detail, phase=self._event_phase())
+        return cancelled
+
+    async def _on_risk_sell_cancel(self, _event: Any) -> None:
+        if hasattr(self, "_sell_done_event"):
+            self._sell_done_event.set()
+
     async def _risk_exit(self, trigger: str = "stop_loss") -> None:
+        """快速风控退出：撤单后只提交一次地板价 SELL。"""
         if self.state == "closed":
             return
 
@@ -1206,372 +1253,196 @@ class SweepTrade:
                 "position_shares": str(self.position_shares),
             }, phase=self._event_phase())
 
-        user_ws = await self._executor.ensure_user_ws()
+        await self.risk.stop()
+        cancellation_failures: list[dict[str, str]] = []
 
-        # 缺口①: 撤买单 + REST 校准
         if self.entry_order_id:
             order_id = self.entry_order_id
-            user_ws.unwatch_order(order_id)
-            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
-            if cancel_result.query_failed:
-                if cancel_result.cancelled:
-                    self.entry_order_id = None
-                await self._stop_for_cancel_query_failure(
-                    phase=self._event_phase(), side="BUY", order_id=order_id,
-                    cancel_result=cancel_result,
-                )
-                return
-            if not cancel_result.cancelled:
-                await self._stop_for_cancel_failure(
-                    phase=self._event_phase(), side="BUY", order_id=order_id,
-                    cancel_result=cancel_result,
-                )
-                return
-            if self._el:
-                self._el.log_step("buy_cancelled", {
+            if await self._cancel_order_fast(order_id, "BUY", trigger):
+                self.entry_order_id = None
+            else:
+                cancellation_failures.append({
+                    "side": "BUY",
                     "order_id": order_id,
-                    "success": cancel_result.cancelled,
-                    "final_matched": str(cancel_result.final_matched),
-                    "trigger": trigger,
-                }, phase=self._event_phase())
-            self.entry_order_id = None
-            if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
-                missed = cancel_result.final_matched - self.position_shares
-                self._record_buy_fill(order_id, missed,
-                                      getattr(self, 'buy_price', Decimal("0.99")),
-                                      source="cancel_reconcile")
-                if self._el:
-                    self._el.log_step("fill_reconciled", {
-                        "side": "BUY", "order_id": order_id,
-                        "clob_matched": str(cancel_result.final_matched),
-                        "memory_before": str(self.position_shares - missed),
-                        "reconciled": str(missed),
-                    }, phase=self._event_phase())
+                    "error": "cancel_order returned false",
+                })
 
-        # 缺口②: 撤卖单 + REST 校准
         if self.exit_order_id:
             order_id = self.exit_order_id
-            sell_start_shares = self.position_shares
-            user_ws.unwatch_order(order_id)
-            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
-            if cancel_result.query_failed:
-                if cancel_result.cancelled:
-                    self.exit_order_id = None
-                await self._stop_for_cancel_query_failure(
-                    phase="exit", side="SELL", order_id=order_id,
-                    cancel_result=cancel_result,
-                )
-                return
-            if not cancel_result.cancelled:
-                await self._stop_for_cancel_failure(
-                    phase="exit", side="SELL", order_id=order_id,
-                    cancel_result=cancel_result,
-                )
-                return
-            if self._el:
-                self._el.log_step("sell_cancelled", {
+            if await self._cancel_order_fast(order_id, "SELL", trigger):
+                self.exit_order_id = None
+            else:
+                cancellation_failures.append({
+                    "side": "SELL",
                     "order_id": order_id,
-                    "success": cancel_result.cancelled,
-                    "final_matched": str(cancel_result.final_matched),
-                    "trigger": trigger,
-                }, phase="exit")
-            self.exit_order_id = None
-            sold_by_memory = sell_start_shares - self.position_shares
-            if cancel_result.final_matched > sold_by_memory:
-                missed = cancel_result.final_matched - sold_by_memory
-                self._record_sell_fill(
-                    order_id,
-                    missed,
-                    getattr(self, "sell_price", Decimal("0.01")),
-                    source="cancel_reconcile",
-                )
-                if self._el:
-                    self._el.log_step("fill_reconciled", {
-                        "side": "SELL",
-                        "order_id": order_id,
-                        "clob_matched": str(cancel_result.final_matched),
-                        "memory_before": str(sold_by_memory),
-                        "reconciled": str(missed),
-                    }, phase="exit")
+                    "error": "cancel_order returned false",
+                })
 
-        # A settled market with no remaining position needs no tick refresh.
         if self.position_shares <= 0:
-            await self.risk.stop()
-            self._close(trigger, phase=self._event_phase())
+            if cancellation_failures:
+                failure = cancellation_failures[0]
+                self._close_exit_failed(
+                    f"{failure['side'].lower()}_cancel_failed",
+                    phase=self._event_phase(),
+                    extra={
+                        **failure,
+                        "error_signature": classify_sell_error("failed", failure["error"]),
+                        "fast_path": True,
+                    },
+                )
+            else:
+                self._close(trigger, phase=self._event_phase())
             return
 
-        # 缺口③: 清仓循环 — live 时用 WS + asyncio.Event 等待
+        self._mark_exit_started()
+        risk_origin_ms = int(time.time() * 1000)
+        sell_size = self.position_shares
+        self.sell_price = Decimal("0.01")
+        self._update_trade_summary({"exit_order_size": str(sell_size)})
+
+        result = await self._executor.place_order(
+            token_id=self.token_id,
+            side="SELL",
+            price="0.01",
+            size=str(sell_size),
+            tick_size=str(self._tick_size),
+            neg_risk=True,
+            check_balance=False,
+            validate_tick_size=False,
+        )
+
+        if result.status in ("failed", "insufficient_balance"):
+            error_signature = classify_sell_error(result.status, result.error)
+            if self._el:
+                self._el.log_step("sell_order_failed", {
+                    "status": result.status,
+                    "error": result.error,
+                    "error_signature": error_signature,
+                    "order": self._order_obj(
+                        result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
+                    ),
+                    "reason": trigger,
+                    "attempt": 1,
+                    "fast_path": True,
+                }, phase="exit")
+            self._close_exit_failed(self._sell_failure_reason(result), phase="exit", extra={
+                "error": result.error,
+                "error_signature": error_signature,
+                "fast_path": True,
+                "cancel_failures": cancellation_failures,
+            })
+            return
+
+        self.exit_order_id = result.order_id
+        if self._el:
+            self._el.log_step("sell_order_placed", {
+                "order": self._order_obj(
+                    result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
+                ),
+                "clob_status": result.clob_status,
+                "clob_taking": result.clob_taking,
+                "clob_making": result.clob_making,
+                "reason": trigger,
+                "trigger": trigger,
+                "attempt": 1,
+                "fast_path": True,
+            }, phase="exit")
+
+        if result.status in ("filled", "partial"):
+            filled = Decimal(result.filled_size)
+            if filled > 0:
+                self._record_sell_fill_risk(result.order_id, filled, Decimal("0.01"))
+
+        if self.position_shares <= 0:
+            self.exit_order_id = None
+            if self._el:
+                self._el.log_step("sell_complete", {
+                    "order_id": result.order_id,
+                    "total_filled": str(self._exit_filled_shares),
+                    "remaining_position": "0",
+                    "fast_path": True,
+                }, phase="exit")
+            if cancellation_failures:
+                failure = cancellation_failures[0]
+                self._close_exit_failed(
+                    f"{failure['side'].lower()}_cancel_failed",
+                    phase="exit",
+                    extra={
+                        **failure,
+                        "error_signature": classify_sell_error("failed", failure["error"]),
+                        "fast_path": True,
+                    },
+                )
+            else:
+                self._close(trigger, phase="exit")
+            return
+
         try:
-            risk_tick_size = await self._tick_size_service.refresh_consensus(
-                self.token_id, self._latest_ws_tick_size()
-            )
-        except TickSizeConsensusError as exc:
-            logger.error(
-                "Tick source mismatch before risk SELL: token=%s ws=%s tick_api=%s book=%s",
-                self.token_id, exc.ws_tick_size, exc.tick_api_size,
-                exc.book_tick_size,
-            )
-            if self._el:
-                self._el.log_step("tick_refresh_failed", {
-                    "error": "tick_source_mismatch",
-                    "reason": trigger,
-                    "ws_tick_size": str(exc.ws_tick_size),
-                    "http_tick_size": str(exc.tick_api_size),
-                    "book_tick_size": str(exc.book_tick_size),
-                    "action": "stop_event",
-                    "utc": self._utc_str(),
-                }, phase=self._event_phase())
-            self._close_exit_failed("tick_refresh_failed", phase=self._event_phase(), extra={
-                "error": "tick_source_mismatch",
-                "error_signature": classify_sell_error("failed", "tick size mismatch"),
-            })
-            return
-        except TickSizeFetchError as exc:
-            logger.error("Tick size refresh failed before risk SELL: token=%s err=%s", self.token_id, exc)
-            if self._el:
-                self._el.log_step("tick_refresh_failed", {
-                    "error": str(exc),
-                    "reason": trigger,
-                    "action": "stop_event",
-                    "utc": self._utc_str(),
-                }, phase=self._event_phase())
-            self._close_exit_failed("tick_refresh_failed", phase=self._event_phase(), extra={
-                "error": str(exc),
+            user_ws = await self._executor.ensure_user_ws()
+        except Exception as exc:
+            self._close_exit_failed("sell_placement_failed", phase="exit", extra={
+                "error": f"unable to watch risk SELL: {exc}",
                 "error_signature": classify_sell_error("failed", str(exc)),
+                "fast_path": True,
             })
             return
 
-        min_order_size = await self._load_min_order_size()
-        if await self._close_if_dust_position(
-            min_order_size, phase=self._event_phase(), trigger=trigger,
-        ):
-            return
+        sell_done = asyncio.Event()
+        self._sell_done_event = sell_done
+        user_ws.watch_order(
+            order_id=result.order_id,
+            token_id=self.token_id,
+            side="SELL",
+            price=Decimal("0.01"),
+            initial_matched=Decimal(result.filled_size),
+            on_fill=self._on_sell_fill_risk,
+            on_cancel=self._on_risk_sell_cancel,
+        )
 
-        if self.position_shares > 0:
-            risk_origin_ms = int(time.time() * 1000)
-            risk_attempt = 0
-            risk_sell_wait_s = 30
-            failure_tracker = SellFailureTracker()
-            invalid_tick_retries = 0
-            balance_retry_size: Optional[Decimal] = None
+        try:
+            await asyncio.wait_for(sell_done.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            if self._el:
+                self._el.log_step("exit_order_unfilled", {
+                    "order_id": result.order_id,
+                    "remaining_position": str(self.position_shares),
+                    "wait_ms": 30000,
+                    "fast_path": True,
+                }, phase="exit")
+            user_ws.unwatch_order(result.order_id)
+            if await self._cancel_order_fast(result.order_id, "SELL", trigger):
+                self.exit_order_id = None
+            else:
+                cancellation_failures.append({
+                    "side": "SELL",
+                    "order_id": result.order_id,
+                    "error": "cancel_order returned false",
+                })
+        else:
+            user_ws.unwatch_order(result.order_id)
+            self.exit_order_id = None
 
-            while self.position_shares > 0:
-                if self.state == "closed":
-                    return
-                risk_attempt += 1
-                if await self._close_if_dust_position(
-                    min_order_size, phase=self._event_phase(), trigger=trigger,
-                ):
-                    return
-                if risk_attempt == 1:
-                    await self._wait_before_first_sell_attempt(
-                        phase="entry",
-                        trigger=trigger,
-                        exit_origin_ms=risk_origin_ms,
-                    )
-                    if self.state == "closed":
-                        return
-                sell_size = balance_retry_size or self.position_shares
-                balance_retry_size = None
-                sell_start_shares = self.position_shares
-                if risk_attempt == 1:
-                    self._update_trade_summary({"exit_order_size": str(sell_size)})
-                self._mark_exit_started()
-                result = await self._executor.place_order(
-                    token_id=self.token_id,
-                    side="SELL",
-                    price="0.01",
-                    size=str(sell_size),
-                    tick_size=str(risk_tick_size),
-                    neg_risk=True,
-                    check_balance=False,
-                )
+        if self.position_shares <= 0 and not cancellation_failures and self._el:
+            self._el.log_step("sell_complete", {
+                "order_id": result.order_id,
+                "total_filled": str(self._exit_filled_shares),
+                "remaining_position": "0",
+                "fast_path": True,
+            }, phase="exit")
 
-                if result.status in ("failed", "insufficient_balance"):
-                    error_signature = classify_sell_error(result.status, result.error)
-                    if self._el:
-                        self._el.log_step("sell_order_failed", {
-                            "status": result.status,
-                            "error": result.error,
-                            "error_signature": error_signature,
-                            "order": self._order_obj(
-                                result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
-                            ),
-                            "reason": trigger,
-                            "attempt": risk_attempt,
-                        }, phase="exit")
-
-                    if error_signature == "insufficient_balance":
-                        observed_sellable = self._parse_balance_lag_sellable(result.error)
-                        if (
-                            observed_sellable is not None
-                            and min_order_size is not None
-                            and observed_sellable >= min_order_size
-                        ):
-                            retry_size = min(self.position_shares, observed_sellable)
-                            if retry_size < sell_size:
-                                balance_retry_size = retry_size.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-                                if self._el:
-                                    self._el.log_step("balance_settlement_retry", {
-                                        "attempt": risk_attempt,
-                                        "error": result.error,
-                                        "error_signature": error_signature,
-                                        "observed_sellable": str(observed_sellable),
-                                        "retry_size": str(balance_retry_size),
-                                        "wait_ms": 0,
-                                        "reason": "balance_lag_partial_retry",
-                                        "retry_index": self._balance_lag_retry_index,
-                                        "utc": self._utc_str(),
-                                    }, phase="exit")
-                                continue
-
-                        wait_s = self._next_balance_lag_wait_s()
-                        if self._el:
-                            self._el.log_step("balance_settlement_retry", {
-                                "attempt": risk_attempt,
-                                "error": result.error,
-                                "error_signature": error_signature,
-                                "observed_sellable": str(observed_sellable) if observed_sellable is not None else None,
-                                "wait_ms": int(wait_s * 1000),
-                                "reason": "balance_lag",
-                                "retry_index": self._balance_lag_retry_index,
-                                "utc": self._utc_str(),
-                            }, phase="exit")
-                        await asyncio.sleep(wait_s)
-                        continue
-
-                    failure = failure_tracker.record(error_signature, result.error)
-
-                    if (
-                        error_signature == "invalid_tick_size"
-                        and invalid_tick_retries < len(INVALID_TICK_RETRY_WAIT_S)
-                    ):
-                        wait_s = INVALID_TICK_RETRY_WAIT_S[invalid_tick_retries]
-                        invalid_tick_retries += 1
-                        if self._el:
-                            self._el.log_step("sell_retry_started", {
-                                "attempt": risk_attempt,
-                                "error": result.error,
-                                "error_signature": error_signature,
-                                "wait_ms": int(wait_s * 1000),
-                                "reason": trigger,
-                                "utc": self._utc_str(),
-                            }, phase="exit")
-                        await asyncio.sleep(wait_s)
-
-                        new_tick = await self._refresh_tick_after_invalid_sell(
-                            risk_tick_size, phase="exit", reason=trigger,
-                        )
-                        if new_tick is None:
-                            await self.risk.stop()
-                            self._close_exit_failed(self._sell_failure_reason(result), phase="exit", extra={
-                                "error": result.error,
-                                "error_signature": error_signature,
-                                "stop_reason": "tick_refresh_failed",
-                            })
-                            return
-                        risk_tick_size = new_tick
-                        continue
-
-                    stop_reason = failure.stop_reason
-                    if error_signature == "invalid_tick_size":
-                        stop_reason = "invalid_tick_retry_exhausted"
-                    if stop_reason:
-                        self._log_sell_circuit_breaker(
-                            failure, phase="exit", reason=trigger,
-                            stop_reason=stop_reason,
-                        )
-                        await self.risk.stop()
-                        self._close_exit_failed(self._sell_failure_reason(result), phase="exit", extra={
-                            "error": result.error,
-                            "error_signature": error_signature,
-                            "stop_reason": stop_reason,
-                        })
-                        return
-
-                    backoff = (
-                        2.0 if error_signature == "insufficient_balance"
-                        else min(2.0 * (2 ** (risk_attempt - 1)), 60.0)
-                    )
-                    await asyncio.sleep(backoff)
-                    continue
-
-                if self._el:
-                    self._el.log_step("sell_order_placed", {
-                        "order": self._order_obj(
-                            result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
-                        ),
-                        "clob_status": result.clob_status,
-                        "clob_taking": result.clob_taking,
-                        "clob_making": result.clob_making,
-                        "reason": trigger,
-                        "trigger": trigger,
-                        "attempt": risk_attempt,
-                    }, phase="exit")
-                self.sell_price = Decimal("0.01")
-
-                risk_fill_count = 0
-                if result.status in ("filled", "partial"):
-                    filled = Decimal(result.filled_size)
-                    if filled > 0:
-                        self._record_sell_fill_risk(
-                            result.order_id, filled, Decimal("0.01"),
-                        )
-                        risk_fill_count += 1
-
-                if result.status == "filled":
-                    if self.position_shares <= 0:
-                        if self._el:
-                            self._el.log_step("sell_complete", {
-                                "order_id": result.order_id,
-                                "total_filled": str(self._exit_filled_shares),
-                                "remaining_position": "0",
-                                "fill_count": risk_fill_count,
-                                "elapsed_ms": 0,
-                            }, phase="exit")
-                        break
-                    continue
-
-                # live → WS 监听 + 等待
-                sell_done = asyncio.Event()
-                self._sell_done_event = sell_done
-
-                user_ws.watch_order(
-                    order_id=result.order_id, token_id=self.token_id, side="SELL",
-                    price=Decimal("0.01"),
-                    initial_matched=Decimal(result.filled_size),
-                    on_fill=self._on_sell_fill_risk,
-                )
-
-                try:
-                    await asyncio.wait_for(sell_done.wait(), timeout=risk_sell_wait_s)
-                except asyncio.TimeoutError:
-                    pass
-
-                user_ws.unwatch_order(result.order_id)
-                cancel_result = await self._executor.cancel_order_with_fill_check(result.order_id)
-                if cancel_result.query_failed:
-                    await self._stop_for_cancel_query_failure(
-                        phase="exit", side="SELL", order_id=result.order_id,
-                        cancel_result=cancel_result,
-                    )
-                    return
-                if not cancel_result.cancelled:
-                    await self._stop_for_cancel_failure(
-                        phase="exit", side="SELL", order_id=result.order_id,
-                        cancel_result=cancel_result,
-                    )
-                    return
-                sold_by_clob = cancel_result.final_matched
-                sold_by_memory = sell_start_shares - self.position_shares
-                if sold_by_clob > sold_by_memory:
-                    missed = sold_by_clob - sold_by_memory
-                    self._record_sell_fill_risk(result.order_id, missed, Decimal("0.01"))
-                if self.position_shares <= 0:
-                    break
-
-        await self.risk.stop()
-        self._close(trigger, phase=self._event_phase())
+        if cancellation_failures:
+            failure = cancellation_failures[0]
+            self._close_exit_failed(
+                f"{failure['side'].lower()}_cancel_failed",
+                phase="exit",
+                extra={
+                    **failure,
+                    "error_signature": classify_sell_error("failed", failure["error"]),
+                    "fast_path": True,
+                },
+            )
+        else:
+            self._close(trigger, phase="exit")
 
     def _record_sell_fill_risk(
         self, order_id: str, filled: Decimal, price: Decimal,
@@ -1620,6 +1491,8 @@ class SweepTrade:
                 "state_at_exit": self.state,
                 "position_shares": str(self.position_shares),
             }, phase=self._event_phase())
+
+        self._mark_exit_started()
 
         if self.entry_order_id:
             order_id = self.entry_order_id
@@ -1709,7 +1582,7 @@ class SweepTrade:
                         "clob_matched": str(cancel_result.final_matched),
                         "memory_before": str(sold_by_memory),
                         "reconciled": str(missed),
-                    }, phase=self._event_phase())
+                    }, phase="exit")
 
         await self.risk.stop()
         self._close("force_exit", phase=self._event_phase())
@@ -1787,6 +1660,10 @@ class SweepTrade:
         if self.state == "closed":
             return
 
+        sell_done = getattr(self, "_sell_done_event", None)
+        if sell_done is not None:
+            sell_done.set()
+
         user_ws = getattr(self._executor, '_user_ws', None)
         if user_ws:
             for oid in (self.entry_order_id, self.exit_order_id):
@@ -1815,6 +1692,7 @@ class SweepTrade:
                 "reason": reason,
                 "close_reason": reason,
                 "total_position": str(self.position_shares),
+                "position_shares": str(self.position_shares),
                 "position_open": self.position_shares > 0,
                 "duration_ms": duration_ms,
             }

@@ -49,11 +49,25 @@ class FakeTradeDAO:
 
 
 class FakeUserWS:
+    def __init__(self):
+        self.watches = {}
+        self.unwatched = []
+
     def watch_order(self, **kwargs):
-        pass
+        self.watches[kwargs["order_id"]] = kwargs
 
     def unwatch_order(self, order_id):
-        pass
+        self.unwatched.append(order_id)
+        self.watches.pop(order_id, None)
+
+    async def emit_cancel(self, order_id, size_matched=Decimal("0")):
+        watch = self.watches[order_id]
+        await watch["on_cancel"](
+            type("Cancel", (), {
+                "order_id": order_id,
+                "size_matched": Decimal(str(size_matched)),
+            })()
+        )
 
 
 class FakeExecutor:
@@ -70,9 +84,14 @@ class FakeExecutor:
         self.cancel_cancelled = cancel_cancelled
         self.user_ws = FakeUserWS()
         self.placed_orders = []
+        self.cancelled_orders = []
 
     async def ensure_user_ws(self):
         return self.user_ws
+
+    async def cancel_order(self, order_id):
+        self.cancelled_orders.append(order_id)
+        return self.cancel_cancelled
 
     async def place_order(self, **kwargs):
         self.placed_orders.append(kwargs)
@@ -499,6 +518,90 @@ def test_first_sell_waits_for_clob_sync_grace():
     assert sleeps and sleeps[0] > 0
     assert sleeps[0] <= 2.0
     assert ("exit", "exit_trigger_deferred") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+
+
+def test_normal_sell_stays_live_until_fill_or_cancellation():
+    live = OrderResult(
+        order_id="sell-live",
+        status="live",
+        filled_size="0",
+        clob_status="live",
+    )
+    trade, executor, event_logger, closed = make_trade(sell_result=live)
+    trade.position_shares = Decimal("10")
+    trade._tick_size = Decimal("0.01")
+
+    async def scenario():
+        task = asyncio.create_task(trade._start_normal_exit())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert executor.placed_orders[0]["price"] == "0.999"
+        assert executor.user_ws.watches["sell-live"]["on_cancel"]
+        await executor.user_ws.emit_cancel("sell-live", Decimal("0"))
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert len(executor.placed_orders) == 2
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    run(scenario())
+    assert closed == []
+    assert ("exit", "sell_cancelled") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+
+
+def test_risk_exit_cancels_orders_and_uses_floor_price_without_tick_validation():
+    sell_result = OrderResult(
+        order_id="risk-sell",
+        status="filled",
+        filled_size="10",
+        clob_status="matched",
+    )
+    trade, executor, event_logger, closed = make_trade(sell_result=sell_result)
+    trade.entry_order_id = "buy-pending"
+    trade.position_shares = Decimal("10")
+    trade._tick_size = Decimal("0.001")
+
+    run(trade._risk_exit("stop_loss"))
+
+    assert executor.cancelled_orders == ["buy-pending"]
+    assert len(executor.placed_orders) == 1
+    assert executor.placed_orders[0]["price"] == "0.01"
+    assert executor.placed_orders[0]["validate_tick_size"] is False
+    assert trade._tick_size_service.refresh_count == 0
+    assert close_reason(event_logger) == "stop_loss"
+    assert closed == ["token"]
+    assert ("exit", "fill_reconcile_failed") not in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+
+
+def test_risk_exit_stops_after_one_floor_sell_failure_without_reconciliation():
+    failed = OrderResult(
+        order_id="risk-sell-failed",
+        status="failed",
+        filled_size="0",
+        error="network timeout",
+    )
+    trade, executor, event_logger, closed = make_trade(sell_result=failed)
+    trade.position_shares = Decimal("10")
+
+    run(trade._risk_exit("stop_loss"))
+
+    assert len(executor.placed_orders) == 1
+    assert executor.placed_orders[0]["price"] == "0.01"
+    assert executor.placed_orders[0]["validate_tick_size"] is False
+    assert trade._tick_size_service.refresh_count == 0
+    assert closed == ["token"]
+    assert close_reason(event_logger) == "sell_placement_failed"
+    assert ("exit", "fill_reconcile_failed") not in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
 

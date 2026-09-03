@@ -124,11 +124,14 @@ class OrderExecutor:
         neg_risk: bool | None = None,
         gtd_sec: int = DEFAULT_GTD_SEC,
         check_balance: bool = True,
+        validate_tick_size: bool = True,
     ) -> OrderResult:
         """下单。返回 OrderResult。
 
         check_balance=True 时，BUY 订单会先检查缓存余额，
         余额不足直接返回 insufficient_balance 而不发请求。
+        validate_tick_size=False 用于风控紧急卖出：
+        使用调用方提供的 tick_size，不额外请求或校验 tick size。
         """
         wallet = (proxy_wallet or self._proxy_wallet).lower()
         params = self._cached_params.get(token_id, {})
@@ -136,7 +139,7 @@ class OrderExecutor:
 
         order_id = generate_order_id()
 
-        if self._tick_size_service is not None:
+        if self._tick_size_service is not None and validate_tick_size:
             try:
                 authoritative_tick = await self._tick_size_service.get(token_id)
             except TickSizeFetchError as exc:
