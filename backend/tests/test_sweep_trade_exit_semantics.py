@@ -654,7 +654,7 @@ def test_dust_position_stops_before_placing_sell():
     assert event_closed["close_reason"] == "dust_position"
 
 
-def test_force_exit_reconciles_sell_fill_and_closes():
+def test_force_exit_reconciles_open_orders_and_closes_without_selling():
     trade, _, event_logger, closed = make_trade(final_matched=Decimal("10"))
     trade.position_shares = Decimal("10")
     trade.exit_order_id = "sell-1"
@@ -669,38 +669,32 @@ def test_force_exit_reconciles_sell_fill_and_closes():
     assert ("exit", "fill_reconciled") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
+    assert ("exit", "sell_cancelled") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    assert ("exit", "sell_order_placed") not in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
 
 
-def test_force_exit_with_open_position_stops_on_sell_circuit_breaker():
-    failed = OrderResult(
-        order_id="sell-failed",
-        status="failed",
-        filled_size="0",
-        error="network timeout",
-    )
-    trade, executor, event_logger, closed = make_trade(
-        sell_results=[failed, failed, failed],
-        final_matched=Decimal("0"),
-    )
+def test_force_exit_without_open_orders_closes_with_remaining_position():
+    trade, executor, event_logger, closed = make_trade()
     trade.position_shares = Decimal("10")
-    trade.exit_order_id = "sell-1"
-    trade.sell_price = Decimal("0.999")
 
-    with patch("strategy_weather_sweep.service.asyncio.sleep", no_sleep):
-        run(trade.force_exit("config_disabled"))
+    run(trade.force_exit("config_disabled"))
 
     assert trade.position_shares == Decimal("10")
     assert trade.state == "closed"
     assert closed == ["token"]
-    assert len(executor.placed_orders) == 3
-    assert close_reason(event_logger) == "sell_placement_failed"
+    assert executor.placed_orders == []
+    assert close_reason(event_logger) == "force_exit"
     event_closed = next(
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
     assert event_closed["position_open"] is True
     assert event_closed["position_shares"] == "10"
-    assert event_closed["close_reason"] == "sell_placement_failed"
-    assert event_closed["stop_reason"] == "same_error_repeated"
+    assert event_closed["close_reason"] == "force_exit"
+    assert "stop_reason" not in event_closed
 
 
 def test_sell_complete_uses_exit_fill_accumulator():

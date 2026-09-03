@@ -1612,7 +1612,6 @@ class SweepTrade:
 
         if self._entry_timer and not self._entry_timer.done():
             self._entry_timer.cancel()
-        await self.risk.stop()
 
         if self._el:
             self._el.log_step("force_exit_requested", {
@@ -1621,7 +1620,99 @@ class SweepTrade:
                 "state_at_exit": self.state,
                 "position_shares": str(self.position_shares),
             }, phase=self._event_phase())
-        await self._risk_exit(trigger="force_exit")
+
+        if self.entry_order_id:
+            order_id = self.entry_order_id
+            user_ws = await self._executor.ensure_user_ws()
+            user_ws.unwatch_order(order_id)
+            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+            if cancel_result.query_failed:
+                if cancel_result.cancelled:
+                    self.entry_order_id = None
+                await self._stop_for_cancel_query_failure(
+                    phase=self._event_phase(), side="BUY", order_id=order_id,
+                    cancel_result=cancel_result,
+                )
+                return
+            if not cancel_result.cancelled:
+                await self._stop_for_cancel_failure(
+                    phase=self._event_phase(), side="BUY", order_id=order_id,
+                    cancel_result=cancel_result,
+                )
+                return
+            if self._el:
+                self._el.log_step("buy_cancelled", {
+                    "order_id": order_id,
+                    "success": cancel_result.cancelled,
+                    "final_matched": str(cancel_result.final_matched),
+                    "trigger": reason,
+                }, phase=self._event_phase())
+            self.entry_order_id = None
+            if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
+                missed = cancel_result.final_matched - self.position_shares
+                self._record_buy_fill(
+                    order_id,
+                    missed,
+                    getattr(self, 'buy_price', Decimal("0.99")),
+                    source="force_exit_reconcile",
+                )
+                if self._el:
+                    self._el.log_step("fill_reconciled", {
+                        "side": "BUY",
+                        "order_id": order_id,
+                        "clob_matched": str(cancel_result.final_matched),
+                        "memory_before": str(self.position_shares - missed),
+                        "reconciled": str(missed),
+                    }, phase=self._event_phase())
+
+        if self.exit_order_id:
+            order_id = self.exit_order_id
+            sell_start_shares = self.position_shares
+            user_ws = await self._executor.ensure_user_ws()
+            user_ws.unwatch_order(order_id)
+            cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+            if cancel_result.query_failed:
+                if cancel_result.cancelled:
+                    self.exit_order_id = None
+                await self._stop_for_cancel_query_failure(
+                    phase=self._event_phase(), side="SELL", order_id=order_id,
+                    cancel_result=cancel_result,
+                )
+                return
+            if not cancel_result.cancelled:
+                await self._stop_for_cancel_failure(
+                    phase=self._event_phase(), side="SELL", order_id=order_id,
+                    cancel_result=cancel_result,
+                )
+                return
+            if self._el:
+                self._el.log_step("sell_cancelled", {
+                    "order_id": order_id,
+                    "success": cancel_result.cancelled,
+                    "final_matched": str(cancel_result.final_matched),
+                    "trigger": reason,
+                }, phase=self._event_phase())
+            self.exit_order_id = None
+            sold_by_memory = sell_start_shares - self.position_shares
+            if cancel_result.final_matched > sold_by_memory:
+                missed = cancel_result.final_matched - sold_by_memory
+                self._record_sell_fill(
+                    order_id,
+                    missed,
+                    getattr(self, "sell_price", Decimal("0.01")),
+                    source="force_exit_reconcile",
+                )
+                if self._el:
+                    self._el.log_step("fill_reconciled", {
+                        "side": "SELL",
+                        "order_id": order_id,
+                        "clob_matched": str(cancel_result.final_matched),
+                        "memory_before": str(sold_by_memory),
+                        "reconciled": str(missed),
+                    }, phase=self._event_phase())
+
+        await self.risk.stop()
+        self._close("force_exit", phase=self._event_phase())
 
     async def market_settled(self, signal: Signal) -> None:
         """Close this trade after its market reaches a terminal state."""
