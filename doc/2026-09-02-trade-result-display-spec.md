@@ -129,9 +129,9 @@
 
 | 数据条件 | 展示内容 | 颜色 |
 |---|---|---|
-| `close_reason=force_exit` | `强制退出` | 红色 |
+| `close_reason=force_exit` | `强制关闭` | 灰色 |
 
-强制退出需要用户或系统主动介入，不论最终是否有成交，都使用红色进行提醒。
+强制关闭通常表示配置关闭、手动中止或保护性关停，属于流程性终止，不自动使用红色。
 
 ### 4.8 接口或程序异常
 
@@ -139,7 +139,7 @@
 
 | `close_reason` | 展示内容 | 颜色 |
 |---|---|---|
-| `buy_placement_failed` | `执行异常 · 买入挂单失败` | 红色 |
+| `buy_placement_failed` | `流程性终止 · 买入未成交` | 灰色 |
 | `sell_placement_failed` | `执行异常 · 卖出挂单失败` | 红色 |
 | `sell_fill_parse_error` | `执行异常 · 成交解析失败` | 红色 |
 | `fill_reconcile_failed` | `执行异常 · 成交校准失败` | 红色 |
@@ -155,7 +155,7 @@
 前端计算第二个徽标时按以下顺序判断：
 
 1. `close_reason=no_cash`：灰色，显示未执行。
-2. `close_reason=force_exit`：红色，显示强制退出。
+2. `close_reason=force_exit`：灰色，显示强制关闭。
 3. `close_reason` 属于系统异常集合：红色，显示执行异常和具体原因。
 4. `close_reason=normal_exit`：绿色，显示正常退出。
 5. `close_reason=timeout_no_fill` 或 `close_reason=market_settled`：灰色，显示自然结束。
