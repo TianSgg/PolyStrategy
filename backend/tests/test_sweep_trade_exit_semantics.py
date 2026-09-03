@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import time
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -164,10 +165,11 @@ def make_trade(
     )
     event_logger = FakeEventLogger()
     closed = []
+    config = {"clob_sync_grace_ms": 0}
     trade = SweepTrade(
         token_id="token",
         market_slug="market",
-        config={},
+        config=config,
         executor=executor,
         orderbook_ws=orderbook_ws,
         event_logger=event_logger,
@@ -469,6 +471,38 @@ def test_full_fill_after_tick_starts_normal_exit():
     assert close_reason(event_logger) == "normal_exit"
 
 
+def test_first_sell_waits_for_clob_sync_grace():
+    sell_result = OrderResult(
+        order_id="sell-1",
+        status="filled",
+        filled_size="10",
+        clob_status="matched",
+        clob_taking="9.99",
+        clob_making="10",
+    )
+    trade, executor, event_logger, closed = make_trade(sell_result=sell_result)
+    trade._config["clob_sync_grace_ms"] = 2000
+    trade.position_shares = Decimal("10")
+    trade._tick_size = Decimal("0.001")
+    trade._last_buy_fill_ms = int(time.time() * 1000)
+
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    with patch("strategy_weather_sweep.service.asyncio.sleep", record_sleep):
+        run(trade._start_normal_exit())
+
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert sleeps and sleeps[0] > 0
+    assert sleeps[0] <= 2.0
+    assert ("exit", "exit_trigger_deferred") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+
+
 def test_invalid_tick_sell_uses_dedicated_long_retry_waits():
     sell_result = OrderResult(
         order_id="sell-failed",
@@ -541,13 +575,60 @@ def test_insufficient_balance_retries_once_for_settlement():
     assert trade.state == "closed"
     assert closed == ["token"]
     assert len(executor.placed_orders) == 2
-    assert sleeps == [3.0]
+    assert sleeps == [120.0]
     assert ("exit", "balance_settlement_retry") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
     assert ("exit", "event_closed") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
+
+
+def test_insufficient_balance_shrinks_to_observed_sellable_then_finishes():
+    failed = OrderResult(
+        order_id="sell-settlement",
+        status="failed",
+        filled_size="0",
+        error="not enough balance / allowance: balance: 4390000, order amount: 10000000",
+    )
+    first_retry = OrderResult(
+        order_id="sell-retry-1",
+        status="filled",
+        filled_size="4.39",
+        clob_status="matched",
+        clob_taking="4.38",
+        clob_making="4.39",
+    )
+    second_retry = OrderResult(
+        order_id="sell-retry-2",
+        status="filled",
+        filled_size="5.61",
+        clob_status="matched",
+        clob_taking="5.60",
+        clob_making="5.61",
+    )
+    trade, executor, event_logger, closed = make_trade(
+        sell_results=[failed, first_retry, second_retry],
+        orderbook_ws=FakeOrderBookWS(min_order_size=Decimal("0.01")),
+    )
+    trade.position_shares = Decimal("10")
+    trade._tick_size = Decimal("0.01")
+
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    with patch("strategy_weather_sweep.service.asyncio.sleep", record_sleep):
+        run(trade._start_normal_exit())
+
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert len(executor.placed_orders) == 3
+    assert executor.placed_orders[1]["size"] == "4.39"
+    assert executor.placed_orders[2]["size"] == "5.61"
+    assert sleeps == []
+    assert close_reason(event_logger) == "normal_exit"
 
 
 def test_dust_position_stops_before_placing_sell():
