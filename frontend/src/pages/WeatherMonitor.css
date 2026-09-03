@@ -69,22 +69,49 @@
   gap: 12px;
 }
 
-.wm-conn {
+/* Latency badge */
+.wm-latency-badge {
+  align-items: center;
+  background: var(--wm-card-bg);
+  border: 1px solid var(--wm-card-border);
   border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 6px;
+  padding: 6px 12px;
+}
+
+.wm-latency-badge:hover { opacity: 0.85; }
+
+.wm-latency-badge.disconnected {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.wm-latency-label {
+  color: var(--wm-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  font-weight: 700;
-  padding: 6px 10px;
+  font-weight: 600;
 }
 
-.wm-conn.connected {
-  background: rgba(22, 163, 74, 0.12);
-  color: #16a34a;
-}
-
-.wm-conn.disconnected {
-  background: rgba(239, 68, 68, 0.12);
+.wm-latency-badge.disconnected .wm-latency-label {
   color: #ef4444;
 }
+
+.wm-latency-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.wm-latency-value.good { color: #16a34a; }
+.wm-latency-value.warn { color: #ca8a04; }
+.wm-latency-value.bad  { color: #ef4444; }
+.wm-latency-value.off  { color: var(--wm-text-secondary); }
+
+[data-theme='dark'] .wm-latency-value.good { color: #4ade80; }
+[data-theme='dark'] .wm-latency-value.warn { color: #facc15; }
 
 .wm-btn {
   align-items: center;

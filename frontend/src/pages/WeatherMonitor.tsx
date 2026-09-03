@@ -85,6 +85,7 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
   const [querySlug, setQuerySlug] = useState('')
   const [expandedNotifRows, setExpandedNotifRows] = useState<Set<string>>(new Set())
   const [, setNow] = useState(Date.now())
+  const [latencyMs, setLatencyMs] = useState<number | null>(null)
 
   const liveRef = useRef<EventSource | null>(null)
   const notifRef = useRef<EventSource | null>(null)
@@ -131,7 +132,7 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
     if (liveRef.current) { liveRef.current.close(); liveRef.current = null }
     const es = new EventSource(`${API_BASE}/api/weather/live`)
     liveRef.current = es
-    es.onopen = () => setLiveConnected(true)
+    es.onopen = () => { setLiveConnected(true); refresh() }
     es.onerror = () => {
       setLiveConnected(false)
       es.close()
@@ -171,14 +172,28 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
     })
   }
 
+  async function measureLatency() {
+    const start = performance.now()
+    try {
+      const res = await fetch(`${API_BASE}/health`, { cache: 'no-store' })
+      if (res.ok) setLatencyMs(Math.round(performance.now() - start))
+      else setLatencyMs(null)
+    } catch {
+      setLatencyMs(null)
+    }
+  }
+
   useEffect(() => {
     if (!visible) return
     refresh()
     connectLive()
     connectNotificationCounts()
+    measureLatency()
     const clockId = window.setInterval(() => setNow(Date.now()), 1000)
+    const pingId = window.setInterval(measureLatency, 60000)
     return () => {
       window.clearInterval(clockId)
+      window.clearInterval(pingId)
       liveRef.current?.close()
       notifRef.current?.close()
     }
@@ -263,15 +278,15 @@ export default function WeatherMonitor({ darkMode, visible, onManageCities }: Pr
           <div className="wm-subtitle">{updatedAt ? `更新于: ${updatedAt}` : ''}</div>
         </div>
         <div className="wm-header-actions">
+          <span className={`wm-latency-badge ${liveConnected ? '' : 'disconnected'}`} onClick={measureLatency} title="点击刷新延迟">
+            <span className="wm-latency-label">{liveConnected ? 'WS-mkt' : '已断开'}</span>
+            <span className={`wm-latency-value ${!liveConnected ? 'off' : latencyMs == null ? 'off' : latencyMs < 100 ? 'good' : latencyMs < 300 ? 'warn' : 'bad'}`}>
+              {latencyMs == null ? '--' : `${latencyMs}ms`}
+            </span>
+          </span>
           {onManageCities && (
             <button className="wm-btn" onClick={onManageCities}>城市管理</button>
           )}
-          <span className={`wm-conn ${liveConnected ? 'connected' : 'disconnected'}`}>
-            {liveConnected ? '实时' : '已断开'}
-          </span>
-          <button className="wm-btn" onClick={refresh} disabled={loading}>
-            {loading ? '...' : '刷新'}
-          </button>
         </div>
       </div>
 
