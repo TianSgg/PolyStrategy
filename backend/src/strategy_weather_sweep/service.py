@@ -27,9 +27,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Any, Callable, Optional
 
 from framework.strategy_runtime.event_logger import EventLogger
@@ -54,6 +55,8 @@ from strategy_weather_sweep.internal.sell_failure import (
 logger = logging.getLogger(__name__)
 
 INVALID_TICK_RETRY_WAIT_S = (120.0, 300.0, 600.0)
+BALANCE_LAG_RETRY_WAIT_S = (120.0, 300.0, 600.0)
+DEFAULT_FIRST_SELL_GRACE_MS = 2000
 
 
 # ============================================================
@@ -108,6 +111,8 @@ class SweepTrade:
         self._exit_failure_reported = False
         self._exit_started = False
         self._market_settled_requested = False
+        self._last_buy_fill_ms = 0
+        self._balance_lag_retry_index = 0
 
         # Fill tracking
         self._order_size = Decimal("0")        # original buy order size
@@ -128,28 +133,35 @@ class SweepTrade:
     @staticmethod
     def _utc_str() -> str:
         now = datetime.now(timezone.utc)
-        return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}"
+        return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
     def _snapshot_bbo(self, offset_origin_ms: int) -> dict:
-        book = self._orderbook_ws.get_book(self.token_id) if self._orderbook_ws else None
-        elapsed = int((time.time() * 1000) - offset_origin_ms)
-        utc = self._utc_str()
-        if book:
-            bids = sorted(book.bids.items(), reverse=True)
-            asks = sorted(book.asks.items())
-            return {
-                "utc": utc,
-                "offset_ms": elapsed,
-                "best_bid": bids[0][0] if bids else None,
-                "best_bid_size": bids[0][1] if bids else None,
-                "best_ask": asks[0][0] if asks else None,
-                "best_ask_size": asks[0][1] if asks else None,
-            }
+        snapshot = None
+        if self._orderbook_ws:
+            getter = getattr(self._orderbook_ws, "get_bbo_snapshot", None)
+            if getter:
+                snapshot = getter(self.token_id)
+            if snapshot is None:
+                book = self._orderbook_ws.get_book(self.token_id)
+                if book:
+                    bids = sorted(book.bids.items(), reverse=True)
+                    asks = sorted(book.asks.items())
+                    snapshot = {
+                        "best_bid": bids[0][0] if bids else None,
+                        "best_bid_size": bids[0][1] if bids else None,
+                        "best_ask": asks[0][0] if asks else None,
+                        "best_ask_size": asks[0][1] if asks else None,
+                    }
+        captured_at_ms = int(time.time() * 1000)
         return {
-            "utc": utc,
-            "offset_ms": elapsed,
-            "best_bid": None, "best_bid_size": None,
-            "best_ask": None, "best_ask_size": None,
+            "source": "market_ws",
+            "utc": self._utc_str(),
+            "captured_at_ms": captured_at_ms,
+            "offset_ms": captured_at_ms - offset_origin_ms,
+            "best_bid": snapshot.get("best_bid") if snapshot else None,
+            "best_bid_size": snapshot.get("best_bid_size") if snapshot else None,
+            "best_ask": snapshot.get("best_ask") if snapshot else None,
+            "best_ask_size": snapshot.get("best_ask_size") if snapshot else None,
         }
 
     def _event_phase(self) -> str:
@@ -254,18 +266,18 @@ class SweepTrade:
         return True
 
     @staticmethod
-    def _bbo_from_signal_snapshot(snapshot: dict, offset_origin_ms: int) -> dict:
-        best_bid = snapshot.get("best_bid")
-        best_ask = snapshot.get("best_ask")
-        observed_ms = snapshot.get("observed_at_unix_ms")
+    def _bbo_from_market_snapshot(snapshot: Optional[dict], offset_origin_ms: int) -> dict:
+        captured_ms = snapshot.get("captured_at_ms") if snapshot else None
+        now_ms = int(time.time() * 1000)
         return {
-            "utc": snapshot.get("observed_at", ""),
-            "offset_ms": int(observed_ms - offset_origin_ms) if observed_ms else 0,
-            "best_bid": float(best_bid["price"]) if best_bid else None,
-            "best_bid_size": float(best_bid["size"]) if best_bid else None,
-            "best_ask": float(best_ask["price"]) if best_ask else None,
-            "best_ask_size": float(best_ask["size"]) if best_ask else None,
-            "source": "signal_snapshot",
+            "source": "market_ws",
+            "utc": snapshot.get("utc") if snapshot and snapshot.get("utc") else SweepTrade._utc_str(),
+            "captured_at_ms": captured_ms,
+            "offset_ms": int((captured_ms or now_ms) - offset_origin_ms),
+            "best_bid": snapshot.get("best_bid") if snapshot else None,
+            "best_bid_size": snapshot.get("best_bid_size") if snapshot else None,
+            "best_ask": snapshot.get("best_ask") if snapshot else None,
+            "best_ask_size": snapshot.get("best_ask_size") if snapshot else None,
         }
 
     def _order_obj(
@@ -386,6 +398,77 @@ class SweepTrade:
             "utc": self._utc_str(),
         }, phase=phase)
 
+    def _first_sell_grace_ms(self) -> int:
+        value = self._config.get("clob_sync_grace_ms", DEFAULT_FIRST_SELL_GRACE_MS)
+        try:
+            return max(0, int(value))
+        except Exception:
+            return DEFAULT_FIRST_SELL_GRACE_MS
+
+    def _next_balance_lag_wait_s(self) -> float:
+        index = min(
+            self._balance_lag_retry_index,
+            len(BALANCE_LAG_RETRY_WAIT_S) - 1,
+        )
+        wait_s = BALANCE_LAG_RETRY_WAIT_S[index]
+        self._balance_lag_retry_index += 1
+        return wait_s
+
+    @staticmethod
+    def _parse_balance_lag_sellable(error: Optional[str]) -> Optional[Decimal]:
+        if not error:
+            return None
+        text = error.lower()
+        if "not enough balance" not in text and "not enough allowance" not in text:
+            return None
+
+        balance_match = re.search(r"balance:\s*(\d+)", error)
+        if not balance_match:
+            return None
+
+        matched_match = re.search(r"sum of matched orders:\s*(\d+)", error)
+        balance_raw = int(balance_match.group(1))
+        matched_raw = int(matched_match.group(1)) if matched_match else 0
+        actual = (Decimal(balance_raw) - Decimal(matched_raw)) / Decimal("1000000")
+        if actual <= 0:
+            return None
+        return actual.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    async def _wait_before_first_sell_attempt(
+        self,
+        *,
+        phase: str,
+        trigger: str,
+        exit_origin_ms: int,
+    ) -> None:
+        grace_ms = self._first_sell_grace_ms()
+        if grace_ms <= 0 or self._last_buy_fill_ms <= 0:
+            return
+
+        elapsed_ms = int(time.time() * 1000) - self._last_buy_fill_ms
+        wait_ms = grace_ms - elapsed_ms
+        if wait_ms <= 0:
+            return
+
+        if self._el:
+            self._el.log_step("exit_trigger_deferred", {
+                "trigger": trigger,
+                "reason": "clob_sync_grace",
+                "last_buy_fill_ms": self._last_buy_fill_ms,
+                "grace_ms": grace_ms,
+                "wait_ms": wait_ms,
+                "position_shares": str(self.position_shares),
+                "utc": self._utc_str(),
+                "order": self._order_obj(
+                    self.entry_order_id or self.exit_order_id or "pending",
+                    "SELL",
+                    str(Decimal("1") - self._tick_size),
+                    str(self.position_shares),
+                    exit_origin_ms,
+                ),
+            }, phase=phase)
+        await asyncio.sleep(wait_ms / 1000.0)
+
     # ==================== Entry ====================
 
     async def enter(self, signal: Signal) -> None:
@@ -472,7 +555,10 @@ class SweepTrade:
         )
 
         await risk_task
-        pre_bbo = self._bbo_from_signal_snapshot(orderbook_snapshot, enter_origin_ms)
+        await self.risk.wait_for_first_bbo()
+        pre_bbo = self._bbo_from_market_snapshot(
+            self.risk.first_bbo_snapshot(), enter_origin_ms,
+        )
 
         result = await order_task
         aft_bbo = self._snapshot_bbo(enter_origin_ms)
@@ -570,6 +656,7 @@ class SweepTrade:
         self.position_shares += filled
         self._entry_cost += filled * price
         self._buy_fill_count += 1
+        self._last_buy_fill_ms = int(time.time() * 1000)
 
         if self._el:
             detail: dict[str, Any] = {
@@ -802,7 +889,7 @@ class SweepTrade:
         exit_origin_ms = int(time.time() * 1000)
         failure_tracker = SellFailureTracker()
         invalid_tick_retries = 0
-        balance_settlement_retried = False
+        balance_retry_size: Optional[Decimal] = None
 
         while self.position_shares > 0:
             if self.state not in ("entry", "exit"):
@@ -813,7 +900,16 @@ class SweepTrade:
                 min_order_size, phase="exit", trigger="normal_exit",
             ):
                 return
-            sell_size = self.position_shares
+            if attempt == 1:
+                await self._wait_before_first_sell_attempt(
+                    phase="exit",
+                    trigger="normal_exit",
+                    exit_origin_ms=exit_origin_ms,
+                )
+                if self.state == "closed":
+                    return
+            sell_size = balance_retry_size or self.position_shares
+            balance_retry_size = None
             if attempt == 1:
                 self._update_trade_summary({"exit_order_size": str(sell_size)})
             self._mark_exit_started()
@@ -830,7 +926,6 @@ class SweepTrade:
             # --- Layer 1: sell_order_failed ---
             if result.status in ("failed", "insufficient_balance"):
                 error_signature = classify_sell_error(result.status, result.error)
-                failure = failure_tracker.record(error_signature, result.error)
                 if self._el:
                     self._el.log_step("sell_order_failed", {
                         "status": result.status,
@@ -840,22 +935,48 @@ class SweepTrade:
                             result.order_id, "SELL", str(sell_price), str(sell_size), exit_origin_ms,
                         ),
                         "attempt": attempt,
-                    }, phase="exit")
+                        }, phase="exit")
 
-                if (
-                    error_signature == "insufficient_balance"
-                    and not balance_settlement_retried
-                ):
+                if error_signature == "insufficient_balance":
+                    observed_sellable = self._parse_balance_lag_sellable(result.error)
+                    if (
+                        observed_sellable is not None
+                        and min_order_size is not None
+                        and observed_sellable >= min_order_size
+                    ):
+                        retry_size = min(self.position_shares, observed_sellable)
+                        if retry_size < sell_size:
+                            balance_retry_size = retry_size.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+                            if self._el:
+                                self._el.log_step("balance_settlement_retry", {
+                                    "attempt": attempt,
+                                    "error": result.error,
+                                    "error_signature": error_signature,
+                                    "observed_sellable": str(observed_sellable),
+                                    "retry_size": str(balance_retry_size),
+                                    "wait_ms": 0,
+                                    "reason": "balance_lag_partial_retry",
+                                    "retry_index": self._balance_lag_retry_index,
+                                    "utc": self._utc_str(),
+                                }, phase="exit")
+                            continue
+
+                    wait_s = self._next_balance_lag_wait_s()
                     if self._el:
                         self._el.log_step("balance_settlement_retry", {
                             "attempt": attempt,
                             "error": result.error,
-                            "wait_ms": 3000,
+                            "error_signature": error_signature,
+                            "observed_sellable": str(observed_sellable) if observed_sellable is not None else None,
+                            "wait_ms": int(wait_s * 1000),
+                            "reason": "balance_lag",
+                            "retry_index": self._balance_lag_retry_index,
                             "utc": self._utc_str(),
                         }, phase="exit")
-                    balance_settlement_retried = True
-                    await asyncio.sleep(3.0)
+                    await asyncio.sleep(wait_s)
                     continue
+
+                failure = failure_tracker.record(error_signature, result.error)
 
                 if (
                     error_signature == "invalid_tick_size"
@@ -1232,7 +1353,7 @@ class SweepTrade:
             risk_sell_wait_s = 30
             failure_tracker = SellFailureTracker()
             invalid_tick_retries = 0
-            balance_settlement_retried = False
+            balance_retry_size: Optional[Decimal] = None
 
             while self.position_shares > 0:
                 if self.state == "closed":
@@ -1242,7 +1363,16 @@ class SweepTrade:
                     min_order_size, phase=self._event_phase(), trigger=trigger,
                 ):
                     return
-                sell_size = self.position_shares
+                if risk_attempt == 1:
+                    await self._wait_before_first_sell_attempt(
+                        phase="entry",
+                        trigger=trigger,
+                        exit_origin_ms=risk_origin_ms,
+                    )
+                    if self.state == "closed":
+                        return
+                sell_size = balance_retry_size or self.position_shares
+                balance_retry_size = None
                 sell_start_shares = self.position_shares
                 if risk_attempt == 1:
                     self._update_trade_summary({"exit_order_size": str(sell_size)})
@@ -1259,7 +1389,6 @@ class SweepTrade:
 
                 if result.status in ("failed", "insufficient_balance"):
                     error_signature = classify_sell_error(result.status, result.error)
-                    failure = failure_tracker.record(error_signature, result.error)
                     if self._el:
                         self._el.log_step("sell_order_failed", {
                             "status": result.status,
@@ -1272,20 +1401,46 @@ class SweepTrade:
                             "attempt": risk_attempt,
                         }, phase="exit")
 
-                    if (
-                        error_signature == "insufficient_balance"
-                        and not balance_settlement_retried
-                    ):
+                    if error_signature == "insufficient_balance":
+                        observed_sellable = self._parse_balance_lag_sellable(result.error)
+                        if (
+                            observed_sellable is not None
+                            and min_order_size is not None
+                            and observed_sellable >= min_order_size
+                        ):
+                            retry_size = min(self.position_shares, observed_sellable)
+                            if retry_size < sell_size:
+                                balance_retry_size = retry_size.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+                                if self._el:
+                                    self._el.log_step("balance_settlement_retry", {
+                                        "attempt": risk_attempt,
+                                        "error": result.error,
+                                        "error_signature": error_signature,
+                                        "observed_sellable": str(observed_sellable),
+                                        "retry_size": str(balance_retry_size),
+                                        "wait_ms": 0,
+                                        "reason": "balance_lag_partial_retry",
+                                        "retry_index": self._balance_lag_retry_index,
+                                        "utc": self._utc_str(),
+                                    }, phase="exit")
+                                continue
+
+                        wait_s = self._next_balance_lag_wait_s()
                         if self._el:
                             self._el.log_step("balance_settlement_retry", {
                                 "attempt": risk_attempt,
                                 "error": result.error,
-                                "wait_ms": 3000,
+                                "error_signature": error_signature,
+                                "observed_sellable": str(observed_sellable) if observed_sellable is not None else None,
+                                "wait_ms": int(wait_s * 1000),
+                                "reason": "balance_lag",
+                                "retry_index": self._balance_lag_retry_index,
                                 "utc": self._utc_str(),
                             }, phase="exit")
-                        balance_settlement_retried = True
-                        await asyncio.sleep(3.0)
+                        await asyncio.sleep(wait_s)
                         continue
+
+                    failure = failure_tracker.record(error_signature, result.error)
 
                     if (
                         error_signature == "invalid_tick_size"
