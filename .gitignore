@@ -14,6 +14,7 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # OS
 .DS_Store
@@ -39,4 +40,5 @@ deploy/state/
 *.png
 
 scripts/
+backend/tests/analyze/
 backend/test/.consul-data/
