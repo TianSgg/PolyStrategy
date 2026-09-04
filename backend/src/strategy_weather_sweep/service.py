@@ -551,7 +551,7 @@ class SweepTrade:
                 "risk_ref_mid": str(snap_mid),
                 "risk_threshold": str(snap_threshold),
             }, phase="entry")
-            self._insert_trade_summary(signal)
+            asyncio.create_task(self._insert_trade_summary_async(signal))
 
         # --- Layer 1: buy_order_skipped (no cash) ---
         if actual_shares <= 0:
@@ -583,10 +583,7 @@ class SweepTrade:
         )
 
         await risk_task
-        await self.risk.wait_for_first_bbo()
-        pre_bbo = self._bbo_from_market_snapshot(
-            self.risk.first_bbo_snapshot(), enter_origin_ms,
-        )
+        pre_bbo = self._snapshot_bbo(enter_origin_ms)
 
         result = await order_task
         aft_bbo = self._snapshot_bbo(enter_origin_ms)
@@ -650,6 +647,16 @@ class SweepTrade:
                 "pre_bbo": pre_bbo,
                 "aft_bbo": aft_bbo,
             }, phase="entry")
+            asyncio.create_task(
+                self._log_first_bbo_ready(
+                    phase="entry",
+                    enter_origin_ms=enter_origin_ms,
+                    order_id=result.order_id,
+                    side="BUY",
+                    price=buy_price,
+                    size=actual_shares,
+                )
+            )
         self._update_trade_summary({
             "entry_started_at": datetime.now(timezone.utc).replace(tzinfo=None),
         })
@@ -1792,6 +1799,40 @@ class SweepTrade:
             })
         except Exception:
             logger.exception("Failed to insert trade summary")
+
+    async def _insert_trade_summary_async(self, signal: Signal) -> None:
+        await asyncio.to_thread(self._insert_trade_summary, signal)
+
+    async def _log_first_bbo_ready(
+        self,
+        *,
+        phase: str,
+        enter_origin_ms: int,
+        order_id: str,
+        side: str,
+        price: Decimal,
+        size: Decimal,
+    ) -> None:
+        try:
+            await self.risk.wait_for_first_bbo()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed while waiting for first BBO")
+            return
+
+        if self.state == "closed" or not self._el:
+            return
+
+        self._el.log_step("first_bbo_ready", {
+            "order_id": order_id,
+            "side": side,
+            "price": str(price),
+            "size": str(size),
+            "first_bbo": self.risk.first_bbo_snapshot(),
+            "utc": self._utc_str(),
+            "offset_ms": int(time.time() * 1000 - enter_origin_ms),
+        }, phase=phase)
 
     def _update_trade_summary(self, data: dict[str, Any]) -> None:
         if not self._trade_dao or not self._el or not self._el.event_id:
