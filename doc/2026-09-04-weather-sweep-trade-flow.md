@@ -114,9 +114,6 @@ flowchart TD
     BA -.->|mid 跌破阈值| BB[risk_triggered]
     BB --> BC[快速撤 BUY/SELL] --> BD[地板价 SELL 0.01] --> BE[30 秒等待] --> BF[event_closed close_reason=stop_loss]
 
-    A -.-> CA[market_resolved 信号]
-    CA --> CB[market_settled] --> CC[复用风控快速退出] --> CD[event_closed close_reason=market_settled]
-
     A -.-> DA[配置禁用或人工停止]
     DA --> DB[force_exit_requested] --> DC[撤 BUY/SELL 并回查] --> DD[event_closed close_reason=force_exit]
 ```
@@ -125,7 +122,7 @@ flowchart TD
 
 ### 3.1 信号过滤
 
-只有 `signal_type=sweep` 才会进入交易。`market_resolved` 走市场结算流程，其他信号类型直接忽略。
+只有 `signal_type=sweep` 才会进入交易。`market_resolved` 和其他非 `sweep` 信号一样，在策略分发层直接忽略，不创建 event，也不触发任何交易动作。
 
 策略实例还会过滤：
 
@@ -383,16 +380,17 @@ flowchart TD
 
 如果快速撤单失败，会记录 `buy_cancel_failed` 或 `sell_cancel_failed`。即使地板价 SELL 清仓成功，只要存在撤单失败，最终也会按撤单错误关闭，避免掩盖线上可能仍 LIVE 的订单。
 
-## 7. 市场结算
+## 7. market_resolved 信号
 
-收到 `signal_type=market_resolved` 且 market 匹配时：
+当前策略收到 `signal_type=market_resolved` 后直接忽略：
 
-1. 写 `market_settled`。
-2. 停止风控监控。
-3. 复用风控快速退出路径，trigger 为 `market_settled`。
-4. 最终 `close_reason=market_settled`。
+- 不匹配活跃交易。
+- 不写 `market_settled` step。
+- 不撤销 BUY 或 SELL。
+- 不发地板价 SELL。
+- 不关闭 event。
 
-市场结算时如果仍有仓位，当前会尝试地板价 `SELL @ 0.01`，而不是仅关闭记录。
+该信号仍可能由信号服务产生、存储和通过 WS 广播，但策略侧不消费它。
 
 ## 8. 强制退出
 
@@ -440,14 +438,12 @@ flowchart TD
 | `tick_refresh_failed` | SELL 前三源 tick 刷新失败或不一致。 | `tick_refresh_failed` |
 | `stop_loss` | 风控止损退出。 | `risk_triggered` |
 | `force_exit` | 配置或人工强制关闭。 | `force_exit_requested` |
-| `market_settled` | 市场结算。 | `market_settled` |
-
 `event_closed` 是唯一终态 step。写入后 event 不应再追加过程记录。trade 摘要同步更新 `phase=closed`、`close_reason`、PnL、duration 和 `closed_at`。
 
 ## 10. 当前流程的边界
 
 1. **BUY 与风控并行**：BUY 请求和风控订阅同时启动。风控可能在 BUY 响应尚未返回时触发，这是速度优先设计；该并发窗口依赖后续订单结果处理和撤单路径兜底。
-2. **正常 SELL 无固定超时**：被接受后不会因为时间重挂相同订单，避免丢失队列位置；退出依赖成交、撤单推送、风控、市场结算或强制退出。
-3. **风控优先速度**：风控撤单不回查成交；地板价 SELL 只等 30 秒。它可能以 `stop_loss` 或 `market_settled` 关闭且仍有持仓。
+2. **正常 SELL 无固定超时**：被接受后不会因为时间重挂相同订单，避免丢失队列位置；退出依赖成交、撤单推送、风控或强制退出。
+3. **风控优先速度**：风控撤单不回查成交；地板价 SELL 只等 30 秒。它可能以 `stop_loss` 关闭且仍有持仓。
 4. **强制退出不新发卖单**：它只撤已有订单并回查。若有剩余持仓，会以 `force_exit` 关闭，仓位需要后续人工或恢复机制处理。
 5. **三源确认成功写三条**：一次 tick 变化不会产生额外 `tick_detect` step，只产生 `market_ws`、`tick_size_api`、`book_api` 三条 `tick_verified`。

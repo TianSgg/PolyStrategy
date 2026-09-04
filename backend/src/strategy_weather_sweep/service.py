@@ -113,7 +113,6 @@ class SweepTrade:
         self._exit_filled_shares = Decimal("0")
         self._exit_failure_reported = False
         self._exit_started = False
-        self._market_settled_requested = False
         self._last_buy_fill_ms = 0
         self._balance_lag_retry_index = 0
         self._normal_sell_cancelled = False
@@ -1677,26 +1676,6 @@ class SweepTrade:
         await self.risk.stop()
         self._close("force_exit", phase=self._event_phase())
 
-    async def market_settled(self, signal: Signal) -> None:
-        """Close this trade after its market reaches a terminal state."""
-        if self.state == "closed" or self._market_settled_requested:
-            return
-        self._market_settled_requested = True
-
-        if self._entry_timer and not self._entry_timer.done():
-            self._entry_timer.cancel()
-        if self._el:
-            self._el.log_step("market_settled", {
-                "signal_id": signal.signal_id,
-                "market_slug": signal.market_slug,
-                "event_slug": signal.payload.get("event_slug"),
-                "reason": signal.payload.get("reason"),
-                "position_shares": str(self.position_shares),
-                "utc": self._utc_str(),
-            }, phase=self._event_phase())
-        await self.risk.stop()
-        await self._risk_exit(trigger="market_settled")
-
     # ==================== Stop ====================
 
     async def stop(self) -> None:
@@ -1916,13 +1895,6 @@ class SweepStrategy:
     # ==================== Signal Dispatch ====================
 
     async def on_signal(self, signal: Signal) -> None:
-        if signal.signal_type == "market_resolved":
-            if self._draining:
-                return
-            for trade in list(self._trades.values()):
-                if trade.market_slug == signal.market_slug:
-                    await trade.market_settled(signal)
-            return
         if signal.signal_type != "sweep":
             return
         if self._draining:

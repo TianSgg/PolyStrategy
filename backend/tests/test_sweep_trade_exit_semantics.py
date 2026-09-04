@@ -321,42 +321,12 @@ def test_no_cash_entry_is_skipped_not_failed():
     assert event_closed["close_reason"] == "no_cash"
 
 
-def test_market_settled_closes_trade_without_position():
-    trade_dao = FakeTradeDAO()
-    trade, _, event_logger, closed = make_trade(trade_dao=trade_dao)
-    event_logger.start_event(
-        signal_id="signal-1", token_id="token", market_slug="market",
-    )
-    signal = Signal(
-        signal_id="market-resolved-1",
-        signal_type="market_resolved",
-        token_id="winning-token",
-        market_slug="market",
-        occurred_at_ms=0,
-        source="weather_orderbook",
-        payload={"event_slug": "weather-event", "reason": "resolved"},
-    )
-
-    run(trade.market_settled(signal))
-
-    assert trade.state == "closed"
-    assert closed == ["token"]
-    assert close_reason(event_logger) == "market_settled"
-    assert ("entry", "market_settled") in [
-        (phase, step) for phase, step, _ in event_logger.steps
-    ]
-
-
-def test_strategy_routes_market_settled_by_market_slug():
+def test_strategy_ignores_market_resolved_signal():
     strategy = SweepStrategy()
     strategy._draining = False
-    settled = []
 
     class FakeTrade:
         market_slug = "market"
-
-        async def market_settled(self, signal):
-            settled.append(signal.signal_id)
 
     strategy._trades = {"token": FakeTrade()}
     signal = Signal(
@@ -370,7 +340,8 @@ def test_strategy_routes_market_settled_by_market_slug():
 
     run(strategy.on_signal(signal))
 
-    assert settled == ["market-resolved-1"]
+    assert strategy.active_trade_count == 1
+    assert strategy.active_tokens == ["token"]
 
 
 def test_insufficient_balance_entry_is_skipped_not_failed():
