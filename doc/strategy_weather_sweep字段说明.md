@@ -243,7 +243,7 @@ ORDER BY sequence_no ASC;
 | `outcome` | Polymarket outcome：`yes` / `no`。 |
 | `close_reason` | 摘要级关闭原因，使用平铺枚举。 |
 | `entry_order_size` / `entry_price` / `entry_shares` / `entry_cost` / `entry_order_id` / `entered_at` | 入场委托与累计成交。 |
-| `exit_order_size` / `exit_price` / `exit_shares` / `exit_revenue` / `exit_order_id` / `exited_at` | 退出委托与累计卖出。 |
+| `exit_order_size` / `exit_price` / `exit_shares` / `exit_revenue` / `exit_order_id` / `exited_at` | 退出委托与累计卖出；`exit_order_size` 和 `exit_order_id` 表示最近一次被接受的 SELL，`exit_shares` 表示累计已卖出。余额滞后时可先卖出部分仓位，再为剩余仓位挂新单。 |
 | `pnl` / `pnl_pct` | 有入场成本和退出收入时计算。 |
 | `duration_ms` / `started_at` / `closed_at` | 生命周期时间。 |
 

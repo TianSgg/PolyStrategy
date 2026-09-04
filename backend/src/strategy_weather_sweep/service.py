@@ -118,6 +118,7 @@ class SweepTrade:
         self._balance_lag_retry_index = 0
         self._normal_sell_cancelled = False
         self._normal_sell_matched: dict[str, Decimal] = {}
+        self._normal_sell_order_sizes: dict[str, Decimal] = {}
 
         # Fill tracking
         self._order_size = Decimal("0")        # original buy order size
@@ -1081,6 +1082,11 @@ class SweepTrade:
             self.exit_order_id = result.order_id
             sell_fill_count = 0
             sell_placed_ms = int(time.time() * 1000)
+            self._normal_sell_order_sizes[result.order_id] = sell_size
+            self._update_trade_summary({
+                "exit_order_size": str(sell_size),
+                "exit_order_id": result.order_id,
+            })
 
             if self._el:
                 self._el.log_step("sell_order_placed", {
@@ -1107,6 +1113,7 @@ class SweepTrade:
             # --- Layer 3: sell_complete (all filled immediately) ---
             if result.status == "filled":
                 self.exit_order_id = None
+                self._normal_sell_order_sizes.pop(result.order_id, None)
                 if self.position_shares <= 0:
                     self._record_sell_complete(result.order_id, sell_fill_count, sell_placed_ms)
                     await self.risk.stop()
@@ -1137,6 +1144,7 @@ class SweepTrade:
 
             user_ws.unwatch_order(result.order_id)
             self._normal_sell_matched.pop(result.order_id, None)
+            self._normal_sell_order_sizes.pop(result.order_id, None)
             self.exit_order_id = None
 
             if self.state == "closed":
@@ -1151,6 +1159,12 @@ class SweepTrade:
                     await self.risk.stop()
                     self._close("normal_exit", phase="exit")
                     return
+                continue
+
+            # A balance-lag retry can place an order for only part of the
+            # position. When that order reaches its own size, continue the
+            # loop and sell whatever position remains.
+            if self.position_shares > 0:
                 continue
 
             # 全部成交
@@ -1214,7 +1228,14 @@ class SweepTrade:
         )
         self._record_sell_fill(event.order_id, event.fill_size, event.fill_price,
                                source=event.source, trade_id=event.trade_id)
-        if self.position_shares <= 0 and hasattr(self, '_sell_done_event'):
+        order_size = self._normal_sell_order_sizes.get(event.order_id)
+        order_completed = (
+            order_size is not None
+            and event.total_matched >= order_size
+        )
+        if (
+            self.position_shares <= 0 or order_completed
+        ) and hasattr(self, '_sell_done_event'):
             self._sell_done_event.set()
 
     async def _on_normal_sell_cancel(self, event: Any) -> None:
@@ -1228,6 +1249,7 @@ class SweepTrade:
                 source="user_ws_cancel",
             )
         self._normal_sell_matched.pop(event.order_id, None)
+        self._normal_sell_order_sizes.pop(event.order_id, None)
         if self._el:
             self._el.log_step("sell_cancelled", {
                 "order_id": event.order_id,

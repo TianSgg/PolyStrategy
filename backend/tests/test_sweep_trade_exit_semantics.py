@@ -69,6 +69,26 @@ class FakeUserWS:
             })()
         )
 
+    async def emit_fill(
+        self,
+        order_id,
+        fill_size,
+        total_matched,
+        price=Decimal("0.999"),
+    ):
+        watch = self.watches[order_id]
+        await watch["on_fill"](FillEvent(
+            order_id=order_id,
+            token_id=watch["token_id"],
+            side="SELL",
+            fill_size=Decimal(str(fill_size)),
+            fill_price=Decimal(str(price)),
+            total_matched=Decimal(str(total_matched)),
+            trade_id=None,
+            source="ws_order_update",
+            timestamp_ms=0,
+        ))
+
 
 class FakeExecutor:
     available_cash = Decimal("1000")
@@ -629,6 +649,79 @@ def test_normal_sell_stays_live_until_fill_or_cancellation():
     assert ("exit", "sell_cancelled") in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
+
+
+def test_balance_lag_partial_sell_order_completes_then_retries_remaining_position():
+    failed = OrderResult(
+        order_id="sell-settlement",
+        status="failed",
+        filled_size="0",
+        error=(
+            "not enough balance / allowance: the balance is not enough "
+            "-> balance: 10900000, order amount: 20000000"
+        ),
+    )
+    partial_live = OrderResult(
+        order_id="sell-partial",
+        status="live",
+        filled_size="0",
+        clob_status="live",
+    )
+    remaining_filled = OrderResult(
+        order_id="sell-remaining",
+        status="filled",
+        filled_size="9.1",
+        clob_status="matched",
+        clob_taking="9.0909",
+        clob_making="9.1",
+    )
+    trade_dao = FakeTradeDAO()
+    trade, executor, event_logger, closed = make_trade(
+        sell_results=[failed, partial_live, remaining_filled],
+        orderbook_ws=FakeOrderBookWS(min_order_size=Decimal("0.01")),
+        trade_dao=trade_dao,
+    )
+    trade.position_shares = Decimal("20")
+    trade._tick_size = Decimal("0.001")
+
+    async def scenario():
+        task = asyncio.create_task(trade._start_normal_exit())
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if "sell-partial" in executor.user_ws.watches:
+                break
+        else:
+            raise AssertionError("partial SELL order was not watched")
+
+        await executor.user_ws.emit_fill(
+            "sell-partial",
+            fill_size=Decimal("10.9"),
+            total_matched=Decimal("10.9"),
+        )
+        await task
+
+    run(scenario())
+
+    assert [order["size"] for order in executor.placed_orders] == ["20", "10.90", "9.1"]
+    assert trade.state == "closed"
+    assert closed == ["token"]
+    assert close_reason(event_logger) == "normal_exit"
+    assert "sell-partial" in executor.user_ws.unwatched
+    assert trade.position_shares == Decimal("0")
+
+    placed_sizes = [
+        detail["order"]["size"]
+        for _, step, detail in event_logger.steps
+        if step == "sell_order_placed"
+    ]
+    assert placed_sizes == ["10.90", "9.1"]
+
+    exit_order_updates = [
+        data["exit_order_size"]
+        for _, data in trade_dao.updates
+        if "exit_order_size" in data
+    ]
+    assert exit_order_updates == ["20", "10.90", "9.1"]
 
 
 def test_risk_exit_cancels_orders_and_uses_floor_price_without_tick_validation():

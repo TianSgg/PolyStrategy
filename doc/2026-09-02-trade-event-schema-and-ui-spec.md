@@ -148,7 +148,7 @@ trade 表：
 |---|---|
 | `exit_started_at` | 开始卖出的时间 |
 | `exit_order_id` | 卖单 ID |
-| `exit_order_size` | 卖单委托量 |
+| `exit_order_size` | 最近一次被 CLOB 接受的 SELL 委托量；余额滞后时可先卖出部分仓位，再为剩余仓位挂新单 |
 | `exit_price` | 卖出均价或主成交价 |
 | `exit_shares` | 累计卖出份额 |
 | `exit_revenue` | 累计卖出收入 |
