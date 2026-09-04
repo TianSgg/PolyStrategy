@@ -41,7 +41,7 @@ function formatTimestamp(value: string | null): string {
     const fmt = (tz: string) => new Intl.DateTimeFormat('zh-CN', {
       timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-    }).format(d).replace(/\//g, '-')
+    }).format(d).replace(/\//g, '-') + `.${String(d.getMilliseconds()).padStart(3, '0')}`
     const local = fmt(Intl.DateTimeFormat().resolvedOptions().timeZone)
     const utc = fmt('UTC')
     return `${local} (UTC ${utc})`
