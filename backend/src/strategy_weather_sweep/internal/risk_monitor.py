@@ -48,6 +48,7 @@ class SweepRiskMonitor:
         # Event loop-bound objects are created when monitoring starts, not in __init__.
         self._first_bbo_event: Optional[asyncio.Event] = None
         self._first_bbo_snapshot: Optional[dict[str, Any]] = None
+        self._started_at_ms: Optional[int] = None
 
     @property
     def is_active(self) -> bool:
@@ -67,6 +68,10 @@ class SweepRiskMonitor:
             return None
         return self._reference_mid * self._stop_loss_ratio
 
+    @property
+    def started_at_ms(self) -> Optional[int]:
+        return self._started_at_ms
+
     async def start(self, token_id: str, orderbook_snapshot: dict) -> None:
         """激活风控：从信号时刻的订单簿快照计算参考 mid price，订阅 BBO。"""
         mid = self._extract_mid_price(orderbook_snapshot)
@@ -81,12 +86,14 @@ class SweepRiskMonitor:
         self._first_bbo_event = asyncio.Event()
         self._first_bbo_event.clear()
         self._first_bbo_snapshot = None
+        self._started_at_ms = None
 
         self._sub_id = await self._orderbook_ws.subscribe(
             asset_id=token_id,
             on_bbo=self._on_bbo,
             on_tick=self._on_tick,
         )
+        self._started_at_ms = int(time.time() * 1000)
         self._capture_first_bbo(token_id)
 
         logger.info(

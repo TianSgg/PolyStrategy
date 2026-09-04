@@ -33,9 +33,9 @@
 |---|---|---|
 | `pre_bbo` | CLOB HTTP `/book?token_id=...` | 与 BUY 并行发出的订单簿观测，用来观察下单前 BBO。不参与交易决策。 |
 | `aft_bbo` | CLOB HTTP `/book?token_id=...` | BUY 被 CLOB 接受后发出的补充订单簿观测。不参与交易决策。 |
-| `first_bbo_ready` | 风控订阅的 Market WS | 风控收到首个 BBO 后记录。它是风控可用性观测，不是 `pre_bbo`。 |
+| `risk_started` | 风控订阅的 Market WS | 风控启动并记录首个 BBO 状态。它是风控可用性观测，不是 `pre_bbo`。 |
 
-`pre_bbo` 和 `aft_bbo` 合并写在一条 `bbo_snapshot` step 中；`first_bbo_ready` 是单独 step。
+`pre_bbo` 和 `aft_bbo` 作为精简快照写入 `buy_order_placed`；`risk_started` 记录风控启动和首个 BBO 状态。
 
 ### 1.3 tick 的候选触发与三源确认
 
@@ -77,13 +77,14 @@ flowchart TD
     H -->|余额不足| K[buy_order_skipped] --> L[event_closed close_reason=no_cash]
     H -->|filled partial live| M[buy_order_placed]
     M --> N[aft_bbo 请求]
-    M --> O[bbo_snapshot]
+    M --> O[buy_order_placed 内含 pre_bbo/aft_bbo]
+    M --> P[risk_started 内含首个 BBO 状态]
 
-    H -->|filled| P[buy_filled] --> Q[entry_complete]
-    H -->|partial 或 live| R[User WS 监听 BUY 成交]
-    R --> S{entry_wait_ms 内状态}
-    S -->|全部成交| T[buy_filled] --> Q
-    S -->|超时| U[撤 BUY 并回查]
+    H -->|filled| Q[buy_filled] --> R[entry_complete]
+    H -->|partial 或 live| S[User WS 监听 BUY 成交]
+    S --> T{entry_wait_ms 内状态}
+    T -->|全部成交| U[buy_filled] --> Q
+    T -->|超时| V[撤 BUY 并回查]
     U -->|无成交| V[entry_timeout] --> W[event_closed close_reason=timeout_no_fill]
     U -->|部分成交| X[entry_timeout] --> Y[确定最终持仓]
 
@@ -167,18 +168,17 @@ BUY 请求发出时，同时启动：
 
 BUY 返回后：
 
-1. 先写 BUY 结果 step，保证 BBO 观测不会拉晚 `buy_order_placed` 的时间。
-2. 如果 BUY 被接受，再发起 `aft_bbo` 请求。
-3. 等待 `pre_bbo` 和 `aft_bbo`，合并写 `bbo_snapshot`。
-4. 另有异步任务等待风控 Market WS 首个 BBO，写 `first_bbo_ready`。
+1. 如果 BUY 被接受，再发起 `aft_bbo` 请求。
+2. 等待 `pre_bbo` 和 `aft_bbo`，将精简后的两个快照写入 `buy_order_placed`。
+3. 另有任务等待风控 Market WS 首个 BBO，将风控启动和首个 BBO 状态合并写入 `risk_started`。
 
 ### 3.4 BUY 结果分支
 
 | CLOB 结果 | event step | 后续 |
 |---|---|---|
-| `matched` 且全部成交 | `buy_order_placed` + `buy_filled` + `entry_complete` | 进入 tick/SELL 判断。 |
-| `matched` 且部分成交 | `buy_order_placed` + `buy_filled` | 记录已成交部分，继续 User WS 监听。 |
-| `live` | `buy_order_placed` | 继续 User WS 监听和 entry 超时计时。 |
+| `matched` 且全部成交 | `buy_order_placed` + `risk_started` + `buy_filled` + `entry_complete` | 进入 tick/SELL 判断。 |
+| `matched` 且部分成交 | `buy_order_placed` + `risk_started` + `buy_filled` | 记录已成交部分，继续 User WS 监听。 |
+| `live` | `buy_order_placed` + `risk_started` | 继续 User WS 监听和 entry 超时计时。 |
 | 本地余额不足 | `buy_order_skipped(status=insufficient_balance)` | 停止风控，`event_closed(no_cash)`。 |
 | CLOB 拒绝或请求异常 | `buy_order_failed` | 停止风控，`event_closed(buy_placement_failed)`。 |
 

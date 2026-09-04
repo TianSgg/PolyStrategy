@@ -65,37 +65,27 @@ ORDER BY sequence_no ASC;
 
 ### 4.3 BBO 快照
 
-`pre_bbo` / `aft_bbo` 是 `bbo_snapshot` step 下的两个快照对象，均来自 CLOB `/book?token_id=...` HTTP 接口，与 Market WS 风控观测解耦：
+`pre_bbo` / `aft_bbo` 是 `buy_order_placed` step 下的两个精简快照对象，均来自 CLOB `/book?token_id=...` HTTP 接口，与 Market WS 风控观测解耦：
 
-- `pre_bbo`：与 BUY 请求并行发出的 `/book` 快照。它通常早于 BUY 响应，但不保证一定早于；`arrived_before_order_response` 表示实际比较结果。
+- `pre_bbo`：与 BUY 请求并行发出的 `/book` 快照。它通常早于 BUY 响应，但不保证一定早于；`offset_ms` 表示相对收到信号时刻的偏移。
 - `aft_bbo`：BUY 被 CLOB 接受后发出的 `/book` 快照；BUY 失败或因余额不足跳过时不产生。
-- `first_bbo_ready`：风控 Market WS 收到首个 BBO 的独立观测 step，不参与 `pre_bbo` / `aft_bbo`。
+- `risk_started`：风控订阅启动并记录首个 BBO 状态的 step，不参与 `pre_bbo` / `aft_bbo`。
 
 | 字段 | 说明 |
 |---|---|
-| `status` | `ok` 或 `error`。 |
-| `source` | 固定为 `clob_book_api`。 |
-| `token_id` | 查询的 CLOB token ID。 |
 | `best_bid` / `best_ask` | 最优买价 / 卖价；空侧为 `null`。 |
 | `best_bid_size` / `best_ask_size` | 最优价位数量。 |
 | `tick_size` | `/book` 返回的最小价格间隔。 |
-| `book_hash` / `server_timestamp` | CLOB 订单簿原始校验值和时间戳。 |
-| `request_started_at_ms` | HTTP 请求发出的本机 UTC 毫秒时间。 |
-| `response_at_ms` / `captured_at_ms` | HTTP 响应到达的本机 UTC 毫秒时间。 |
-| `latency_ms` | 本机测得的 HTTP 往返耗时。 |
 | `utc` | 快照时间。 |
 | `offset_ms` | 相对信号源时间的偏移。 |
-| `arrived_before_order_response` | 仅 `pre_bbo.status=ok` 时存在，表示该响应是否早于 BUY 响应。 |
-| `error` | `status=error` 时的错误说明。 |
 
-`bbo_snapshot` 顶层字段：
+`risk_started` 事件字段：
 
 | 字段 | 说明 |
 |---|---|
-| `order_accepted` | BUY 是否被 CLOB 接受。 |
-| `order_response_at_ms` | BUY 响应到达本机的 UTC 毫秒时间。 |
-| `pre_bbo` / `aft_bbo` | 上述两个 HTTP 快照对象。 |
-| `utc` / `offset_ms` | BBO 观测汇总 step 的写入时间和相对信号源时间。 |
+| `risk` | 风控启动状态、参考 mid、止损阈值和启动时间。 |
+| `first_bbo` | 首个 Market WS BBO 的状态和盘口；状态为 `ready` 或 `timeout`。 |
+| `utc` / `offset_ms` | 事件写入时间和相对信号源时间的偏移。 |
 
 ### 4.4 CLOB 原始响应
 
@@ -174,8 +164,8 @@ ORDER BY sequence_no ASC;
 | `entry` | `signal_received` | `signal_id`、`token_id`、`city`、`direction`、`utc`、`risk_ref_mid`、`risk_threshold`。 |
 | `entry` | `buy_order_skipped` | `status=no_cash`、`requested_size`、`available_cash`。 |
 | `entry` | `buy_order_failed` | `status`、`error`、`order`、`order_response_at_ms`。 |
-| `entry` | `buy_order_placed` | `order`、`clob_status`、`clob_taking`、`clob_making`、`order_response_at_ms`。 |
-| `entry` | `bbo_snapshot` | `order_accepted`、`order_response_at_ms`、`pre_bbo`、`aft_bbo`。 |
+| `entry` | `buy_order_placed` | `order`、`clob_status`、`order_response_at_ms`、`pre_bbo`、`aft_bbo`。 |
+| `entry` | `risk_started` | `risk`、`first_bbo`、`utc`、`offset_ms`。 |
 | `entry` | `buy_filled` | `order_id`、`filled_size`、`fill_price`、`total_position`、`source`、`trade_id`。 |
 | `entry` | `entry_complete` | `order_id`、`total_filled`、`total_position`、`fill_count`、`elapsed_ms`。 |
 | `entry` | `entry_timeout` | `wait_ms`、`cancelled_order_id`、`final_position`、`unfilled_size`。 |

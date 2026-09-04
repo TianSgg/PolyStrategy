@@ -319,10 +319,9 @@ trade 表：
 |---|---|---|
 | `entry` | `signal_received` | 收到一个符合条件的交易信号，创建本次 event。 |
 | `entry` | `buy_order_skipped` | 策略决定不发起 BUY，例如账户可用资金不足；这不是下单接口错误。 |
-| `entry` | `buy_order_placed` | BUY 订单被 CLOB 接受，记录订单信息和下单结果。 |
 | `entry` | `buy_order_failed` | BUY 订单没有被接受，或下单请求执行失败。 |
-| `entry` | `bbo_snapshot` | 记录与 BUY 并行的 CLOB `/book` 快照，以及 BUY 被接受后的补充快照。 |
-| `entry` | `first_bbo_ready` | 风控 Market WS 收到首个 BBO；该观测与 `bbo_snapshot` 分离。 |
+| `entry` | `buy_order_placed` | 记录订单信息、下单结果，以及精简后的 `pre_bbo` / `aft_bbo` 快照。 |
+| `entry` | `risk_started` | 记录风控启动状态和首个 Market WS BBO 的 `ready` / `timeout` 状态。 |
 | `entry` | `buy_filled` | BUY 订单发生一笔成交，记录本次成交量、成交价和累计持仓。 |
 | `entry` | `fill_reconciled` | 通过撤单回查、REST 或重连校准发现了内存中遗漏的成交。 |
 | `entry` | `entry_complete` | BUY 订单已经全部成交，或入场持仓已经确定。 |

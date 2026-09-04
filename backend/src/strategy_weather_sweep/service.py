@@ -136,8 +136,12 @@ class SweepTrade:
     # ==================== Helpers ====================
 
     @staticmethod
-    def _utc_str() -> str:
-        now = datetime.now(timezone.utc)
+    def _utc_str(epoch_ms: Optional[int] = None) -> str:
+        now = (
+            datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+            if epoch_ms is not None
+            else datetime.now(timezone.utc)
+        )
         return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
     def _event_phase(self) -> str:
@@ -258,14 +262,20 @@ class SweepTrade:
 
     def _order_obj(
         self, order_id: str, side: str, price: str, size: str, offset_origin_ms: int,
+        occurred_at_ms: Optional[int] = None,
     ) -> dict:
+        timestamp_ms = (
+            occurred_at_ms
+            if occurred_at_ms is not None
+            else int(time.time() * 1000)
+        )
         return {
             "order_id": order_id,
             "side": side,
             "price": price,
             "size": size,
-            "utc": self._utc_str(),
-            "offset_ms": int((time.time() * 1000) - offset_origin_ms),
+            "utc": self._utc_str(timestamp_ms),
+            "offset_ms": timestamp_ms - offset_origin_ms,
         }
 
     @staticmethod
@@ -568,17 +578,35 @@ class SweepTrade:
                 self._book_bbo_client.fetch_bbo(self.token_id, enter_origin_ms)
             )
 
-        # Order result is logged first so BBO observation cannot pull the success timestamp later.
+        await risk_task
+        if order_accepted:
+            pre_bbo = await pre_bbo_task
+            aft_bbo = await aft_bbo_task if aft_bbo_task is not None else None
+        else:
+            # Failed/skipped orders do not expose BBO details; do not let an
+            # unrelated /book timeout delay their terminal event.
+            pre_bbo_task.cancel()
+            try:
+                await pre_bbo_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("Discarded pre-BBO result for rejected BUY", exc_info=True)
+            pre_bbo = None
+            aft_bbo = None
+
+        # Keep the order response timestamp independent from BBO request latency.
         if self._el:
             if order_accepted:
                 self._el.log_step("buy_order_placed", {
                     "order": self._order_obj(
                         result.order_id, "BUY", str(buy_price), str(actual_shares), enter_origin_ms,
+                        occurred_at_ms=order_response_ms,
                     ),
                     "clob_status": result.clob_status,
-                    "clob_taking": result.clob_taking,
-                    "clob_making": result.clob_making,
                     "order_response_at_ms": order_response_ms,
+                    "pre_bbo": self._compact_bbo(pre_bbo),
+                    "aft_bbo": self._compact_bbo(aft_bbo),
                 }, phase="entry")
             elif result.status == "insufficient_balance":
                 self._el.log_step("buy_order_skipped", {
@@ -594,30 +622,14 @@ class SweepTrade:
                     **self._order_error_detail(result, error_signature=error_signature),
                     "order": self._order_obj(
                         result.order_id, "BUY", str(buy_price), str(actual_shares), enter_origin_ms,
+                        occurred_at_ms=order_response_ms,
                     ),
                     "order_response_at_ms": order_response_ms,
                 }, phase="entry")
 
-        await risk_task
-        pre_bbo = await pre_bbo_task
-        if pre_bbo.get("status") == "ok":
-            pre_bbo["arrived_before_order_response"] = (
-                pre_bbo["response_at_ms"] <= order_response_ms
-            )
-        aft_bbo = await aft_bbo_task if aft_bbo_task is not None else None
-        if self._el:
-            self._el.log_step("bbo_snapshot", {
-                "order_accepted": order_accepted,
-                "order_response_at_ms": order_response_ms,
-                "pre_bbo": pre_bbo,
-                "aft_bbo": aft_bbo,
-                "utc": self._utc_str(),
-                "offset_ms": int(time.time() * 1000) - enter_origin_ms,
-            }, phase="entry")
-
         # Track order metadata for entry_complete
         self._order_size = actual_shares
-        self._order_placed_ms = int(time.time() * 1000)
+        self._order_placed_ms = order_response_ms
         self._update_trade_summary({"entry_order_size": str(actual_shares)})
 
         # --- Layer 1: buy_order_skipped (balance became insufficient after sizing) ---
@@ -644,9 +656,10 @@ class SweepTrade:
 
         # --- Layer 1: buy_order_placed (CLOB accepted) ---
         self.entry_order_id = result.order_id
+        risk_started_task = None
         if self._el:
-            asyncio.create_task(
-                self._log_first_bbo_ready(
+            risk_started_task = asyncio.create_task(
+                self._log_risk_started(
                     phase="entry",
                     enter_origin_ms=enter_origin_ms,
                     order_id=result.order_id,
@@ -1802,7 +1815,21 @@ class SweepTrade:
     async def _insert_trade_summary_async(self, signal: Signal) -> None:
         await asyncio.to_thread(self._insert_trade_summary, signal)
 
-    async def _log_first_bbo_ready(
+    @staticmethod
+    def _compact_bbo(snapshot: Optional[dict[str, Any]]) -> dict[str, Any]:
+        """Keep entry event BBO details limited to the fields used for diagnosis."""
+        snapshot = snapshot or {}
+        return {
+            "utc": snapshot.get("utc"),
+            "best_ask": snapshot.get("best_ask"),
+            "best_ask_size": snapshot.get("best_ask_size"),
+            "best_bid": snapshot.get("best_bid"),
+            "best_bid_size": snapshot.get("best_bid_size"),
+            "offset_ms": snapshot.get("offset_ms"),
+            "tick_size": snapshot.get("tick_size"),
+        }
+
+    async def _log_risk_started(
         self,
         *,
         phase: str,
@@ -1813,24 +1840,45 @@ class SweepTrade:
         size: Decimal,
     ) -> None:
         try:
-            await self.risk.wait_for_first_bbo()
+            ready = await self.risk.wait_for_first_bbo()
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Failed while waiting for first BBO")
             return
 
-        if self.state == "closed" or not self._el:
+        if not self._el:
             return
 
-        self._el.log_step("first_bbo_ready", {
+        snapshot = self.risk.first_bbo_snapshot() if ready else None
+        now_ms = int(time.time() * 1000)
+        started_at_ms = getattr(self.risk, "started_at_ms", None)
+        reference_mid = getattr(self.risk, "reference_mid", None)
+        threshold = getattr(self.risk, "threshold", None)
+        self._el.log_step("risk_started", {
             "order_id": order_id,
             "side": side,
             "price": str(price),
             "size": str(size),
-            "first_bbo": self.risk.first_bbo_snapshot(),
+            "risk": {
+                "status": "started" if started_at_ms is not None else "not_started",
+                "token_id": self.token_id,
+                "reference_mid": str(reference_mid) if reference_mid is not None else None,
+                "threshold": str(threshold) if threshold is not None else None,
+                "stop_loss_ratio": str(self._config.get("stop_loss_ratio", "0.60")),
+                "started_at_ms": started_at_ms,
+            },
+            "first_bbo": {
+                "status": "ready" if ready else "timeout",
+                "ready_at_ms": snapshot.get("captured_at_ms") if snapshot else None,
+                "utc": snapshot.get("utc") if snapshot else None,
+                "best_bid": snapshot.get("best_bid") if snapshot else None,
+                "best_bid_size": snapshot.get("best_bid_size") if snapshot else None,
+                "best_ask": snapshot.get("best_ask") if snapshot else None,
+                "best_ask_size": snapshot.get("best_ask_size") if snapshot else None,
+            },
             "utc": self._utc_str(),
-            "offset_ms": int(time.time() * 1000 - enter_origin_ms),
+            "offset_ms": now_ms - enter_origin_ms,
         }, phase=phase)
 
     def _update_trade_summary(self, data: dict[str, Any]) -> None:
@@ -1859,12 +1907,13 @@ class SweepStrategy:
         cls,
         config_data: dict[str, Any],
         orderbook_ws: Any,
-        book_bbo_client: ClobBookBboClient,
+        book_bbo_client: Optional[ClobBookBboClient] = None,
         tick_size_service: Optional[TickSizeService] = None,
     ) -> SweepStrategy:
         """工厂方法 — 根据一条 DB 配置创建完整策略实例。"""
         proxy_wallet = config_data["proxy_wallet"]
         tick_size_service = tick_size_service or TickSizeService()
+        book_bbo_client = book_bbo_client or ClobBookBboClient()
 
         executor = OrderExecutor(
             proxy_wallet=proxy_wallet,

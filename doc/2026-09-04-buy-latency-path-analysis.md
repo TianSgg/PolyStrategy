@@ -107,12 +107,12 @@ await asyncio.wait_for(self._first_bbo_event.wait(), timeout=2.0)
 ### 6.2 把 trade 摘要改成后台写，或挪到下单之后
 如果目标是压 BUY 首单延迟，`_insert_trade_summary(signal)` 不该卡在下单前。
 
-### 6.3 不要让 `wait_for_first_bbo()` 影响买单成功记录
+### 6.3 `wait_for_first_bbo()` 与事件记录
 更合理的做法是：
 
-- `buy_order_placed` 先写
-- `pre_bbo` / `aft_bbo` 之后补充
-- `first_bbo_ready` 可单独作为辅助 step
+- `order_response_at_ms` 记录真实 BUY 响应时间，不受后续等待影响
+- `pre_bbo` / `aft_bbo` 按约定嵌入 `buy_order_placed`
+- `risk_started` 合并记录风控启动和首个 BBO 的 `ready` / `timeout` 状态
 
 ## 7. 结论
 

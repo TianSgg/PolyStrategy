@@ -379,14 +379,47 @@ def test_insufficient_balance_entry_is_skipped_not_failed():
         (phase, step) for phase, step, _ in event_logger.steps
     ]
     assert len(book_bbo_client.calls) == 1
-    bbo_step = next(
-        detail for _, step, detail in event_logger.steps if step == "bbo_snapshot"
+    assert not any(step == "bbo_snapshot" for _, step, _ in event_logger.steps)
+
+
+def test_rejected_buy_does_not_wait_for_unused_pre_bbo():
+    class BlockingBboClient:
+        def __init__(self):
+            self.cancelled = False
+
+        async def fetch_bbo(self, token_id, offset_origin_ms):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    bbo_client = BlockingBboClient()
+    trade, _, event_logger, closed = make_trade(book_bbo_client=bbo_client)
+    trade._executor.sell_result = OrderResult(
+        order_id="buy-1",
+        status="failed",
+        filled_size="0",
+        error="HTTP 500",
     )
-    assert bbo_step["order_accepted"] is False
-    assert bbo_step["aft_bbo"] is None
+    signal = Signal(
+        signal_id="signal-1",
+        signal_type="sweep",
+        token_id="token",
+        market_slug="market",
+        occurred_at_ms=0,
+        source="test",
+        payload={"event_slug": "event", "city": "city", "direction": "highest"},
+    )
+
+    run(asyncio.wait_for(trade.enter(signal), timeout=1))
+
+    assert bbo_client.cancelled is True
+    assert closed == ["token"]
+    assert any(step == "buy_order_failed" for _, step, _ in event_logger.steps)
 
 
-def test_buy_bbo_snapshot_uses_clob_book_and_separate_step():
+def test_buy_order_placed_contains_compact_bbo_snapshots():
     trade_dao = FakeTradeDAO()
     book_bbo_client = FakeBookBboClient()
     trade, executor, event_logger, closed = make_trade(
@@ -416,14 +449,59 @@ def test_buy_bbo_snapshot_uses_clob_book_and_separate_step():
     buy_step = next(
         detail for _, step, detail in event_logger.steps if step == "buy_order_placed"
     )
-    assert "pre_bbo" not in buy_step
-    assert "aft_bbo" not in buy_step
-    bbo_step = next(
-        detail for _, step, detail in event_logger.steps if step == "bbo_snapshot"
+    assert set(buy_step["pre_bbo"]) == {
+        "utc", "best_ask", "best_ask_size", "best_bid", "best_bid_size",
+        "offset_ms", "tick_size",
+    }
+    assert set(buy_step["aft_bbo"]) == set(buy_step["pre_bbo"])
+    assert not any(step == "bbo_snapshot" for _, step, _ in event_logger.steps)
+
+
+def test_order_offset_uses_order_response_timestamp():
+    trade, _, _, _ = make_trade()
+
+    order = trade._order_obj(
+        "buy-1", "BUY", "0.99", "20", 1000, occurred_at_ms=1056,
     )
-    assert bbo_step["order_accepted"] is True
-    assert bbo_step["pre_bbo"]["source"] == "clob_book_api"
-    assert bbo_step["aft_bbo"]["source"] == "clob_book_api"
+
+    assert order["offset_ms"] == 56
+
+
+def test_risk_started_records_first_bbo_timeout():
+    trade, _, event_logger, _ = make_trade()
+
+    class FakeRisk:
+        async def wait_for_first_bbo(self):
+            return False
+
+        def first_bbo_snapshot(self):
+            return None
+
+    trade.risk = FakeRisk()
+
+    run(trade._log_risk_started(
+        phase="entry",
+        enter_origin_ms=0,
+        order_id="buy-1",
+        side="BUY",
+        price=Decimal("0.99"),
+        size=Decimal("10"),
+    ))
+
+    assert ("entry", "first_bbo_ready") not in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    assert ("entry", "first_bbo_timeout") not in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    assert ("entry", "risk_started") in [
+        (phase, step) for phase, step, _ in event_logger.steps
+    ]
+    risk_step = next(
+        detail for _, step, detail in event_logger.steps if step == "risk_started"
+    )
+    assert risk_step["risk"]["status"] == "not_started"
+    assert risk_step["first_bbo"]["status"] == "timeout"
 
 
 def test_zero_fill_waits_for_entry_timeout_after_tick_change():
