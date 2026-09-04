@@ -722,14 +722,6 @@ class SweepTrade:
             user_ws = await self._executor.ensure_user_ws()
             user_ws.unwatch_order(order_id)
             cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
-            if cancel_result.query_failed:
-                if cancel_result.cancelled:
-                    self.entry_order_id = None
-                await self._stop_for_cancel_query_failure(
-                    phase="entry", side="BUY", order_id=order_id,
-                    cancel_result=cancel_result,
-                )
-                return
             if not cancel_result.cancelled:
                 await self._stop_for_cancel_failure(
                     phase="entry", side="BUY", order_id=order_id,
@@ -737,7 +729,19 @@ class SweepTrade:
                 )
                 return
             self.entry_order_id = None
-            if cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
+            if cancel_result.query_failed:
+                if self._el:
+                    self._el.log_step("fill_reconcile_unavailable", {
+                        "side": "BUY",
+                        "order_id": order_id,
+                        "cancelled": True,
+                        "query_status": cancel_result.status,
+                        "memory_position": str(self.position_shares),
+                        "action": "continue_with_memory_position",
+                        "non_fatal": True,
+                        "utc": self._utc_str(),
+                    }, phase="entry")
+            elif cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
                 missed = cancel_result.final_matched - self.position_shares
                 self._record_buy_fill(order_id, missed, self.buy_price,
                                       source="cancel_reconcile")

@@ -821,7 +821,7 @@ def test_sell_complete_uses_exit_fill_accumulator():
     assert trade._exit_filled_shares == Decimal("10")
 
 
-def test_entry_timeout_cancel_query_failure_fails_closed():
+def test_entry_timeout_cancel_query_failure_uses_memory_position_when_cancelled():
     trade, _, event_logger, closed = make_trade(
         final_matched=Decimal("-1"), cancel_query_failed=True,
     )
@@ -831,17 +831,18 @@ def test_entry_timeout_cancel_query_failure_fails_closed():
 
     assert trade.state == "closed"
     assert closed == ["token"]
-    reconcile_failed = next(
+    reconcile_unavailable = next(
         detail for _, step, detail in event_logger.steps
-        if step == "fill_reconcile_failed"
+        if step == "fill_reconcile_unavailable"
     )
-    assert reconcile_failed["side"] == "BUY"
-    assert reconcile_failed["query_status"] == "query_failed"
+    assert reconcile_unavailable["side"] == "BUY"
+    assert reconcile_unavailable["query_status"] == "query_failed"
+    assert reconcile_unavailable["action"] == "continue_with_memory_position"
+    assert reconcile_unavailable["non_fatal"] is True
     event_closed = next(
         detail for _, step, detail in event_logger.steps if step == "event_closed"
     )
-    assert event_closed["query_status"] == "query_failed"
-    assert event_closed["close_reason"] == "fill_reconcile_failed"
+    assert event_closed["close_reason"] == "timeout_no_fill"
 
 
 def test_entry_timeout_cancel_failure_fails_closed():
