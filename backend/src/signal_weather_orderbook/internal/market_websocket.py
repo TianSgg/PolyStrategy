@@ -30,7 +30,8 @@ class SharedMarketWebSocket:
         self._routing: dict[str, list[MonitorProtocol]] = {}
         self._pending_unsub: set[str] = set()
         self._on_reconnect = on_reconnect
-        self._lock = asyncio.Lock()
+        # Create loop-bound synchronization primitives on first async use.
+        self._lock: asyncio.Lock | None = None
         self._task: asyncio.Task | None = None
         self.connected = False
         self.reconnects = 0
@@ -40,6 +41,11 @@ class SharedMarketWebSocket:
         self.last_rtt_ms: float | None = None
         self._ping_sent_at: float | None = None
         self._ws: ClientConnection | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def start(self) -> None:
         if not self._task:
@@ -58,7 +64,7 @@ class SharedMarketWebSocket:
 
     async def subscribe(self, token_id: str, monitor: MonitorProtocol, asset_ids: list[str]) -> None:
         """Subscribe one token on the wire; register asset_ids in the routing table."""
-        async with self._lock:
+        async with self._get_lock():
             for asset_id in asset_ids:
                 monitors = self._routing.setdefault(asset_id, [])
                 if monitor not in monitors:
@@ -77,7 +83,7 @@ class SharedMarketWebSocket:
 
     async def unsubscribe(self, token_id: str, monitor: MonitorProtocol, asset_ids: list[str]) -> None:
         """Remove token from wire subscription; clean routing table entries."""
-        async with self._lock:
+        async with self._get_lock():
             for asset_id in asset_ids:
                 monitors = self._routing.get(asset_id)
                 if monitors:
@@ -101,7 +107,7 @@ class SharedMarketWebSocket:
 
     async def subscribe_for_initial_dump(self, token_id: str) -> None:
         """Temporarily subscribe a token just to get its initial dump, then auto-unsubscribe."""
-        async with self._lock:
+        async with self._get_lock():
             self._pending_unsub.add(token_id)
             if self._ws and self.connected:
                 await self._ws.send(json.dumps({
@@ -136,7 +142,7 @@ class SharedMarketWebSocket:
 
     async def resync_token(self, token_id: str) -> None:
         """Correct drift for a single token: unsubscribe then re-subscribe with initial_dump."""
-        async with self._lock:
+        async with self._get_lock():
             if not self._ws or not self.connected:
                 return
             await self._ws.send(json.dumps({
