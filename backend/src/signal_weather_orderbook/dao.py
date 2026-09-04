@@ -155,7 +155,7 @@ class WeatherSignalEventRepository:
                 "weather_orderbook_signals is unavailable; run migrations before starting the service"
             ) from error
 
-    async def insert_if_absent(self, record: WeatherSignalRecord) -> bool:
+    async def insert_if_absent(self, record: WeatherSignalRecord) -> int | None:
         query = """
             INSERT INTO weather_orderbook_signals (
                 signal_id, occurred_at, signal_type, event_slug,
@@ -189,7 +189,7 @@ class WeatherSignalEventRepository:
         )
         async with self._pool.acquire() as connection, connection.cursor() as cursor:
             await cursor.execute(query, values)
-            return cursor.rowcount == 1
+            return int(cursor.lastrowid) if cursor.rowcount == 1 else None
 
     async def list_for_event(
         self,

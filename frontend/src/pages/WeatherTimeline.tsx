@@ -123,6 +123,11 @@ export default function WeatherTimeline({ eventSlug }: Props) {
                   </span>
                   <strong>{item.temperature_label || '事件'}</strong>
                   {item.outcome && <span>{item.outcome.toUpperCase()}</span>}
+                  {item.payload?.is_from_main !== undefined && (
+                    <span className={`wm-tag wm-tag-${item.payload.is_from_main ? 'primary' : 'info'}`}>
+                      {item.payload.is_from_main ? 'Main' : 'Next'}
+                    </span>
+                  )}
                   {item.status && <span>{item.status}</span>}
                 </div>
                 {item.market_slug && <p>市场: {item.market_slug}</p>}

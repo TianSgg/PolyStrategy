@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -169,11 +170,12 @@ class WeatherService:
             return
         try:
             record = _build_signal_record(event, city, main_ctx, next_candidate_orderbook, signal_id)
-            inserted = await self.dao.insert_if_absent(record)
+            inserted_id = await self.dao.insert_if_absent(record)
         except Exception:
             logger.exception("Failed to persist weather event=%s", event.asset.event_slug)
             return
-        if inserted:
+        if inserted_id is not None:
+            record = replace(record, id=inserted_id)
             self.note_persisted_signal(event.asset.event_slug, record)
 
     async def _broadcast_event(self, event_type: str, payload: dict) -> None:
