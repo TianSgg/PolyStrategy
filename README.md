@@ -6,11 +6,11 @@ Polymarket 天气市场量化策略平台。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Frontend (Vite + React)        :5173                       │
+│  Frontend (Vite :5173 / Nginx :9097)                        │
 └───────────────────────────┬─────────────────────────────────┘
                             │ HTTP
 ┌───────────────────────────▼─────────────────────────────────┐
-│  Traefik (反向代理)         :80                              │
+│  Traefik (反向代理)         :8000                            │
 │    /api/auth   → auth-service                               │
 │    /api/account → account-service                           │
 │    /api/weather → signal-weather-orderbook                  │
@@ -31,6 +31,7 @@ Polymarket 天气市场量化策略平台。
 | account-service | `account_service.app` | 8011 | 账户管理、余额、持仓 |
 | signal-weather-orderbook | `signal_weather_orderbook.app` | 8001 | 天气市场订单簿信号采集 |
 | strategy-weather-sweep | `strategy_weather_sweep.app` | 8003 | Weather Sweep 自动交易策略 |
+| frontend | Vite + React / Nginx | 5173 (dev) / 9097 (docker) | 前端 SPA |
 
 ## 快速开始
 
@@ -72,7 +73,7 @@ cd ..
 ./start.sh stop
 ```
 
-启动后访问 http://localhost:5173
+启动后访问 http://localhost:5173（本地开发）或 http://localhost:9097（Docker 部署）
 
 ### start.sh 启动顺序
 
@@ -90,16 +91,17 @@ cd ..
 | 文件 | 仓库 | 作用 |
 |------|------|------|
 | `docker-compose.infra.yml` | PolyInfra | Consul + Traefik 基础设施 |
-| `docker-compose.services.yml` | PolyStrategy | 4 个后端服务 |
+| `docker-compose.services.yml` | PolyStrategy | 4 个后端服务 + 前端 |
 
 ### 服务名称一览
 
-| compose 服务名 | 容器名 | 端口 |
-|---------------|--------|------|
-| `auth-service` | `polystrategy-auth` | 8010 |
-| `account-service` | `polystrategy-account` | 8011 |
-| `signal-weather-orderbook` | `polystrategy-signal-weather-orderbook` | 8001 |
-| `strategy-weather-sweep` | `polystrategy-strategy-weather-sweep` | 8003 |
+| compose 服务名 | 容器名 | 端口 | 说明 |
+|---------------|--------|------|------|
+| `auth-service` | `polystrategy-auth` | 8010 | JWT 鉴权 |
+| `account-service` | `polystrategy-account` | 8011 | 账户管理 |
+| `signal-weather-orderbook` | `polystrategy-signal-weather-orderbook` | 8001 | 信号采集 |
+| `strategy-weather-sweep` | `polystrategy-strategy-weather-sweep` | 8003 | 交易策略 |
+| `frontend` | `polystrategy-frontend` | 9097 | Nginx 静态服务 + API 反代 |
 
 ### 前置: 基础设施 (PolyInfra)
 
@@ -146,6 +148,7 @@ docker compose -f docker-compose.services.yml up -d auth-service
 docker compose -f docker-compose.services.yml up -d account-service
 docker compose -f docker-compose.services.yml up -d signal-weather-orderbook
 docker compose -f docker-compose.services.yml up -d strategy-weather-sweep
+docker compose -f docker-compose.services.yml up -d frontend
 ```
 
 ### 停止
@@ -155,6 +158,7 @@ docker compose -f docker-compose.services.yml up -d strategy-weather-sweep
 docker compose -f docker-compose.services.yml down
 
 # 停止单个服务
+docker compose -f docker-compose.services.yml stop frontend
 docker compose -f docker-compose.services.yml stop strategy-weather-sweep
 docker compose -f docker-compose.services.yml stop signal-weather-orderbook
 docker compose -f docker-compose.services.yml stop account-service
@@ -181,6 +185,7 @@ docker compose -f docker-compose.services.yml up -d --build
 # 只重新构建某个服务
 docker compose -f docker-compose.services.yml up -d --build strategy-weather-sweep
 docker compose -f docker-compose.services.yml up -d --build signal-weather-orderbook
+docker compose -f docker-compose.services.yml up -d --build frontend
 ```
 
 ### 查看状态与日志
@@ -207,6 +212,7 @@ docker exec -it polystrategy-strategy-weather-sweep bash
 docker exec -it polystrategy-signal-weather-orderbook bash
 docker exec -it polystrategy-auth bash
 docker exec -it polystrategy-account bash
+docker exec -it polystrategy-frontend sh    # alpine 镜像无 bash
 ```
 
 ### 清理
@@ -237,10 +243,12 @@ docker compose -f docker-compose.services.yml down -v
 | `ENCRYPTION_KEY` | (必填) | 账户私钥加密密钥 |
 | `CONSUL_HTTP_ADDR` | `http://host.docker.internal:8500` | Consul 地址 |
 | `CONSUL_HTTP_TOKEN` | (可选) | Consul ACL Token |
+| `FRONTEND_PORT` | `9097` | 前端 Nginx 监听端口 |
+| `TRAEFIK_ENTRY_PORT` | `8000` | Traefik 入口端口（前端 API 反代目标） |
 
 ### Docker 网络
 
-所有服务连接到 `polystrategy` 外部网络。PolyInfra 的 Consul/Traefik 使用 host 网络模式直接暴露端口，服务容器通过 `host.docker.internal` 访问宿主机上的 Consul 和 MySQL。服务启动后自动注册到 Consul，由 Traefik 发现并路由。
+所有服务使用 `network_mode: host` 直接共享宿主机网络。PolyInfra 的 Consul/Traefik 同样使用 host 网络模式，服务容器通过 `host.docker.internal` 访问宿主机上的 Consul 和 MySQL。后端服务启动后自动注册到 Consul，由 Traefik 发现并路由。前端 Nginx 容器将 `/api/`、`/ws/`、`/auth/` 请求反代到 Traefik 网关，其余请求返回 SPA 静态文件。
 
 ## 项目结构
 
@@ -267,6 +275,8 @@ PolyStrategy/
 │   ├── src/
 │   │   ├── pages/                 # 页面组件
 │   │   └── App.tsx                # 路由入口
+│   ├── Dockerfile                 # 两阶段构建: node build → nginx
+│   ├── nginx.conf                 # Nginx 反代 + SPA fallback
 │   └── package.json
 ├── docker-compose.services.yml    # 后端服务编排
 ├── start.sh                       # 本地开发启动脚本
