@@ -569,32 +569,14 @@ class SweepTrade:
             })
             return
 
-        try:
-            entry_tick_size = await self._tick_size_service.get(self.token_id)
-        except TickSizeFetchError as exc:
-            logger.error("Tick size lookup failed before BUY: token=%s err=%s", self.token_id, exc)
-            if self._el:
-                self._el.log_step("buy_order_failed", {
-                    "status": "tick_refresh_failed",
-                    "error": str(exc),
-                    "error_message": str(exc),
-                    "error_signature": classify_sell_error("failed", str(exc)),
-                    "requested_size": str(actual_shares),
-                }, phase="entry")
-            self._close("tick_refresh_failed", phase="entry", extra={
-                "error": str(exc),
-                "error_message": str(exc),
-                "error_signature": classify_sell_error("failed", str(exc)),
-            })
-            return
-
         order_task = asyncio.create_task(self._executor.place_order(
             token_id=self.token_id,
             side="BUY",
             price=str(buy_price),
             size=str(actual_shares),
-            tick_size=str(entry_tick_size),
+            tick_size="0.01",
             neg_risk=True,
+            validate_tick_size=False,
         ))
         risk_task = asyncio.create_task(
             self.risk.start(token_id=self.token_id, orderbook_snapshot=orderbook_snapshot)
