@@ -46,6 +46,7 @@ from framework.trading.provider import set_client_provider
 from account_service.service import get_account_service
 from strategy_weather_sweep.api import router as strategy_router
 from strategy_weather_sweep.dao import WeatherSweepConfigDAO
+from strategy_weather_sweep.internal.clob_book_bbo import ClobBookBboClient
 from strategy_weather_sweep.service import SweepStrategy
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ WEATHER_SIGNAL_URL = os.getenv("WEATHER_SIGNAL_WS_URL", "ws://localhost:8001/ws/
 # ==================== 共享工具 ====================
 
 orderbook_ws = OrderBookWS()
+book_bbo_client = ClobBookBboClient()
 _config_dao = WeatherSweepConfigDAO()
 
 # ==================== 实例池（委托 service.py 工厂方法） ====================
@@ -94,6 +96,7 @@ async def _create_instance(cfg: InstanceConfig) -> SweepStrategy:
         cfg.data,
         orderbook_ws,
         tick_size_service=tick_size_service,
+        book_bbo_client=book_bbo_client,
     )
 
 
@@ -125,6 +128,7 @@ async def _dispatch_signal(signal) -> None:
 async def lifespan(app: FastAPI):
     set_client_provider(get_account_service())
     await orderbook_ws.start()
+    await book_bbo_client.start()
     await pool.start()
 
     signal_client = SignalWSClient(url=WEATHER_SIGNAL_URL, adapter=WeatherSweepAdapter())
@@ -147,6 +151,7 @@ async def lifespan(app: FastAPI):
             await pool.stop()
             await stop_all_user_ws()
             await orderbook_ws.stop()
+            await book_bbo_client.close()
 
 
 app = FastAPI(title=_cfg["service"]["name"], lifespan=lifespan)

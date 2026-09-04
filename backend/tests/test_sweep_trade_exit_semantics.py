@@ -157,6 +157,29 @@ class FakeOrderBookWS:
         return None
 
 
+class FakeBookBboClient:
+    def __init__(self, pre_bbo=None, aft_bbo=None):
+        self.pre_bbo = pre_bbo or {
+            "status": "ok",
+            "source": "clob_book_api",
+            "response_at_ms": 101,
+            "best_bid": 0.98,
+            "best_ask": 0.99,
+        }
+        self.aft_bbo = aft_bbo or {
+            "status": "ok",
+            "source": "clob_book_api",
+            "response_at_ms": 202,
+            "best_bid": 0.97,
+            "best_ask": 0.99,
+        }
+        self.calls = []
+
+    async def fetch_bbo(self, token_id, offset_origin_ms):
+        self.calls.append((token_id, offset_origin_ms))
+        return self.aft_bbo if len(self.calls) > 1 else self.pre_bbo
+
+
 class MismatchTickVerifier:
     async def verify(self, token_id, ws_tick_size=None, ws_tick_size_getter=None):
         if ws_tick_size_getter:
@@ -174,6 +197,7 @@ def make_trade(
     sell_result=None, sell_results=None, final_matched=Decimal("0"), on_exit_failed=None,
     cancel_query_failed=False, cancel_cancelled=True,
     orderbook_ws=None, trade_dao=None,
+    book_bbo_client=None,
 ):
     orderbook_ws = orderbook_ws or FakeOrderBookWS()
     executor = FakeExecutor(
@@ -185,6 +209,7 @@ def make_trade(
     event_logger = FakeEventLogger()
     closed = []
     config = {"clob_sync_grace_ms": 0}
+    book_bbo_client = book_bbo_client or FakeBookBboClient()
     trade = SweepTrade(
         token_id="token",
         market_slug="market",
@@ -196,6 +221,7 @@ def make_trade(
         on_exit_failed=on_exit_failed,
         trade_dao=trade_dao,
         tick_size_service=FakeTickSizeService(),
+        book_bbo_client=book_bbo_client,
     )
     trade.tick_verifier = FakeTickVerifier()
     trade.buy_price = Decimal("0.99")
@@ -329,6 +355,7 @@ def test_strategy_routes_market_settled_by_market_slug():
 
 def test_insufficient_balance_entry_is_skipped_not_failed():
     trade_dao = FakeTradeDAO()
+    book_bbo_client = FakeBookBboClient()
     trade, executor, event_logger, closed = make_trade(
         trade_dao=trade_dao,
         sell_result=OrderResult(
@@ -336,6 +363,7 @@ def test_insufficient_balance_entry_is_skipped_not_failed():
             status="insufficient_balance",
             filled_size="0",
         ),
+        book_bbo_client=book_bbo_client,
     )
     signal = Signal(
         signal_id="signal-1",
@@ -359,6 +387,52 @@ def test_insufficient_balance_entry_is_skipped_not_failed():
     assert ("entry", "buy_order_failed") not in [
         (phase, step) for phase, step, _ in event_logger.steps
     ]
+    assert len(book_bbo_client.calls) == 1
+    bbo_step = next(
+        detail for _, step, detail in event_logger.steps if step == "bbo_snapshot"
+    )
+    assert bbo_step["order_accepted"] is False
+    assert bbo_step["aft_bbo"] is None
+
+
+def test_buy_bbo_snapshot_uses_clob_book_and_separate_step():
+    trade_dao = FakeTradeDAO()
+    book_bbo_client = FakeBookBboClient()
+    trade, executor, event_logger, closed = make_trade(
+        trade_dao=trade_dao,
+        sell_result=OrderResult(
+            order_id="buy-1",
+            status="live",
+            filled_size="0",
+            clob_status="live",
+        ),
+        book_bbo_client=book_bbo_client,
+    )
+    signal = Signal(
+        signal_id="signal-1",
+        signal_type="sweep",
+        token_id="token",
+        market_slug="market",
+        occurred_at_ms=0,
+        source="test",
+        payload={"event_slug": "event", "city": "city", "direction": "highest"},
+    )
+
+    run(trade.enter(signal))
+
+    assert len(book_bbo_client.calls) == 2
+    assert all(call[0] == "token" for call in book_bbo_client.calls)
+    buy_step = next(
+        detail for _, step, detail in event_logger.steps if step == "buy_order_placed"
+    )
+    assert "pre_bbo" not in buy_step
+    assert "aft_bbo" not in buy_step
+    bbo_step = next(
+        detail for _, step, detail in event_logger.steps if step == "bbo_snapshot"
+    )
+    assert bbo_step["order_accepted"] is True
+    assert bbo_step["pre_bbo"]["source"] == "clob_book_api"
+    assert bbo_step["aft_bbo"]["source"] == "clob_book_api"
 
 
 def test_zero_fill_waits_for_entry_timeout_after_tick_change():
