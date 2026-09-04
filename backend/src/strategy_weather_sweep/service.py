@@ -189,15 +189,15 @@ class SweepTrade:
                 "side": side,
                 "order_id": order_id,
                 "cancelled": cancel_result.cancelled,
-                "query_status": cancel_result.status,
-                "final_matched": str(cancel_result.final_matched),
                 "utc": self._utc_str(),
+                **self._cancel_error_detail(cancel_result),
             }, phase=phase)
         await self.risk.stop()
         self._close_exit_failed("fill_reconcile_failed", phase=phase, extra={
             "order_id": order_id,
             "side": side,
             "query_status": cancel_result.status,
+            **self._cancel_error_detail(cancel_result),
         })
 
     async def _stop_for_cancel_failure(
@@ -209,15 +209,15 @@ class SweepTrade:
             self._el.log_step(failure_reason, {
                 "side": side,
                 "order_id": order_id,
-                "query_status": cancel_result.status,
-                "final_matched": str(cancel_result.final_matched),
                 "utc": self._utc_str(),
+                **self._cancel_error_detail(cancel_result),
             }, phase=phase)
         await self.risk.stop()
         self._close_exit_failed(failure_reason, phase=phase, extra={
             "order_id": order_id,
             "side": side,
             "query_status": cancel_result.status,
+            **self._cancel_error_detail(cancel_result),
         })
 
     @staticmethod
@@ -293,6 +293,46 @@ class SweepTrade:
             "utc": self._utc_str(),
             "offset_ms": int((time.time() * 1000) - offset_origin_ms),
         }
+
+    @staticmethod
+    def _order_error_detail(
+        result: OrderResult, *, error_signature: Optional[str] = None,
+    ) -> dict[str, Any]:
+        detail: dict[str, Any] = {
+            "status": result.status,
+            "error": result.error,
+        }
+        if result.error_status_code is not None:
+            detail["status_code"] = result.error_status_code
+        if result.error_message:
+            detail["error_message"] = result.error_message
+        if error_signature:
+            detail["error_signature"] = error_signature
+        return detail
+
+    @staticmethod
+    def _cancel_error_detail(cancel_result: CancelResult) -> dict[str, Any]:
+        detail: dict[str, Any] = {
+            "query_status": cancel_result.status,
+            "final_matched": str(cancel_result.final_matched),
+        }
+        if cancel_result.cancel_error:
+            detail["cancel_error"] = cancel_result.cancel_error
+            detail["error"] = cancel_result.cancel_error
+            detail["error_signature"] = classify_sell_error("failed", cancel_result.cancel_error)
+        if cancel_result.cancel_error_status_code is not None:
+            detail["cancel_status_code"] = cancel_result.cancel_error_status_code
+            detail.setdefault("status_code", cancel_result.cancel_error_status_code)
+        if cancel_result.cancel_error_message:
+            detail["cancel_error_message"] = cancel_result.cancel_error_message
+            detail.setdefault("error_message", cancel_result.cancel_error_message)
+        if cancel_result.query_error:
+            detail["query_error"] = cancel_result.query_error
+        if cancel_result.query_error_status_code is not None:
+            detail["query_status_code"] = cancel_result.query_error_status_code
+        if cancel_result.query_error_message:
+            detail["query_error_message"] = cancel_result.query_error_message
+        return detail
 
     async def _refresh_tick_after_invalid_sell(
         self, old_tick: Decimal, *, phase: str, reason: str,
@@ -537,10 +577,14 @@ class SweepTrade:
                 self._el.log_step("buy_order_failed", {
                     "status": "tick_refresh_failed",
                     "error": str(exc),
+                    "error_message": str(exc),
+                    "error_signature": classify_sell_error("failed", str(exc)),
                     "requested_size": str(actual_shares),
                 }, phase="entry")
             self._close("tick_refresh_failed", phase="entry", extra={
                 "error": str(exc),
+                "error_message": str(exc),
+                "error_signature": classify_sell_error("failed", str(exc)),
             })
             return
 
@@ -593,10 +637,10 @@ class SweepTrade:
         # --- Layer 1: buy_order_failed (CLOB rejected) ---
         if result.status == "failed":
             await self.risk.stop()
+            error_signature = classify_sell_error(result.status, result.error)
             if self._el:
                 self._el.log_step("buy_order_failed", {
-                    "status": result.status,
-                    "error": result.error,
+                    **self._order_error_detail(result, error_signature=error_signature),
                     "order": self._order_obj(
                         result.order_id, "BUY", str(buy_price), str(actual_shares), enter_origin_ms,
                     ),
@@ -605,6 +649,9 @@ class SweepTrade:
                 }, phase="entry")
             self._close("buy_placement_failed", phase="entry", extra={
                 "error": result.error,
+                "error_message": result.error_message,
+                "status_code": result.error_status_code,
+                "error_signature": error_signature,
             })
             return
 
@@ -735,11 +782,11 @@ class SweepTrade:
                         "side": "BUY",
                         "order_id": order_id,
                         "cancelled": True,
-                        "query_status": cancel_result.status,
                         "memory_position": str(self.position_shares),
                         "action": "continue_with_memory_position",
                         "non_fatal": True,
                         "utc": self._utc_str(),
+                        **self._cancel_error_detail(cancel_result),
                     }, phase="entry")
             elif cancel_result.final_matched > 0 and cancel_result.final_matched > self.position_shares:
                 missed = cancel_result.final_matched - self.position_shares
@@ -933,14 +980,12 @@ class SweepTrade:
                 error_signature = classify_sell_error(result.status, result.error)
                 if self._el:
                     self._el.log_step("sell_order_failed", {
-                        "status": result.status,
-                        "error": result.error,
-                        "error_signature": error_signature,
+                        **self._order_error_detail(result, error_signature=error_signature),
                         "order": self._order_obj(
                             result.order_id, "SELL", str(sell_price), str(sell_size), exit_origin_ms,
                         ),
                         "attempt": attempt,
-                        }, phase="exit")
+                    }, phase="exit")
 
                 if error_signature == "insufficient_balance":
                     observed_sellable = self._parse_balance_lag_sellable(result.error)
@@ -1007,6 +1052,8 @@ class SweepTrade:
                         await self.risk.stop()
                         self._close_exit_failed(self._sell_failure_reason(result), phase="exit", extra={
                             "error": result.error,
+                            "error_message": result.error_message,
+                            "status_code": result.error_status_code,
                             "error_signature": error_signature,
                             "stop_reason": "tick_refresh_failed",
                         })
@@ -1024,6 +1071,8 @@ class SweepTrade:
                     await self.risk.stop()
                     self._close_exit_failed(self._sell_failure_reason(result), phase="exit", extra={
                         "error": result.error,
+                        "error_message": result.error_message,
+                        "status_code": result.error_status_code,
                         "error_signature": error_signature,
                         "stop_reason": stop_reason,
                     })
@@ -1204,34 +1253,50 @@ class SweepTrade:
 
     # ==================== Risk Exit ====================
 
-    async def _cancel_order_fast(self, order_id: str, side: str, trigger: str) -> bool:
+    async def _cancel_order_fast(self, order_id: str, side: str, trigger: str) -> CancelResult:
         user_ws = getattr(self._executor, "_user_ws", None)
         if user_ws:
             user_ws.unwatch_order(order_id)
 
-        try:
-            cancelled = await self._executor.cancel_order(order_id)
-        except Exception as exc:
-            cancelled = False
-            error = str(exc)
+        detailed_cancel = getattr(self._executor, "cancel_order_detailed", None)
+        if detailed_cancel is not None:
+            cancel_result = await detailed_cancel(order_id)
         else:
-            error = None if cancelled else "cancel_order returned false"
+            try:
+                cancelled = await self._executor.cancel_order(order_id)
+            except Exception as exc:
+                cancel_result = CancelResult(
+                    order_id=order_id,
+                    cancelled=False,
+                    final_matched=Decimal("-1"),
+                    status="cancel_failed",
+                    cancel_error=str(exc),
+                    cancel_error_message=str(exc),
+                )
+            else:
+                cancel_result = CancelResult(
+                    order_id=order_id,
+                    cancelled=cancelled,
+                    final_matched=Decimal("-1"),
+                    status="cancelled" if cancelled else "cancel_failed",
+                    cancel_error=None if cancelled else "cancel_order returned false",
+                    cancel_error_message=None if cancelled else "cancel_order returned false",
+                )
 
         if self._el:
-            if cancelled:
+            if cancel_result.cancelled:
                 step = "buy_cancelled" if side.upper() == "BUY" else "sell_cancelled"
             else:
                 step = "buy_cancel_failed" if side.upper() == "BUY" else "sell_cancel_failed"
             detail = {
                 "order_id": order_id,
-                "success": cancelled,
+                "success": cancel_result.cancelled,
                 "trigger": trigger,
                 "fast_path": True,
+                **self._cancel_error_detail(cancel_result),
             }
-            if error:
-                detail["error"] = error
             self._el.log_step(step, detail, phase=self._event_phase())
-        return cancelled
+        return cancel_result
 
     async def _on_risk_sell_cancel(self, _event: Any) -> None:
         if hasattr(self, "_sell_done_event"):
@@ -1258,28 +1323,36 @@ class SweepTrade:
             }, phase=self._event_phase())
 
         await self.risk.stop()
-        cancellation_failures: list[dict[str, str]] = []
+        cancellation_failures: list[dict[str, Any]] = []
 
         if self.entry_order_id:
             order_id = self.entry_order_id
-            if await self._cancel_order_fast(order_id, "BUY", trigger):
+            cancel_result = await self._cancel_order_fast(order_id, "BUY", trigger)
+            if cancel_result.cancelled:
                 self.entry_order_id = None
             else:
+                cancel_detail = self._cancel_error_detail(cancel_result)
+                error = cancel_detail.get("error") or "cancel_order returned false"
                 cancellation_failures.append({
                     "side": "BUY",
                     "order_id": order_id,
-                    "error": "cancel_order returned false",
+                    "error": error,
+                    **cancel_detail,
                 })
 
         if self.exit_order_id:
             order_id = self.exit_order_id
-            if await self._cancel_order_fast(order_id, "SELL", trigger):
+            cancel_result = await self._cancel_order_fast(order_id, "SELL", trigger)
+            if cancel_result.cancelled:
                 self.exit_order_id = None
             else:
+                cancel_detail = self._cancel_error_detail(cancel_result)
+                error = cancel_detail.get("error") or "cancel_order returned false"
                 cancellation_failures.append({
                     "side": "SELL",
                     "order_id": order_id,
-                    "error": "cancel_order returned false",
+                    "error": error,
+                    **cancel_detail,
                 })
 
         if self.position_shares <= 0:
@@ -1319,9 +1392,7 @@ class SweepTrade:
             error_signature = classify_sell_error(result.status, result.error)
             if self._el:
                 self._el.log_step("sell_order_failed", {
-                    "status": result.status,
-                    "error": result.error,
-                    "error_signature": error_signature,
+                    **self._order_error_detail(result, error_signature=error_signature),
                     "order": self._order_obj(
                         result.order_id, "SELL", "0.01", str(sell_size), risk_origin_ms,
                     ),
@@ -1331,6 +1402,8 @@ class SweepTrade:
                 }, phase="exit")
             self._close_exit_failed(self._sell_failure_reason(result), phase="exit", extra={
                 "error": result.error,
+                "error_message": result.error_message,
+                "status_code": result.error_status_code,
                 "error_signature": error_signature,
                 "fast_path": True,
                 "cancel_failures": cancellation_failures,
@@ -1414,13 +1487,17 @@ class SweepTrade:
                     "fast_path": True,
                 }, phase="exit")
             user_ws.unwatch_order(result.order_id)
-            if await self._cancel_order_fast(result.order_id, "SELL", trigger):
+            cancel_result = await self._cancel_order_fast(result.order_id, "SELL", trigger)
+            if cancel_result.cancelled:
                 self.exit_order_id = None
             else:
+                cancel_detail = self._cancel_error_detail(cancel_result)
+                error = cancel_detail.get("error") or "cancel_order returned false"
                 cancellation_failures.append({
                     "side": "SELL",
                     "order_id": result.order_id,
-                    "error": "cancel_order returned false",
+                    "error": error,
+                    **cancel_detail,
                 })
         else:
             user_ws.unwatch_order(result.order_id)
@@ -1503,16 +1580,16 @@ class SweepTrade:
             user_ws = await self._executor.ensure_user_ws()
             user_ws.unwatch_order(order_id)
             cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
-            if cancel_result.query_failed:
-                if cancel_result.cancelled:
-                    self.entry_order_id = None
-                await self._stop_for_cancel_query_failure(
+            if not cancel_result.cancelled:
+                await self._stop_for_cancel_failure(
                     phase=self._event_phase(), side="BUY", order_id=order_id,
                     cancel_result=cancel_result,
                 )
                 return
-            if not cancel_result.cancelled:
-                await self._stop_for_cancel_failure(
+            if cancel_result.query_failed:
+                if cancel_result.cancelled:
+                    self.entry_order_id = None
+                await self._stop_for_cancel_query_failure(
                     phase=self._event_phase(), side="BUY", order_id=order_id,
                     cancel_result=cancel_result,
                 )
@@ -1548,16 +1625,16 @@ class SweepTrade:
             user_ws = await self._executor.ensure_user_ws()
             user_ws.unwatch_order(order_id)
             cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
-            if cancel_result.query_failed:
-                if cancel_result.cancelled:
-                    self.exit_order_id = None
-                await self._stop_for_cancel_query_failure(
+            if not cancel_result.cancelled:
+                await self._stop_for_cancel_failure(
                     phase=self._event_phase(), side="SELL", order_id=order_id,
                     cancel_result=cancel_result,
                 )
                 return
-            if not cancel_result.cancelled:
-                await self._stop_for_cancel_failure(
+            if cancel_result.query_failed:
+                if cancel_result.cancelled:
+                    self.exit_order_id = None
+                await self._stop_for_cancel_query_failure(
                     phase=self._event_phase(), side="SELL", order_id=order_id,
                     cancel_result=cancel_result,
                 )

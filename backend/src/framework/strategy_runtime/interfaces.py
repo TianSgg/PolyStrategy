@@ -71,6 +71,8 @@ class OrderResult:
     filled_size: str
     filled_price: str | None = None
     error: str | None = None
+    error_status_code: int | None = None
+    error_message: str | None = None
     clob_status: str | None = None      # raw CLOB status: "matched", "live", "delayed"
     clob_taking: str | None = None      # raw takingAmount
     clob_making: str | None = None      # raw makingAmount
@@ -83,3 +85,9 @@ class CancelResult:
     final_matched: Decimal
     status: str
     query_failed: bool = False
+    cancel_error: str | None = None
+    cancel_error_status_code: int | None = None
+    cancel_error_message: str | None = None
+    query_error: str | None = None
+    query_error_status_code: int | None = None
+    query_error_message: str | None = None

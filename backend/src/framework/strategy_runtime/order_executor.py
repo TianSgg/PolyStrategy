@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 import uuid
 from decimal import Decimal
@@ -30,10 +32,95 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GTD_SEC = 1800
 _KEEPALIVE_INTERVAL_SEC = 30
+_MAX_LOG_ERROR_CHARS = 4000
+_MAX_DB_ERROR_CHARS = 500
 
 
 def generate_order_id() -> str:
     return str(uuid.uuid4())
+
+
+def _redact_sensitive(value: str) -> str:
+    text = value
+    text = re.sub(r"0x[a-fA-F0-9]{64}", "<redacted_private_key>", text)
+    text = re.sub(
+        r"(?i)(authorization|api[_-]?secret|secret|private[_-]?key|signature)"
+        r"([\"']?\s*[:=]\s*[\"']?)([^\"'\s,}]+)",
+        r"\1\2<redacted>",
+        text,
+    )
+    return text
+
+
+def _clip(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "...<truncated>"
+
+
+def _summarize_exception(exc: Exception) -> dict[str, Any]:
+    raw = _redact_sensitive(str(exc))
+    status_code: int | None = None
+    status_match = re.search(r"(?i)\bstatus(?:_code)?\s*[=:]\s*(\d{3})\b", raw)
+    if not status_match:
+        status_match = re.search(r"\bHTTP\s+(\d{3})\b", raw)
+    if status_match:
+        status_code = int(status_match.group(1))
+
+    message = raw
+    body_match = re.search(r"\bbody=({.*}|\[.*\]|.+)$", raw)
+    if body_match:
+        body_text = body_match.group(1).strip()
+        try:
+            body = json.loads(body_text)
+        except Exception:
+            message = body_text
+        else:
+            if isinstance(body, dict):
+                message = str(
+                    body.get("error")
+                    or body.get("message")
+                    or body.get("detail")
+                    or body
+                )
+            else:
+                message = str(body)
+
+    return {
+        "status_code": status_code,
+        "error_message": _clip(message, _MAX_DB_ERROR_CHARS),
+        "raw_error": _clip(raw, _MAX_LOG_ERROR_CHARS),
+    }
+
+
+def _order_request_context(
+    *,
+    token_id: str,
+    side: str,
+    price: str,
+    size: str,
+    tick_size: str,
+    neg_risk: bool,
+    order_type: str,
+    gtd_sec: int | None,
+    check_balance: bool,
+    validate_tick_size: bool,
+    proxy_wallet: str,
+) -> dict[str, Any]:
+    return {
+        "action": "place_order",
+        "token_id": token_id,
+        "side": side.upper(),
+        "price": price,
+        "size": size,
+        "tick_size": tick_size,
+        "neg_risk": neg_risk,
+        "order_type": order_type,
+        "gtd_sec": gtd_sec,
+        "check_balance": check_balance,
+        "validate_tick_size": validate_tick_size,
+        "proxy_wallet": proxy_wallet[:10] if proxy_wallet else "",
+    }
 
 
 class OrderExecutor:
@@ -153,6 +240,7 @@ class OrderExecutor:
                     filled_size="0",
                     filled_price=None,
                     error=f"tick size refresh failed: {exc}",
+                    error_message=str(exc),
                 )
 
             if tick_size is not None and Decimal(tick_size) != authoritative_tick:
@@ -170,6 +258,7 @@ class OrderExecutor:
                     filled_size="0",
                     filled_price=None,
                     error=error,
+                    error_message=error,
                 )
 
             ts = str(authoritative_tick)
@@ -177,8 +266,22 @@ class OrderExecutor:
             ts = tick_size or params.get("tick_size", "0.01")
 
         poller = await self.ensure_poller(wallet)
+        side_upper = side.upper()
+        request_context = _order_request_context(
+            token_id=token_id,
+            side=side_upper,
+            price=price,
+            size=size,
+            tick_size=ts,
+            neg_risk=nr,
+            order_type="GTD" if side_upper == "BUY" else "GTC",
+            gtd_sec=gtd_sec if side_upper == "BUY" else None,
+            check_balance=check_balance,
+            validate_tick_size=validate_tick_size,
+            proxy_wallet=wallet,
+        )
 
-        if check_balance and side.upper() == "BUY":
+        if check_balance and side_upper == "BUY":
             notional = Decimal(price) * Decimal(size)
             if poller.available_cash < notional:
                 logger.warning(
@@ -190,6 +293,7 @@ class OrderExecutor:
                     status="insufficient_balance",
                     filled_size="0",
                     filled_price=None,
+                    error_message="insufficient cached cash before order",
                 )
 
         send_ns = time.monotonic_ns()
@@ -199,40 +303,84 @@ class OrderExecutor:
                 place_limit_order,
                 wallet,
                 token_id,
-                side.upper(),
+                side_upper,
                 float(Decimal(size)),
                 float(Decimal(price)),
                 ts,
                 nr,
-                gtd_sec if side.upper() == "BUY" else None,
+                gtd_sec if side_upper == "BUY" else None,
             )
         except Exception as e:
-            logger.error("Order failed: token=%s side=%s err=%s", token_id, side, e)
+            error_summary = _summarize_exception(e)
+            logger.error(
+                "Order failed context=%s error=%s",
+                request_context,
+                error_summary,
+                exc_info=True,
+            )
             asyncio.create_task(poller.refresh())
             return OrderResult(
                 order_id=order_id,
                 status="failed",
                 filled_size="0",
                 filled_price=None,
-                error=str(e),
+                error=error_summary["raw_error"],
+                error_status_code=error_summary["status_code"],
+                error_message=error_summary["error_message"],
             )
 
         parsed = self._parse_result(
-            order_id, result, send_ns, Decimal(size), side.upper()
+            order_id, result, send_ns, Decimal(size), side_upper
         )
         if parsed.status == "failed":
+            logger.error(
+                "Order returned failed status context=%s response=%s error=%s",
+                request_context,
+                result,
+                parsed.error,
+            )
             asyncio.create_task(poller.refresh())
         return parsed
 
     async def cancel_order(self, order_id: str, *, proxy_wallet: str = "") -> bool:
         """撤单。成功返回 True。"""
+        return (await self.cancel_order_detailed(order_id, proxy_wallet=proxy_wallet)).cancelled
+
+    async def cancel_order_detailed(
+        self, order_id: str, *, proxy_wallet: str = "",
+    ) -> CancelResult:
+        """撤单。返回包含安全错误摘要的结果。"""
         wallet = (proxy_wallet or self._proxy_wallet).lower()
+        context = {
+            "action": "cancel_order",
+            "order_id": order_id,
+            "proxy_wallet": wallet[:10] if wallet else "",
+        }
         try:
             await asyncio.to_thread(_cancel_order, wallet, order_id)
-            return True
+            return CancelResult(
+                order_id=order_id,
+                cancelled=True,
+                final_matched=Decimal("-1"),
+                status="cancelled",
+            )
         except Exception as e:
-            logger.error("Cancel failed: order=%s err=%s", order_id, e)
-            return False
+            error_summary = _summarize_exception(e)
+            logger.error(
+                "Cancel failed context=%s error=%s",
+                context,
+                error_summary,
+                exc_info=True,
+            )
+            return CancelResult(
+                order_id=order_id,
+                cancelled=False,
+                final_matched=Decimal("-1"),
+                status="cancel_failed",
+                cancel_error=error_summary["raw_error"],
+                cancel_error_status_code=error_summary["status_code"],
+                cancel_error_message=error_summary["error_message"],
+            )
 
     async def _get_order(self, order_id: str) -> dict:
         """GET /data/order/{orderID}"""
@@ -242,16 +390,17 @@ class OrderExecutor:
 
     async def _get_order_after_cancel(
         self, order_id: str,
-    ) -> tuple[Optional[dict], Optional[str]]:
+    ) -> tuple[Optional[dict], Optional[dict[str, Any]]]:
         last_error: Optional[Exception] = None
         for attempt in range(3):
             try:
                 info = await self._get_order(order_id)
             except Exception as exc:
                 last_error = exc
+                error_summary = _summarize_exception(exc)
                 logger.warning(
-                    "get_order after cancel failed attempt=%s order=%s err=%s",
-                    attempt + 1, order_id, exc,
+                    "get_order after cancel failed attempt=%s order=%s error=%s",
+                    attempt + 1, order_id, error_summary,
                 )
                 await asyncio.sleep(0.25)
                 continue
@@ -267,26 +416,39 @@ class OrderExecutor:
             return info, None
 
         if last_error is not None:
-            return None, str(last_error)
-        return None, "order query did not return a final status"
+            return None, _summarize_exception(last_error)
+        return None, {
+            "status_code": None,
+            "error_message": "order query did not return a final status",
+            "raw_error": "order query did not return a final status",
+        }
 
     async def cancel_order_with_fill_check(self, order_id: str) -> CancelResult:
         """撤单 + REST 查询最终成交量。"""
-        cancelled = await self.cancel_order(order_id)
+        cancel_result = await self.cancel_order_detailed(order_id)
         info, query_error = await self._get_order_after_cancel(order_id)
         if query_error or info is None:
             return CancelResult(
                 order_id=order_id,
-                cancelled=cancelled,
+                cancelled=cancel_result.cancelled,
                 final_matched=Decimal("-1"),
                 status="query_failed",
                 query_failed=True,
+                cancel_error=cancel_result.cancel_error,
+                cancel_error_status_code=cancel_result.cancel_error_status_code,
+                cancel_error_message=cancel_result.cancel_error_message,
+                query_error=query_error["raw_error"] if query_error else None,
+                query_error_status_code=query_error["status_code"] if query_error else None,
+                query_error_message=query_error["error_message"] if query_error else None,
             )
         return CancelResult(
             order_id=order_id,
-            cancelled=cancelled,
+            cancelled=cancel_result.cancelled,
             final_matched=Decimal(info.get("size_matched", "0")),
             status=info.get("status", "unknown"),
+            cancel_error=cancel_result.cancel_error,
+            cancel_error_status_code=cancel_result.cancel_error_status_code,
+            cancel_error_message=cancel_result.cancel_error_message,
         )
 
     def _parse_result(
@@ -301,6 +463,7 @@ class OrderExecutor:
             return OrderResult(
                 order_id=order_id, status="failed", filled_size="0", filled_price=None,
                 error="empty response from CLOB",
+                error_message="empty response from CLOB",
             )
 
         raw_status = result.get("status", "")
@@ -322,6 +485,7 @@ class OrderExecutor:
                     filled_size="0",
                     filled_price=None,
                     error=f"matched CLOB response missing fill amount: {result}",
+                    error_message="matched CLOB response missing fill amount",
                     clob_status=raw_status,
                     clob_taking=taking_str,
                     clob_making=making_str,
@@ -354,6 +518,7 @@ class OrderExecutor:
                 filled_size="0",
                 filled_price=None,
                 error=f"unexpected CLOB status: {raw_status} | {result}",
+                error_message=f"unexpected CLOB status: {raw_status}",
                 clob_status=raw_status,
                 clob_taking=taking_str,
                 clob_making=making_str,

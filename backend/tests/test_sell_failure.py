@@ -20,6 +20,12 @@ def test_classify_sell_error_signatures():
     assert classify_sell_error("failed", "Read timeout while calling CLOB") == "network_timeout"
     assert classify_sell_error("failed", "401 unauthorized") == "authentication_error"
     assert classify_sell_error("failed", "invalid order price") == "invalid_order_params"
+    assert classify_sell_error(
+        "failed", 'status=503 body={"error":"trading is disabled"}'
+    ) == "market_trading_disabled"
+    assert classify_sell_error(
+        "failed", 'status=503 body={"error":"cancels are disabled"}'
+    ) == "market_cancel_disabled"
     assert classify_sell_error("failed", "server exploded") == "unknown_api_error"
 
 

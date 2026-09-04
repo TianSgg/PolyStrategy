@@ -22,6 +22,10 @@ def classify_sell_error(status: str, error: Optional[str]) -> str:
         or "not enough allowance" in text
     ):
         return "insufficient_balance"
+    if "trading is disabled" in text:
+        return "market_trading_disabled"
+    if "cancels are disabled" in text:
+        return "market_cancel_disabled"
     if "invalid tick size" in text or "tick size mismatch" in text:
         return "invalid_tick_size"
     if (
