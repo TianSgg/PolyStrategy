@@ -62,6 +62,38 @@ def test_place_order_uses_authoritative_tick_size():
     assert place_order.call_args.args[5] == "0.001"
 
 
+def test_matched_order_uses_clob_execution_vwap_not_limit_price():
+    executor = make_executor(FakeTickSizeService())
+
+    buy = executor._parse_result(
+        "buy-1",
+        {
+            "status": "matched",
+            "orderID": "buy-1",
+            "takingAmount": "10",
+            "makingAmount": "9.87",
+        },
+        0,
+        Decimal("10"),
+        "BUY",
+    )
+    sell = executor._parse_result(
+        "sell-1",
+        {
+            "status": "matched",
+            "orderID": "sell-1",
+            "takingAmount": "9.91",
+            "makingAmount": "10",
+        },
+        0,
+        Decimal("10"),
+        "SELL",
+    )
+
+    assert buy.filled_price == "0.987"
+    assert sell.filled_price == "0.991"
+
+
 def test_place_order_rejects_tick_size_mismatch_before_send():
     executor = make_executor(FakeTickSizeService(Decimal("0.01")))
 

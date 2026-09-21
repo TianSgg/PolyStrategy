@@ -48,7 +48,7 @@ class FillEvent:
     fill_price: Decimal
     total_matched: Decimal
     trade_id: str | None
-    source: str  # "ws_order_update" | "reconnect_reconcile"
+    source: str  # "ws_trade" | "ws_order_update" | "reconnect_reconcile"
     timestamp_ms: int
 
 
@@ -69,8 +69,7 @@ class OrderWatch:
     price: Decimal
     last_matched: Decimal
     seen_trade_ids: set = field(default_factory=set)
-    pending_trade_price: Decimal | None = None
-    pending_trade_id: str | None = None
+    pending_trades: list[tuple[str, Decimal, Decimal]] = field(default_factory=list)
     on_fill: Optional[Callable[..., Awaitable[None]]] = None
     on_cancel: Optional[Callable[..., Awaitable[None]]] = None
 
@@ -287,12 +286,33 @@ class UserWS:
         if delta <= 0:
             return
         watch.last_matched = size_matched
-        price = watch.pending_trade_price or watch.price
-        trade_id = watch.pending_trade_id
-        watch.pending_trade_price = None
-        watch.pending_trade_id = None
-        self._emit_fill(watch, delta, price, total_matched=size_matched,
-                        trade_id=trade_id, source="ws_order_update")
+        remaining = delta
+
+        # A single order UPDATE can cover several trade events.  Consume their
+        # sizes in order so each portion is accounted at its actual price.
+        while remaining > 0 and watch.pending_trades:
+            trade_id, trade_size, trade_price = watch.pending_trades[0]
+            matched = min(remaining, trade_size)
+            total_matched = size_matched - remaining + matched
+            self._emit_fill(
+                watch, matched, trade_price, total_matched=total_matched,
+                trade_id=trade_id, source="ws_trade",
+            )
+            remaining -= matched
+            if matched == trade_size:
+                watch.pending_trades.pop(0)
+            else:
+                watch.pending_trades[0] = (
+                    trade_id, trade_size - matched, trade_price,
+                )
+
+        if remaining > 0:
+            # The order update is authoritative for quantity.  Price falls
+            # back to the limit only when its matching trade event is absent.
+            self._emit_fill(
+                watch, remaining, watch.price, total_matched=size_matched,
+                trade_id=None, source="ws_order_update",
+            )
 
     async def _on_trade_event(self, data: dict) -> None:
         order_id = data.get("taker_order_id") or data.get("maker_order_id", "")
@@ -313,9 +333,10 @@ class UserWS:
         watch = self._watches.get(order_id)
         if not watch or trade_id in watch.seen_trade_ids:
             return
+        if size <= 0 or price <= 0:
+            return
         watch.seen_trade_ids.add(trade_id)
-        watch.pending_trade_price = price
-        watch.pending_trade_id = trade_id
+        watch.pending_trades.append((trade_id, size, price))
 
     def _emit_fill(
         self,

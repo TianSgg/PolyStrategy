@@ -11,18 +11,17 @@ from framework.db import get_db
 logger = logging.getLogger(__name__)
 
 
-class WeatherSweepConfigDAO:
-    """strategy_weather_sweep_configs CRUD。"""
+class FollowWeatherSweeperConfigDAO:
+    """strategy_follow_weather_sweeper_configs CRUD。"""
 
-    TABLE = "strategy_weather_sweep_configs"
+    TABLE = "strategy_follow_weather_sweeper_configs"
 
     def list_all_enabled(self) -> List[Dict[str, Any]]:
-        """加载所有 enabled 的配置（含 proxy_wallet），供实例管理使用。"""
         sql = f"""
             SELECT c.id, c.owner_user_id, c.account_id, c.name, c.params_version,
-                   c.fixed_entry_shares, c.entry_wait_ms, c.sweep_outcome_filter,
-                   c.signal_source_filter, c.signal_threshold_filter, c.direction_filter,
+                   c.fixed_entry_shares, c.entry_wait_ms,
                    c.stop_loss_ratio, c.exit_wait_ms,
+                   c.leader_wallets,
                    a.proxy_wallet
             FROM {self.TABLE} c
             JOIN accounts a ON a.id = c.account_id
@@ -38,13 +37,11 @@ class WeatherSweepConfigDAO:
         result = []
         for row in rows:
             d = dict(zip(columns, row))
+            if isinstance(d.get("leader_wallets"), str):
+                d["leader_wallets"] = json.loads(d["leader_wallets"])
             d["params"] = {
                 "fixed_entry_shares": str(d["fixed_entry_shares"]),
                 "entry_wait_ms": int(d["entry_wait_ms"]),
-                "sweep_outcome_filter": d.get("sweep_outcome_filter", "no"),
-                "signal_source_filter": d.get("signal_source_filter", "all"),
-                "signal_threshold_filter": d.get("signal_threshold_filter", "all"),
-                "direction_filter": d.get("direction_filter", "all"),
                 "stop_loss_ratio": str(d["stop_loss_ratio"]),
                 "exit_wait_ms": int(d["exit_wait_ms"]),
             }
@@ -63,7 +60,7 @@ class WeatherSweepConfigDAO:
             with conn.cursor() as cur:
                 cur.execute(sql, (owner_user_id,))
                 columns = [desc[0] for desc in cur.description]
-                return [dict(zip(columns, row)) for row in cur.fetchall()]
+                return [self._format_config_row(dict(zip(columns, row))) for row in cur.fetchall()]
 
     def list_all(self, owner_user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         sql = f"""
@@ -82,7 +79,7 @@ class WeatherSweepConfigDAO:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 columns = [desc[0] for desc in cur.description]
-                return [dict(zip(columns, row)) for row in cur.fetchall()]
+                return [self._format_config_row(dict(zip(columns, row))) for row in cur.fetchall()]
 
     def get_by_id(self, config_id: int) -> Optional[Dict[str, Any]]:
         sql = f"""
@@ -96,9 +93,12 @@ class WeatherSweepConfigDAO:
                 cur.execute(sql, (config_id,))
                 columns = [desc[0] for desc in cur.description]
                 row = cur.fetchone()
-                return dict(zip(columns, row)) if row else None
+                return self._format_config_row(dict(zip(columns, row))) if row else None
 
     def create(self, data: Dict[str, Any]) -> int:
+        leader_wallets = data.get("leader_wallets", [])
+        if isinstance(leader_wallets, list):
+            leader_wallets = json.dumps(leader_wallets)
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -110,19 +110,21 @@ class WeatherSweepConfigDAO:
                 sql = f"""
                     INSERT INTO {self.TABLE} (
                         owner_user_id, account_id, name, enabled,
-                        fixed_entry_shares, entry_wait_ms, sweep_outcome_filter,
-                        signal_source_filter, signal_threshold_filter, direction_filter,
+                        fixed_entry_shares, entry_wait_ms,
                         stop_loss_ratio, exit_wait_ms,
+                        leader_wallets,
                         created_at, updated_at
                     ) VALUES (
                         %(owner_user_id)s, %(account_id)s, %(name)s, %(enabled)s,
-                        %(fixed_entry_shares)s, %(entry_wait_ms)s, %(sweep_outcome_filter)s,
-                        %(signal_source_filter)s, %(signal_threshold_filter)s, %(direction_filter)s,
+                        %(fixed_entry_shares)s, %(entry_wait_ms)s,
                         %(stop_loss_ratio)s, %(exit_wait_ms)s,
+                        %(leader_wallets)s,
                         NOW(3), NOW(3)
                     )
                 """
-                cur.execute(sql, data)
+                params = dict(data)
+                params["leader_wallets"] = leader_wallets
+                cur.execute(sql, params)
             conn.commit()
             return cur.lastrowid
 
@@ -131,12 +133,14 @@ class WeatherSweepConfigDAO:
         params = []
         for key in (
             "name", "enabled", "fixed_entry_shares", "entry_wait_ms",
-            "sweep_outcome_filter", "signal_source_filter", "signal_threshold_filter",
-            "direction_filter", "stop_loss_ratio", "exit_wait_ms",
+            "stop_loss_ratio", "exit_wait_ms", "leader_wallets",
         ):
             if key in data:
                 sets.append(f"{key} = %s")
-                params.append(data[key])
+                val = data[key]
+                if key == "leader_wallets" and isinstance(val, list):
+                    val = json.dumps(val)
+                params.append(val)
         if not sets:
             return False
         sets.append("params_version = params_version + 1")
@@ -157,11 +161,18 @@ class WeatherSweepConfigDAO:
             conn.commit()
             return cur.rowcount > 0
 
+    @staticmethod
+    def _format_config_row(d: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(d.get("leader_wallets"), str):
+            d["leader_wallets"] = json.loads(d["leader_wallets"])
+        return d
 
-class WeatherSweepEventDAO:
-    """strategy_weather_sweep_events 查询。"""
 
-    TABLE = "strategy_weather_sweep_events"
+class FollowWeatherSweeperEventDAO:
+    """strategy_follow_weather_sweeper_events 查询。"""
+
+    TABLE = "strategy_follow_weather_sweeper_events"
+    TRADES_TABLE = "strategy_follow_weather_sweeper_trades"
 
     def list_events(
         self,
@@ -191,7 +202,7 @@ class WeatherSweepEventDAO:
                    t.signal_id, t.token_id, t.market_slug, t.event_slug,
                    t.city, t.direction
             FROM {self.TABLE} e
-            JOIN strategy_weather_sweep_trades t ON t.event_id = e.event_id
+            JOIN {self.TRADES_TABLE} t ON t.event_id = e.event_id
             WHERE {where}
             ORDER BY e.occurred_at DESC
             LIMIT %s OFFSET %s
@@ -227,7 +238,6 @@ class WeatherSweepEventDAO:
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """返回每个 event 的摘要（首条 + 末条 step）。"""
         conditions: List[str] = []
         params: List[Any] = []
 
@@ -255,7 +265,7 @@ class WeatherSweepEventDAO:
                     WHERE e2.event_id = t.event_id
                     ORDER BY e2.sequence_no DESC LIMIT 1) AS final_event_phase
             FROM {self.TABLE} e
-            JOIN strategy_weather_sweep_trades t ON t.event_id = e.event_id
+            JOIN {self.TRADES_TABLE} t ON t.event_id = e.event_id
             WHERE {where}
             GROUP BY t.id
             ORDER BY t.started_at DESC
@@ -277,10 +287,10 @@ class WeatherSweepEventDAO:
         return d
 
 
-class WeatherSweepTradeDAO:
-    """strategy_weather_sweep_trades 读写。"""
+class FollowWeatherSweeperTradeDAO:
+    """strategy_follow_weather_sweeper_trades 读写。"""
 
-    TABLE = "strategy_weather_sweep_trades"
+    TABLE = "strategy_follow_weather_sweeper_trades"
 
     def insert(self, data: Dict[str, Any]) -> int:
         columns = list(data.keys())

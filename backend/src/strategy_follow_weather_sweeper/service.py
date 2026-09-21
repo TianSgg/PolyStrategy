@@ -1,26 +1,8 @@
-"""策略 1: Sweep 信号下单 — BUY@0.99 → tick exit SELL@0.999。
-
-职责：策略业务逻辑 + 实例工厂方法。
+"""跟随天气扫单者策略 — 复用 SweepTrade 执行引擎，信号源为 Predexon WS。
 
 架构：
-  SweepStrategy — 实例级管理器，持有共享工具，管理多笔并行交易
-  SweepTrade   — 单笔交易生命周期（per token_id）
-
-流程 (每笔 trade):
-  1. 收到合格 sweep → 快速 BUY@0.99 固定份额
-  2. 启动风控 + 订单簿监听
-  3. entry_wait_ms 后撤销未成交 BUY
-  4. 入场超时无持仓 → timeout_no_fill；有持仓 → 等待 tick=0.001
-  5. HTTP 校验通过 → SELL@(1 - tick_size)；风控触发 → 强制退出
-
-Event log 三层分离（参见 doc/2026-08-31-event-naming-convention.md）：
-  挂单结果: buy_order_placed / buy_order_failed / sell_order_placed / sell_order_failed
-  成交通知: buy_filled / sell_filled
-  阶段终态: entry_complete / entry_timeout / sell_complete / sell_failed
-
-强制退出（配置变更/禁用）:
-  - 撤销所有未成交买单
-  - 已持份额按 1 - tick_size 的价格挂卖单
+  FollowSweepStrategy — 实例级管理器，按 leader_wallet 过滤信号
+  SweepTrade          — 单笔交易生命周期（从 strategy_weather_sweep 原样复制）
 """
 from __future__ import annotations
 
@@ -43,10 +25,10 @@ from framework.strategy_runtime.tick_size_service import (
 )
 from framework.strategy_runtime.tick_verifier import TickVerifier
 from framework.user_ws import FillEvent
-from strategy_weather_sweep.dao import WeatherSweepConfigDAO, WeatherSweepTradeDAO
-from strategy_weather_sweep.internal.clob_book_bbo import ClobBookBboClient
-from strategy_weather_sweep.internal.risk_monitor import SweepRiskMonitor
-from strategy_weather_sweep.internal.sell_failure import (
+from strategy_follow_weather_sweeper.dao import FollowWeatherSweeperConfigDAO, FollowWeatherSweeperTradeDAO
+from strategy_follow_weather_sweeper.internal.clob_book_bbo import ClobBookBboClient
+from strategy_follow_weather_sweeper.internal.risk_monitor import SweepRiskMonitor
+from strategy_follow_weather_sweeper.internal.sell_failure import (
     SellErrorCircuitBreaker,
     SellFailureSnapshot,
     SellFailureTracker,
@@ -96,7 +78,7 @@ class SweepTrade:
         params_version: int = 1,
         config_snapshot: Optional[dict[str, Any]] = None,
         on_exit_failed: Optional[Callable[[str, str], Optional[dict[str, Any]]]] = None,
-        trade_dao: Optional[WeatherSweepTradeDAO] = None,
+        trade_dao: Optional[FollowWeatherSweeperTradeDAO] = None,
         tick_size_service: Optional[TickSizeService] = None,
     ) -> None:
         self.token_id = token_id
@@ -1922,10 +1904,10 @@ class SweepTrade:
 # ============================================================
 
 
-class SweepStrategy:
-    """策略实例：管理多笔并行交易，按 token_id 去重。"""
+class FollowSweepStrategy:
+    """跟随策略实例：监听指定 leader 钱包，跟进 BUY NO。"""
 
-    EVENTS_TABLE = "strategy_weather_sweep_events"
+    EVENTS_TABLE = "strategy_follow_weather_sweeper_events"
 
     # ==================== 工厂方法 ====================
 
@@ -1936,8 +1918,7 @@ class SweepStrategy:
         orderbook_ws: Any,
         book_bbo_client: Optional[ClobBookBboClient] = None,
         tick_size_service: Optional[TickSizeService] = None,
-    ) -> SweepStrategy:
-        """工厂方法 — 根据一条 DB 配置创建完整策略实例。"""
+    ) -> FollowSweepStrategy:
         proxy_wallet = config_data["proxy_wallet"]
         tick_size_service = tick_size_service or TickSizeService()
         book_bbo_client = book_bbo_client or ClobBookBboClient()
@@ -1962,10 +1943,18 @@ class SweepStrategy:
         instance._params_version = config_data.get("params_version", 1)
         instance._draining = False
         instance._trades: dict[str, SweepTrade] = {}
-        instance._trade_dao = WeatherSweepTradeDAO()
-        instance._config_dao = WeatherSweepConfigDAO()
+        instance._trade_dao = FollowWeatherSweeperTradeDAO()
+        instance._config_dao = FollowWeatherSweeperConfigDAO()
         instance._sell_error_breaker = SellErrorCircuitBreaker()
         instance._sell_error_window_sec = 300.0
+
+        leader_wallets = config_data.get("leader_wallets", [])
+        if isinstance(leader_wallets, str):
+            import json as _json
+            leader_wallets = _json.loads(leader_wallets)
+        instance._leader_wallets: set[str] = {
+            w.lower() for w in leader_wallets
+        }
         return instance
 
     # ==================== Signal Dispatch ====================
@@ -2008,29 +1997,11 @@ class SweepStrategy:
 
     def _should_accept_signal(self, signal: Signal) -> bool:
         payload = signal.payload
-        cfg = self._config
-
-        outcome_filter = cfg.get("sweep_outcome_filter", "no")
-        if outcome_filter != "all" and payload.get("outcome", "") != outcome_filter:
+        leader = payload.get("leader_wallet", "").lower()
+        if leader and leader not in self._leader_wallets:
             return False
-
-        source_filter = cfg.get("signal_source_filter", "main")
-        if source_filter == "main" and not payload.get("is_from_main", True):
+        if payload.get("outcome", "") != "no":
             return False
-        if source_filter == "next" and payload.get("is_from_main", True):
-            return False
-
-        threshold_filter = cfg.get("signal_threshold_filter", "all")
-        if threshold_filter != "all":
-            reason = payload.get("reason", "")
-            if f"through_{threshold_filter}_cleared" not in reason:
-                return False
-
-        direction_filter = cfg.get("direction_filter", "all")
-        if direction_filter != "all":
-            if payload.get("direction", "") != direction_filter:
-                return False
-
         return True
 
     def _on_exit_failed(

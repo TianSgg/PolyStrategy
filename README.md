@@ -11,18 +11,19 @@ Polymarket 天气市场量化策略平台。
                             │ HTTP
 ┌───────────────────────────▼─────────────────────────────────┐
 │  Traefik (反向代理)         :8000                            │
-│    /api/auth   → auth-service                               │
-│    /api/account → account-service                           │
-│    /api/weather → signal-weather-orderbook                  │
-│    /api/strategy → strategy-weather-sweep                   │
-└───┬───────────┬────────────────┬────────────────┬───────────┘
-    │           │                │                │
-    ▼           ▼                ▼                ▼
- auth:8010  account:8011  signal:8001      strategy:8003
-                              │ WebSocket        │
-                              └───────┐          │
-                                      ▼          │
-                              Polymarket API ◄───┘
+│    /api/auth           → auth-service                       │
+│    /api/account        → account-service                     │
+│    /api/weather        → signal-weather-orderbook            │
+│    /api/strategy       → strategy-weather-sweep              │
+│    /api/follow-weather → strategy-follow-weather-sweeper     │
+└───┬───────────┬──────────────┬──────────┬─────────┬─────────┘
+    │           │              │          │         │
+    ▼           ▼              ▼          ▼         ▼
+auth:8010  account:8011  signal:8001  strategy:8003  follow:8005
+                               │ WebSocket        │
+                               └───────┐          │
+                                       ▼          │
+                               Polymarket API ◄───┘
 ```
 
 | 服务 | 模块 | 端口 | 说明 |
@@ -31,6 +32,7 @@ Polymarket 天气市场量化策略平台。
 | account-service | `account_service.app` | 8011 | 账户管理、余额、持仓 |
 | signal-weather-orderbook | `signal_weather_orderbook.app` | 8001 | 天气市场订单簿信号采集 |
 | strategy-weather-sweep | `strategy_weather_sweep.app` | 8003 | Weather Sweep 自动交易策略 |
+| strategy-follow-weather-sweeper | `strategy_follow_weather_sweeper.app` | 8005 | 跟随天气扫单者策略（骨架） |
 | frontend | Vite + React / Nginx | 5173 (dev) / 9097 (docker) | 前端 SPA |
 
 ## 快速开始
@@ -101,6 +103,7 @@ cd ..
 | `account-service` | `polystrategy-account` | 8011 | 账户管理 |
 | `signal-weather-orderbook` | `polystrategy-signal-weather-orderbook` | 8001 | 信号采集 |
 | `strategy-weather-sweep` | `polystrategy-strategy-weather-sweep` | 8003 | 交易策略 |
+| `strategy-follow-weather-sweeper` | `polystrategy-strategy-follow-weather-sweeper` | 8005 | 跟随扫单策略 |
 | `frontend` | `polystrategy-frontend` | 9097 | Nginx 静态服务 + API 反代 |
 
 ### 前置: 基础设施 (PolyInfra)
@@ -293,6 +296,7 @@ PolyStrategy/
 | `polystrategy-account` | `/api/account` |
 | `polystrategy-signal-weather-orderbook` | `/api/weather` |
 | `polystrategy-strategy-weather-sweep` | `/api/strategy` |
+| `polystrategy-strategy-follow-weather-sweeper` | `/api/follow-weather` |
 
 ## 数据库
 

@@ -633,6 +633,36 @@ def test_full_fill_after_tick_starts_normal_exit():
     assert close_reason(event_logger) == "normal_exit"
 
 
+def test_immediate_sell_uses_execution_vwap_for_trade_summary():
+    sell_result = OrderResult(
+        order_id="sell-1",
+        status="filled",
+        filled_size="10",
+        filled_price="0.987",
+        clob_status="matched",
+        clob_taking="9.87",
+        clob_making="10",
+    )
+    trade_dao = FakeTradeDAO()
+    trade, _, _, closed = make_trade(
+        sell_result=sell_result,
+        trade_dao=trade_dao,
+    )
+    trade.position_shares = Decimal("10")
+    trade._tick_size = Decimal("0.001")
+
+    run(trade._start_normal_exit())
+
+    assert closed == ["token"]
+    _, fill_update = next(
+        (event_id, update)
+        for event_id, update in trade_dao.updates
+        if update.get("exit_revenue")
+    )
+    assert fill_update["exit_price"] == "0.9870"
+    assert fill_update["exit_revenue"] == "9.870"
+
+
 def test_first_sell_waits_for_clob_sync_grace():
     sell_result = OrderResult(
         order_id="sell-1",

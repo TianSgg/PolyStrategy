@@ -478,7 +478,7 @@ class OrderExecutor:
             # For BUY, taker amount is outcome shares; for SELL, maker amount
             # is outcome shares while taker amount is USDC proceeds.
             filled = taking if side == "BUY" else making
-            if filled <= 0:
+            if filled <= 0 or taking <= 0 or making <= 0:
                 return OrderResult(
                     order_id=clob_order_id,
                     status="failed",
@@ -492,11 +492,18 @@ class OrderExecutor:
                 )
             # partial = some filled but remaining rests on book
             is_partial = filled < order_size
+            # CLOB's response reports the executed maker/taker amounts.  A BUY
+            # receives outcome shares (taking) for USDC (making); a SELL does
+            # the inverse.  This is the execution VWAP, not the submitted
+            # limit price.
+            execution_price = (
+                making / taking if side == "BUY" else taking / making
+            )
             return OrderResult(
                 order_id=clob_order_id,
                 status="partial" if is_partial else "filled",
                 filled_size=str(filled),
-                filled_price=None,
+                filled_price=str(execution_price),
                 clob_status=raw_status,
                 clob_taking=taking_str,
                 clob_making=making_str,

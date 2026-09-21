@@ -72,6 +72,23 @@ services:
     depends_on:
       - signal-weather-orderbook
 
+  strategy-follow-weather-sweeper:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: strategy_follow_weather_sweeper.app
+    container_name: polystrategy-strategy-follow-weather-sweeper
+    network_mode: host
+    env_file: .env
+    environment:
+      SERVICE_NAME: polystrategy-strategy-follow-weather-sweeper
+      SERVICE_PORT: "8005"
+    volumes:
+      - ./logs:/logs
+    restart: unless-stopped
+    depends_on:
+      - auth-service
+
   frontend:
     build:
       context: ./frontend

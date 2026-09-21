@@ -1,22 +1,27 @@
 """策略配置管理 + 执行记录查询 API。"""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from framework.auth import AuthUser, get_current_user
-from strategy_weather_sweep.dao import WeatherSweepConfigDAO, WeatherSweepEventDAO, WeatherSweepTradeDAO
-from strategy_weather_sweep.type import CreateConfigRequest, UpdateConfigRequest
+from strategy_follow_weather_sweeper.dao import (
+    FollowWeatherSweeperConfigDAO,
+    FollowWeatherSweeperEventDAO,
+    FollowWeatherSweeperTradeDAO,
+)
+from strategy_follow_weather_sweeper.type import CreateConfigRequest, UpdateConfigRequest
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/strategy", tags=["strategy"])
+router = APIRouter(prefix="/api/follow-weather", tags=["strategy"])
 
-_config_dao = WeatherSweepConfigDAO()
-_event_dao = WeatherSweepEventDAO()
-_trade_dao = WeatherSweepTradeDAO()
+_config_dao = FollowWeatherSweeperConfigDAO()
+_event_dao = FollowWeatherSweeperEventDAO()
+_trade_dao = FollowWeatherSweeperTradeDAO()
 
 
 # ─── Configs CRUD ───
@@ -46,12 +51,9 @@ async def create_config(data: CreateConfigRequest, request: Request, current_use
             "enabled": int(data.enabled),
             "fixed_entry_shares": data.fixed_entry_shares,
             "entry_wait_ms": data.entry_wait_ms,
-            "sweep_outcome_filter": data.sweep_outcome_filter,
-            "signal_source_filter": data.signal_source_filter,
-            "signal_threshold_filter": data.signal_threshold_filter,
-            "direction_filter": data.direction_filter,
             "stop_loss_ratio": data.stop_loss_ratio,
             "exit_wait_ms": data.exit_wait_ms,
+            "leader_wallets": data.leader_wallets,
         })
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -174,6 +176,11 @@ async def get_trade(event_id: str, current_user: AuthUser = Depends(get_current_
 
 
 async def _reload(request: Request) -> None:
-    """Directly reload the instance pool (same process)."""
     pool = request.app.state.pool
     await pool.reload()
+    predexon = getattr(request.app.state, "predexon", None)
+    if predexon:
+        current_leaders: set[str] = set()
+        for strategy in pool.all_instances():
+            current_leaders.update(strategy._leader_wallets)
+        predexon.sync_leaders(current_leaders)

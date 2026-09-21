@@ -37,6 +37,7 @@ BACKEND_SERVICES=(
     "account|account_service.app|8011|"
     "signal_weather_orderbook|signal_weather_orderbook.app|8001|"
     "strategy_weather_sweep|strategy_weather_sweep.app|8003|"
+    "strategy_follow_weather_sweeper|strategy_follow_weather_sweeper.app|8005|"
 )
 
 # ─── 工具函数 ────────────────────────────────────────────────────────────────

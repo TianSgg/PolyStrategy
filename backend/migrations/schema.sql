@@ -100,10 +100,50 @@ CREATE TABLE weather_orderbook_signals (
   PRIMARY KEY (id),
   UNIQUE KEY uq_signal_id (signal_id),
   KEY idx_event_time (event_slug, occurred_at DESC, id DESC),
+  KEY idx_signal_type_occurred (signal_type, occurred_at DESC, id DESC),
+  KEY idx_local_resolution_lookup (signal_type, outcome, event_slug, occurred_at DESC, id DESC),
   KEY idx_city_date (city_slug, direction, local_date),
   KEY idx_recent (occurred_at DESC, id DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='天气信号记录';
+
+-- ============================================================
+-- 天气事件结算缓存
+-- ============================================================
+CREATE TABLE weather_event_resolutions (
+  event_slug VARCHAR(255) NOT NULL COMMENT 'Polymarket event slug',
+
+  status ENUM('resolved', 'open', 'not_found', 'error') NOT NULL
+    COMMENT 'Latest resolution lookup state',
+  winning_temperature_label VARCHAR(100) NULL
+    COMMENT 'Winning weather outcome label when status is resolved',
+
+  source ENUM('local_signal', 'gamma') NULL
+    COMMENT 'System observation or Polymarket Gamma API',
+  source_signal_id VARCHAR(512) NULL
+    COMMENT 'weather_orderbook_signals.signal_id for local_signal',
+  gamma_event_id VARCHAR(64) NULL
+    COMMENT 'Gamma event ID when available',
+  resolved_at DATETIME(3) NULL
+    COMMENT 'Time this system first confirmed the final resolution in UTC',
+
+  checked_at DATETIME(3) NOT NULL
+    COMMENT 'Time of the latest lookup or local observation in UTC',
+  next_check_at DATETIME(3) NULL
+    COMMENT 'Earliest retry time for non-final states in UTC',
+  raw_payload JSON NULL
+    COMMENT 'Source payload retained for audit and parser changes',
+  last_error VARCHAR(512) NULL
+    COMMENT 'Most recent lookup error for status error',
+
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+
+  PRIMARY KEY (event_slug),
+  KEY idx_resolution_retry (status, next_check_at),
+  KEY idx_resolution_checked (checked_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Polymarket weather event resolution cache';
 
 -- ============================================================
 -- 天气城市种子数据
@@ -190,7 +230,7 @@ CREATE TABLE strategy_weather_sweep_configs (
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 
   PRIMARY KEY (id),
-  UNIQUE KEY uq_owner_name (owner_user_id, name),
+  KEY idx_owner_name (owner_user_id, name),
   KEY idx_account (account_id, enabled)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Weather Sweep 策略配置（一个配置 = 一个实例）';
@@ -283,3 +323,111 @@ CREATE TABLE strategy_weather_sweep_trades (
   KEY idx_closed_at (closed_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Weather Sweep 交易摘要';
+
+-- ============================================================
+-- Follow Weather Sweeper 策略配置
+-- ============================================================
+CREATE TABLE strategy_follow_weather_sweeper_configs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  owner_user_id INT NOT NULL,
+  account_id INT NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+
+  fixed_entry_shares DECIMAL(20,4) NOT NULL DEFAULT 100.0000,
+  entry_wait_ms INT NOT NULL DEFAULT 1200000,
+  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
+  exit_wait_ms INT NOT NULL DEFAULT 5000,
+
+  leader_wallets JSON NOT NULL DEFAULT ('[]'),
+
+  params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  deleted_at DATETIME(3) DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+
+  PRIMARY KEY (id),
+  KEY idx_owner_name (owner_user_id, name),
+  KEY idx_account (account_id, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Follow Weather Sweeper 策略配置';
+
+-- ============================================================
+-- Follow Weather Sweeper 执行事件日志
+-- ============================================================
+CREATE TABLE strategy_follow_weather_sweeper_events (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+  event_id CHAR(36) NOT NULL,
+
+  phase ENUM('entry','exit') NOT NULL DEFAULT 'entry',
+  step VARCHAR(64) NOT NULL,
+  sequence_no INT UNSIGNED NOT NULL,
+  detail JSON NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_event_seq (event_id, sequence_no),
+  KEY idx_phase (phase),
+  KEY idx_occurred (occurred_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Follow Weather Sweeper 执行事件日志';
+
+-- ============================================================
+-- Follow Weather Sweeper 交易摘要
+-- ============================================================
+CREATE TABLE strategy_follow_weather_sweeper_trades (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+  event_id CHAR(36) NOT NULL,
+  config_id BIGINT UNSIGNED NOT NULL,
+  params_version INT UNSIGNED NOT NULL DEFAULT 1,
+  config_snapshot JSON NULL,
+  owner_user_id INT NOT NULL,
+  proxy_wallet VARCHAR(128) NOT NULL,
+
+  signal_id VARCHAR(512) NULL,
+  token_id VARCHAR(128) NULL,
+  market_slug VARCHAR(255) NULL,
+  event_slug VARCHAR(255) NULL,
+  city VARCHAR(100) NULL,
+  direction VARCHAR(16) NULL,
+  outcome VARCHAR(8) NULL COMMENT 'Polymarket outcome: yes/no',
+  temperature_label VARCHAR(100) NULL,
+  is_from_main TINYINT(1) NOT NULL DEFAULT 1,
+
+  phase ENUM('entry', 'exit', 'closed') NOT NULL DEFAULT 'entry',
+  close_reason VARCHAR(64) NULL,
+
+  entry_price DECIMAL(10,4) NULL,
+  entry_shares DECIMAL(20,4) NULL,
+  entry_cost DECIMAL(20,6) NULL,
+  entry_order_size DECIMAL(20,4) NULL,
+  entry_order_id VARCHAR(128) NULL,
+  entry_started_at DATETIME(3) NULL,
+  entered_at DATETIME(3) NULL,
+
+  exit_price DECIMAL(10,4) NULL,
+  exit_shares DECIMAL(20,4) NULL,
+  exit_revenue DECIMAL(20,6) NULL,
+  exit_order_size DECIMAL(20,4) NULL,
+  exit_order_id VARCHAR(128) NULL,
+  exit_started_at DATETIME(3) NULL,
+  exited_at DATETIME(3) NULL,
+
+  pnl DECIMAL(20,6) NULL,
+  pnl_pct DECIMAL(8,4) NULL,
+
+  duration_ms INT UNSIGNED NULL,
+  started_at DATETIME(3) NOT NULL,
+  closed_at DATETIME(3) NULL,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_event_id (event_id),
+  KEY idx_config_phase (config_id, phase),
+  KEY idx_owner (owner_user_id, closed_at DESC),
+  KEY idx_event_slug (event_slug, started_at DESC),
+  KEY idx_phase (phase),
+  KEY idx_closed_at (closed_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Follow Weather Sweeper 交易摘要';
