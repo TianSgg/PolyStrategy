@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Optional
+
+import requests as http_requests
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -247,6 +250,68 @@ async def list_signals(
         offset=offset,
     )
     return {"signals": signals}
+
+
+# ─── Profile (leader 用户名查询) ───
+
+GAMMA_API_URL = "https://gamma-api.polymarket.com"
+_profile_cache: dict[str, tuple[dict, float]] = {}
+_PROFILE_CACHE_TTL = 3600
+
+
+def _fetch_profile(address: str) -> dict:
+    addr = address.lower().strip()
+    cached = _profile_cache.get(addr)
+    if cached and time.time() - cached[1] < _PROFILE_CACHE_TTL:
+        return cached[0]
+    try:
+        resp = http_requests.get(
+            f"{GAMMA_API_URL}/public-profile",
+            params={"address": addr},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            name = (data.get("name") or "").strip()
+            pseudonym = (data.get("pseudonym") or "").strip()
+            display_name = name if name and not name.lower().startswith("0x") else pseudonym or name or ""
+            profile = {
+                "name": display_name,
+                "proxy_wallet": (data.get("proxyWallet") or "").lower().strip(),
+            }
+            _profile_cache[addr] = (profile, time.time())
+            return profile
+    except Exception:
+        logger.debug("Failed to fetch profile for %s", addr[:10])
+    return {"name": "", "proxy_wallet": ""}
+
+
+@router.get("/profile")
+async def get_profile(
+    address: str = Query(...),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    import asyncio
+    profile = await asyncio.to_thread(_fetch_profile, address)
+    return {"address": address, "name": profile["name"]}
+
+
+@router.get("/wallet-value")
+async def get_wallet_value(
+    address: str = Query(...),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    import asyncio
+    from framework.balance import fetch_public_address_value
+    profile = await asyncio.to_thread(_fetch_profile, address)
+    proxy = profile.get("proxy_wallet") or address
+    balance, position_value = await fetch_public_address_value(proxy)
+    return {
+        "address": address,
+        "balance": round(balance, 2),
+        "position_value": round(position_value, 2),
+        "total_value": round(balance + position_value, 2),
+    }
 
 
 # ─── Internal helpers ───

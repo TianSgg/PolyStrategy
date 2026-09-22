@@ -50,7 +50,7 @@ const DEFAULT_FORM = {
 }
 
 export default function FollowSweeperDashboard({ darkMode }: Props) {
-  const { accountBalances } = useBalance()
+  const { accountBalances, refreshAccountBalance } = useBalance()
   const [tab, setTab] = useState<'configs' | 'trades'>('configs')
   const [configs, setConfigs] = useState<FollowConfig[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -71,6 +71,8 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
   const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null)
   const [tradeSteps, setTradeSteps] = useState<any[]>([])
   const [stepsLoading, setStepsLoading] = useState(false)
+  const [leaderNames, setLeaderNames] = useState<Record<string, string>>({})
+  const [leaderValues, setLeaderValues] = useState<Record<string, { position: number; total: number }>>({})
 
   const fetchConfigs = async () => {
     try {
@@ -102,6 +104,36 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
     fetchConfigs()
     fetchAccounts()
   }, [])
+
+  useEffect(() => {
+    const leaderWallets = configs
+      .map(c => c.params?.leader_wallet)
+      .filter((w): w is string => !!w)
+    const uniqueLeaders = [...new Set(leaderWallets.map(w => w.toLowerCase()))]
+    uniqueLeaders.forEach(async addr => {
+      if (!leaderNames[addr]) {
+        try {
+          const res = await apiFetch(`/api/follow-weather/profile?address=${encodeURIComponent(addr)}`)
+          if (res.ok) {
+            const data = await res.json()
+            if (data.name) setLeaderNames(prev => ({ ...prev, [addr]: data.name }))
+          }
+        } catch { /* ignore */ }
+      }
+      try {
+        const res = await apiFetch(`/api/follow-weather/wallet-value?address=${encodeURIComponent(addr)}`)
+        if (res.ok) {
+          const data = await res.json()
+          setLeaderValues(prev => ({ ...prev, [addr]: { position: data.position_value ?? 0, total: data.total_value ?? 0 } }))
+        }
+      } catch { /* ignore */ }
+    })
+    const followerWallets = configs
+      .map(c => c.proxy_wallet)
+      .filter((w): w is string => !!w)
+    const uniqueFollowers = [...new Set(followerWallets.map(w => w.toLowerCase()))]
+    uniqueFollowers.forEach(w => refreshAccountBalance(w))
+  }, [configs])
 
   const handleExpandTrades = async (cfg: FollowConfig) => {
     if (expandedConfigId === cfg.id) {
@@ -245,7 +277,7 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
     await fetchConfigs()
   }
 
-  const SLUG_SCRIPT_EXAMPLE = 'def should_include(slug):\n    if contains(slug, "weather"):\n        return True\n    return False'
+  const SLUG_SCRIPT_EXAMPLE = 'def should_include(slug):\n    keywords = ["weather", "temperature", "rain"]\n    for kw in keywords:\n        if kw in slug:\n            return True\n    return False'
 
   const handleValidateSlugScript = async () => {
     if (!form.slug_script.trim()) {
@@ -414,8 +446,16 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
               </button>
 
               {/* Info */}
+              {(() => {
+                const lw = cfg.params?.leader_wallet?.toLowerCase() || ''
+                const leaderName = leaderNames[lw] || (lw ? lw.slice(0, 8) + '...' : '未设置')
+                const leaderVal = leaderValues[lw]
+                const fw = cfg.proxy_wallet?.toLowerCase() || ''
+                const followerBal = fw ? accountBalances[fw] : undefined
+                const followerName = cfg.account_name || `#${cfg.account_id}`
+                return (
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                   <span style={{ fontSize: '15px', fontWeight: 600, color: textPrimary }}>{cfg.name}</span>
                   <span style={{
                     fontSize: '11px',
@@ -426,31 +466,51 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                   }}>
                     {cfg.enabled ? '运行中' : '已停止'}
                   </span>
+                  {cfg.params?.slug_script && <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: darkMode ? '#292524' : '#fef3c7', color: '#f59e0b' }}>有市场过滤</span>}
                 </div>
-                <div style={{ fontSize: '13px', color: textSecondary, display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
-                  <a
-                    href={cfg.proxy_wallet ? `https://polymarket.com/profile/${cfg.proxy_wallet}` : '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={e => e.stopPropagation()}
-                    style={{ color: '#3b82f6', fontWeight: 500, textDecoration: 'none' }}
-                  >
-                    {cfg.account_name || `#${cfg.account_id}`}
-                    {cfg.proxy_wallet && accountBalances[cfg.proxy_wallet.toLowerCase()]
-                      ? ` ($${accountBalances[cfg.proxy_wallet.toLowerCase()].total_value?.toFixed(2)})`
-                      : ''}
-                  </a>
-                  <span>份额: {cfg.params?.fixed_entry_shares ?? '-'}</span>
-                  <span>止损: {cfg.params?.stop_loss_ratio != null ? (cfg.params.stop_loss_ratio * 100).toFixed(0) + '%' : '-'}</span>
-                  <span>买入超时: {cfg.params?.entry_wait_ms != null ? (cfg.params.entry_wait_ms >= 60000 ? `${(cfg.params.entry_wait_ms / 60000).toFixed(0)}分钟` : `${cfg.params.entry_wait_ms / 1000}秒`) : '-'}</span>
-                  <span style={{ color: '#8b5cf6' }}>Leader: {cfg.params?.leader_wallet ? cfg.params.leader_wallet.slice(0, 8) + '...' : '未设置'}</span>
-                  <span>Token: {{ no: '仅No', yes: '仅Yes', all: '全部' }[cfg.params?.outcome_filter || 'no'] || cfg.params?.outcome_filter}</span>
-                  {cfg.params?.slug_script && <span style={{ color: '#f59e0b' }}>有市场过滤</span>}
+                <div style={{ fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: textSecondary, width: '65px', flexShrink: 0 }}>Leader:</span>
+                    <a
+                      href={lw ? `https://polymarket.com/profile/${lw}` : '#'}
+                      target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      style={{ fontWeight: 600, color: textPrimary, textDecoration: 'none' }}
+                    >{leaderName}</a>
+                    {leaderVal && (
+                      <span style={{ color: '#22c55e' }}>
+                        持仓 ${leaderVal.position.toFixed(2)} / 总 ${leaderVal.total.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: textSecondary, width: '65px', flexShrink: 0 }}>Follower:</span>
+                    <a
+                      href={fw ? `https://polymarket.com/profile/${fw}` : '#'}
+                      target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      style={{ fontWeight: 600, color: textPrimary, textDecoration: 'none' }}
+                    >{followerName}</a>
+                    {followerBal && (
+                      <span style={{ color: '#22c55e' }}>
+                        持仓 ${followerBal.total_position_value?.toFixed(2)} / 总 ${followerBal.total_value?.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '14px', color: textSecondary, marginTop: '2px' }}>
+                    <span>ID: <b>#{cfg.id}</b></span>
+                    <span>买入超时: <b>{cfg.params?.entry_wait_ms != null ? (cfg.params.entry_wait_ms >= 60000 ? `${(cfg.params.entry_wait_ms / 60000).toFixed(0)}分钟` : `${cfg.params.entry_wait_ms / 1000}秒`) : '-'}</b></span>
+                    <span>份额: <b>{cfg.params?.fixed_entry_shares ?? '-'}</b></span>
+                    <span>止损: <b>{cfg.params?.stop_loss_ratio != null ? (cfg.params.stop_loss_ratio * 100).toFixed(0) + '%' : '-'}</b></span>
+                    <span>Token: <b>{{ no: '仅No', yes: '仅Yes', all: '全部' }[cfg.params?.outcome_filter || 'no'] || cfg.params?.outcome_filter}</b></span>
+                  </div>
                 </div>
               </div>
+                )
+              })()}
 
               {/* Actions */}
-              <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+              <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
                 <button
                   onClick={e => { e.stopPropagation(); handleExpandTrades(cfg) }}
                   style={{
@@ -787,7 +847,19 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                 <textarea
                   value={form.slug_script}
                   onChange={e => { setForm({ ...form, slug_script: e.target.value }); setSlugValidation(null) }}
-                  placeholder="留空表示不过滤，点击右上角「填入示例」快速开始"
+                  onKeyDown={e => {
+                    if (e.key === 'Tab') {
+                      e.preventDefault()
+                      const ta = e.currentTarget
+                      const start = ta.selectionStart
+                      const end = ta.selectionEnd
+                      const val = form.slug_script
+                      const updated = val.substring(0, start) + '    ' + val.substring(end)
+                      setForm({ ...form, slug_script: updated })
+                      requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 4 })
+                    }
+                  }}
+                  placeholder="支持 Python 子集: 变量、if/for/while、字符串方法、in 等。点击右上角「填入示例」快速开始"
                   rows={6}
                   style={{
                     ...inputStyle,
@@ -795,6 +867,7 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                     fontFamily: 'monospace',
                     fontSize: '12px',
                     lineHeight: '1.5',
+                    tabSize: 4,
                   }}
                 />
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '4px' }}>

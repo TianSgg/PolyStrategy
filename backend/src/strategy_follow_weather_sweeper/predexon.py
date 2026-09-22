@@ -6,7 +6,6 @@
 import asyncio
 import json
 import logging
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable, Optional
@@ -21,7 +20,6 @@ logger = logging.getLogger(__name__)
 _signal_write_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="signal-dao")
 
 PREDEXON_WS_URL = "wss://wss.predexon.com/"
-PREDEXON_API_KEY = os.getenv("PREDEXON_API_KEY", "")
 
 
 class PredexonAdapter:
@@ -64,10 +62,11 @@ class PredexonAdapter:
 class PredexonClient:
     """Predexon Trades WS — 监听 leader 钱包链上活动（回调模式）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, api_key: str = "") -> None:
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.connected = False
         self._running = False
+        self._api_key = api_key
         self._subscription_id: Optional[str] = None
         self._signal_dao = FollowWeatherSweeperSignalDAO()
         self._leader_addresses: set[str] = set()
@@ -76,7 +75,7 @@ class PredexonClient:
         self,
         on_signal: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
-        if not PREDEXON_API_KEY:
+        if not self._api_key:
             logger.warning("[Predexon] PREDEXON_API_KEY not set, skipping")
             return
         self._on_signal = on_signal
@@ -121,7 +120,7 @@ class PredexonClient:
         delay = 1
         while self._running:
             try:
-                ws_url = f"{PREDEXON_WS_URL}?api_key={PREDEXON_API_KEY}"
+                ws_url = f"{PREDEXON_WS_URL}?api_key={self._api_key}"
                 async with websockets.connect(
                     ws_url, ping_interval=10, open_timeout=15,
                 ) as ws:

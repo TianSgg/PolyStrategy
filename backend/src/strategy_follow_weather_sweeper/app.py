@@ -131,7 +131,7 @@ async def lifespan(app: FastAPI):
     await book_bbo_client.start()
     await pool.start()
 
-    predexon = PredexonClient()
+    predexon = PredexonClient(api_key=_cfg.get("predexon", {}).get("api_key", ""))
     for strategy in pool.all_instances():
         if strategy._leader_wallet:
             predexon.add_leader(strategy._leader_wallet)

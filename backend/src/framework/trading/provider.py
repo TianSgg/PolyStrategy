@@ -12,6 +12,7 @@ from py_clob_client_v2 import ClobClient
 class ClientProvider(Protocol):
     def get_or_create_clob_client(self, proxy_wallet: str) -> Optional[ClobClient]: ...
     def get_acc_name(self, proxy_wallet: str) -> str: ...
+    def repair_signature_type(self, proxy_wallet: str) -> Optional[int]: ...
 
 
 _provider: Optional[ClientProvider] = None
@@ -30,6 +31,12 @@ def get_client(proxy_wallet: str) -> ClobClient:
         name = _provider.get_acc_name(proxy_wallet)
         raise RuntimeError(f"No client for {name}")
     return client
+
+
+def repair_client_signature(proxy_wallet: str) -> Optional[int]:
+    if _provider is None:
+        return None
+    return _provider.repair_signature_type(proxy_wallet)
 
 
 def get_account_name(proxy_wallet: str) -> str:

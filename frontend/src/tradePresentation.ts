@@ -58,6 +58,7 @@ const AMBER_OUTCOME_REASONS = new Set([
 ])
 
 const RED_FAILURE_REASONS = new Set([
+  'buy_placement_failed',
   'sell_placement_failed',
   'sell_fill_parse_error',
   'fill_reconcile_failed',
@@ -91,9 +92,6 @@ export function exitBadge(trade: TradeLike): Badge | null {
   }
 
   if (reason === 'normal_exit') return { icon: '✓', label: '正常退出', tone: 'green' }
-  if (reason === 'buy_placement_failed') {
-    return { icon: '∅', label: CLOSE_REASON_LABELS[reason], tone: 'slate' }
-  }
   if (reason === 'force_exit') {
     return { icon: '■', label: CLOSE_REASON_LABELS[reason], tone: 'slate' }
   }

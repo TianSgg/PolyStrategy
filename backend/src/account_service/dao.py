@@ -174,6 +174,20 @@ class AccountDao:
             conn.close()
 
     @staticmethod
+    def update_signature_type(proxy_wallet: str, signature_type: int) -> bool:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                f"UPDATE accounts SET signature_type = %s, updated_at = {UTC8_DB_NOW_SQL} WHERE proxy_wallet = %s AND deleted_at IS NULL",
+                (signature_type, proxy_wallet.lower()),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    @staticmethod
     def delete(proxy_wallet: str) -> bool:
         """软删除账户（保留交易记录可查）"""
         conn = get_db_connection()

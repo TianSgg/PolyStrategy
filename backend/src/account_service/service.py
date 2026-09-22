@@ -343,6 +343,30 @@ class AccountService:
     def invalidate(self, proxy_wallet: str):
         self._clients.pop(proxy_wallet.lower(), None)
 
+    def repair_signature_type(self, proxy_wallet: str) -> Optional[int]:
+        """Re-detect signature_type, update DB and rebuild cached client.
+
+        Returns the new signature_type, or None if the account was not found.
+        """
+        addr = proxy_wallet.lower()
+        account = AccountDao.get_by_proxy_wallet(addr)
+        if not account:
+            return None
+        private_key = decrypt(account["encrypted_private_key"])
+        if not private_key:
+            return None
+
+        old_type = account["signature_type"]
+        new_type = _detect_signature_type(private_key, addr)
+        if new_type == old_type:
+            logger.info("[Account] repair_signature_type: type unchanged (%d) for %s", old_type, addr[:8])
+        else:
+            AccountDao.update_signature_type(addr, new_type)
+            logger.info("[Account] repair_signature_type: %d -> %d for %s", old_type, new_type, addr[:8])
+
+        self._clients.pop(addr, None)
+        return new_type
+
     # ==================== 启动验证 ====================
 
     def _verify_all_accounts(self):

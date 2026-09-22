@@ -1979,9 +1979,9 @@ class FollowSweepStrategy:
         if signal.token_id in self._trades:
             return
 
-        filter_reason = self._check_signal_filter(signal)
+        filter_reason, filter_duration_ms = self._check_signal_filter(signal)
         if filter_reason:
-            asyncio.create_task(self._record_filtered_signal(signal, filter_reason))
+            asyncio.create_task(self._record_filtered_signal(signal, filter_reason, filter_duration_ms))
             return
 
         el = EventLogger(
@@ -2010,28 +2010,36 @@ class FollowSweepStrategy:
         self._trades[signal.token_id] = trade
         await trade.enter(signal)
 
-    def _check_signal_filter(self, signal: Signal) -> Optional[str]:
-        """Return filter reason string if signal should be rejected, None if accepted."""
+    def _check_signal_filter(self, signal: Signal) -> tuple[Optional[str], Optional[float]]:
+        """Return (filter_reason, filter_duration_ms). reason is None if accepted."""
         payload = signal.payload
         leader = payload.get("leader_wallet", "").lower()
         if self._leader_wallet and leader != self._leader_wallet:
-            return f"leader_mismatch:{leader}"
+            return f"leader_mismatch:{leader}", None
         outcome_filter = self._config.get("outcome_filter", "no")
         outcome = payload.get("outcome", "")
         if outcome_filter != "all" and outcome != outcome_filter:
-            return f"outcome_mismatch:{outcome}!={outcome_filter}"
+            return f"outcome_mismatch:{outcome}!={outcome_filter}", None
         if self._slug_program is not None:
             market_slug = signal.market_slug or ""
+            t0 = time.monotonic()
             try:
-                if not self._slug_program.evaluate(market_slug):
-                    return f"slug_script_rejected:{market_slug}"
+                accepted = self._slug_program.evaluate(market_slug)
             except Exception:
-                logger.warning("SlugScript evaluation failed for %s, accepting signal", market_slug)
-        return None
+                duration_ms = (time.monotonic() - t0) * 1000
+                logger.warning("SlugScript evaluation failed for %s (%.2fms), accepting signal",
+                               market_slug, duration_ms)
+                return None, duration_ms
+            duration_ms = (time.monotonic() - t0) * 1000
+            if not accepted:
+                return f"slug_script_rejected:{market_slug}", duration_ms
+            return None, duration_ms
+        return None, None
 
-    async def _record_filtered_signal(self, signal: Signal, reason: str) -> None:
-        logger.info("[cfg=%d] signal %s filtered: %s",
-                    self._config["id"], signal.signal_id, reason)
+    async def _record_filtered_signal(self, signal: Signal, reason: str, filter_duration_ms: Optional[float] = None) -> None:
+        logger.info("[cfg=%d] signal %s filtered: %s (%.2fms)",
+                    self._config["id"], signal.signal_id, reason,
+                    filter_duration_ms or 0)
         el = EventLogger(
             table=self.EVENTS_TABLE,
             owner_user_id=self._owner_user_id,
@@ -2045,14 +2053,17 @@ class FollowSweepStrategy:
             market_slug=signal.market_slug,
             event_slug=signal.payload.get("event_slug"),
         )
-        el.log_step("signal_filtered", {
+        step_detail = {
             "signal_id": signal.signal_id,
             "token_id": signal.token_id,
             "market_slug": signal.market_slug,
             "outcome": signal.payload.get("outcome", ""),
             "leader_wallet": signal.payload.get("leader_wallet", ""),
             "filter_reason": reason,
-        }, phase="entry")
+        }
+        if filter_duration_ms is not None:
+            step_detail["filter_duration_ms"] = round(filter_duration_ms, 3)
+        el.log_step("signal_filtered", step_detail, phase="entry")
         el.end_event()
         if self._trade_dao and el.event_id:
             trade_data = {
