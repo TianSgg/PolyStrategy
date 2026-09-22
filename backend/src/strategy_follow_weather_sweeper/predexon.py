@@ -26,7 +26,7 @@ class PredexonAdapter:
     def adapt(self, event: dict[str, Any]) -> Optional[Signal]:
         side = event.get("side", "").upper()
         outcome = event.get("outcome", "").lower()
-        if side != "BUY" or outcome != "no":
+        if side != "BUY":
             return None
 
         token_id = event.get("token_id", "")
@@ -38,16 +38,20 @@ class PredexonAdapter:
             signal_id=f"predexon:{tx_hash}:{token_id}",
             signal_type="sweep",
             token_id=token_id,
-            market_slug="",
+            market_slug=event.get("market_slug", ""),
             occurred_at_ms=int(time.time() * 1000),
             source="predexon",
             payload={
-                "outcome": "no",
+                "outcome": outcome,
                 "leader_wallet": event.get("user", "").lower(),
                 "leader_price": event.get("price", 0),
                 "leader_size": event.get("shares_normalized", 0),
                 "tx_hash": tx_hash,
                 "role": event.get("role", ""),
+                "condition_id": event.get("condition_id", ""),
+                "title": event.get("title", ""),
+                "token_label": event.get("token_label", ""),
+                "is_neg_risk": event.get("is_neg_risk", False),
                 "orderbook_snapshot": {},
             },
         )

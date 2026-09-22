@@ -133,8 +133,8 @@ async def lifespan(app: FastAPI):
 
     predexon = PredexonClient()
     for strategy in pool.all_instances():
-        for addr in strategy._leader_wallets:
-            predexon.add_leader(addr)
+        if strategy._leader_wallet:
+            predexon.add_leader(strategy._leader_wallet)
     predexon_task = asyncio.create_task(
         predexon.start(on_signal=_dispatch_signal), name="ws:predexon"
     )
@@ -193,7 +193,8 @@ async def reload():
     if predexon:
         current_leaders: set[str] = set()
         for strategy in pool.all_instances():
-            current_leaders.update(strategy._leader_wallets)
+            if strategy._leader_wallet:
+                current_leaders.add(strategy._leader_wallet)
         predexon.sync_leaders(current_leaders)
     return {"status": "ok", **result}
 

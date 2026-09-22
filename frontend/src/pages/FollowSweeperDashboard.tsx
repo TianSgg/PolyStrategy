@@ -10,6 +10,16 @@ interface Account {
   proxy_wallet: string
 }
 
+interface ConfigParams {
+  fixed_entry_shares: number
+  entry_wait_ms: number
+  stop_loss_ratio: number
+  exit_wait_ms: number
+  leader_wallet: string
+  outcome_filter: string
+  slug_script: string | null
+}
+
 interface FollowConfig {
   id: number
   account_id: number
@@ -17,11 +27,7 @@ interface FollowConfig {
   proxy_wallet?: string
   name: string
   enabled: number
-  fixed_entry_shares: number
-  entry_wait_ms: number
-  stop_loss_ratio: number
-  exit_wait_ms: number
-  leader_wallets: string[]
+  params: ConfigParams
   params_version: number
   created_at: string
   updated_at: string
@@ -38,7 +44,9 @@ const DEFAULT_FORM = {
   entry_wait_ms: 1200000,
   stop_loss_ratio: 0.6,
   exit_wait_ms: 5000,
-  leader_wallets_text: '',
+  leader_wallet: '',
+  outcome_filter: 'no',
+  slug_script: '',
 }
 
 export default function FollowSweeperDashboard({ darkMode }: Props) {
@@ -161,32 +169,27 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
     if (!form.name.trim() || !form.account_id) return
     setSaving(true)
     try {
-      const leader_wallets = form.leader_wallets_text
-        .split(/[\n,]+/)
-        .map(s => s.trim().toLowerCase())
-        .filter(s => s.length > 0)
-
-      const payload = {
-        account_id: form.account_id,
-        name: form.name,
+      const params = {
         fixed_entry_shares: form.fixed_entry_shares,
         entry_wait_ms: form.entry_wait_ms,
         stop_loss_ratio: form.stop_loss_ratio,
         exit_wait_ms: form.exit_wait_ms,
-        leader_wallets,
+        leader_wallet: form.leader_wallet.trim().toLowerCase(),
+        outcome_filter: form.outcome_filter,
+        slug_script: form.slug_script || null,
       }
 
       if (editingId) {
         await apiFetch(`/api/follow-weather/configs/${editingId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ name: form.name, params }),
         })
       } else {
         await apiFetch('/api/follow-weather/configs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ account_id: form.account_id, name: form.name, params }),
         })
       }
       setShowForm(false)
@@ -202,14 +205,17 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
 
   const handleEdit = (cfg: FollowConfig) => {
     setEditingId(cfg.id)
+    const p = cfg.params || {} as ConfigParams
     setForm({
       account_id: cfg.account_id,
       name: cfg.name,
-      fixed_entry_shares: cfg.fixed_entry_shares,
-      entry_wait_ms: cfg.entry_wait_ms,
-      stop_loss_ratio: cfg.stop_loss_ratio,
-      exit_wait_ms: cfg.exit_wait_ms,
-      leader_wallets_text: (cfg.leader_wallets || []).join('\n'),
+      fixed_entry_shares: p.fixed_entry_shares ?? 100,
+      entry_wait_ms: p.entry_wait_ms ?? 1200000,
+      stop_loss_ratio: p.stop_loss_ratio ?? 0.6,
+      exit_wait_ms: p.exit_wait_ms ?? 5000,
+      leader_wallet: p.leader_wallet || '',
+      outcome_filter: p.outcome_filter || 'no',
+      slug_script: p.slug_script || '',
     })
     setShowForm(true)
   }
@@ -373,10 +379,12 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                       ? ` ($${accountBalances[cfg.proxy_wallet.toLowerCase()].total_value?.toFixed(2)})`
                       : ''}
                   </a>
-                  <span>份额: {cfg.fixed_entry_shares}</span>
-                  <span>止损: {(cfg.stop_loss_ratio * 100).toFixed(0)}%</span>
-                  <span>买入超时: {cfg.entry_wait_ms >= 60000 ? `${(cfg.entry_wait_ms / 60000).toFixed(0)}分钟` : `${cfg.entry_wait_ms / 1000}秒`}</span>
-                  <span style={{ color: '#8b5cf6' }}>Leader: {(cfg.leader_wallets || []).length} 个钱包</span>
+                  <span>份额: {cfg.params?.fixed_entry_shares ?? '-'}</span>
+                  <span>止损: {cfg.params?.stop_loss_ratio != null ? (cfg.params.stop_loss_ratio * 100).toFixed(0) + '%' : '-'}</span>
+                  <span>买入超时: {cfg.params?.entry_wait_ms != null ? (cfg.params.entry_wait_ms >= 60000 ? `${(cfg.params.entry_wait_ms / 60000).toFixed(0)}分钟` : `${cfg.params.entry_wait_ms / 1000}秒`) : '-'}</span>
+                  <span style={{ color: '#8b5cf6' }}>Leader: {cfg.params?.leader_wallet ? cfg.params.leader_wallet.slice(0, 8) + '...' : '未设置'}</span>
+                  <span>Token: {{ no: '仅No', yes: '仅Yes', all: '全部' }[cfg.params?.outcome_filter || 'no'] || cfg.params?.outcome_filter}</span>
+                  {cfg.params?.slug_script && <span style={{ color: '#f59e0b' }}>有市场过滤</span>}
                 </div>
               </div>
 
@@ -626,26 +634,17 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                 </select>
               </div>
 
-              {/* Leader Wallets */}
+              {/* Leader Wallet */}
               <div>
                 <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
-                  Leader 钱包地址 (每行一个或逗号分隔)
+                  Leader 钱包地址
                 </label>
-                <textarea
-                  value={form.leader_wallets_text}
-                  onChange={e => setForm({ ...form, leader_wallets_text: e.target.value })}
-                  placeholder="0x1234...&#10;0x5678..."
-                  rows={4}
-                  style={{
-                    ...inputStyle,
-                    resize: 'vertical',
-                    fontFamily: 'monospace',
-                    fontSize: '12px',
-                  }}
+                <input
+                  value={form.leader_wallet}
+                  onChange={e => setForm({ ...form, leader_wallet: e.target.value })}
+                  placeholder="0x1234..."
+                  style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '12px' }}
                 />
-                <div style={{ fontSize: '11px', color: textSecondary, marginTop: '4px' }}>
-                  当前 {form.leader_wallets_text.split(/[\n,]+/).filter(s => s.trim()).length} 个地址
-                </div>
               </div>
 
               {/* Fixed Entry Shares */}
@@ -686,6 +685,45 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                   onChange={e => setForm({ ...form, entry_wait_ms: Number(e.target.value) })}
                   style={inputStyle}
                 />
+              </div>
+
+              {/* Outcome Filter */}
+              <div>
+                <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
+                  Token 方向
+                </label>
+                <select
+                  value={form.outcome_filter}
+                  onChange={e => setForm({ ...form, outcome_filter: e.target.value })}
+                  style={inputStyle}
+                >
+                  <option value="no">仅 No</option>
+                  <option value="yes">仅 Yes</option>
+                  <option value="all">全部</option>
+                </select>
+              </div>
+
+              {/* Slug Script */}
+              <div>
+                <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
+                  市场过滤脚本 (留空表示不过滤)
+                </label>
+                <textarea
+                  value={form.slug_script}
+                  onChange={e => setForm({ ...form, slug_script: e.target.value })}
+                  placeholder={'def should_include(slug):\n    if contains(slug, "weather"):\n        return True\n    return False'}
+                  rows={6}
+                  style={{
+                    ...inputStyle,
+                    resize: 'vertical',
+                    fontFamily: 'monospace',
+                    fontSize: '12px',
+                    lineHeight: '1.5',
+                  }}
+                />
+                <div style={{ fontSize: '11px', color: textSecondary, marginTop: '4px' }}>
+                  支持: contains / starts_with / ends_with / contains_any / matches
+                </div>
               </div>
             </div>
 

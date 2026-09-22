@@ -5,9 +5,11 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from framework.auth import AuthUser, get_current_user
+from framework.slug_script import SlugProgram, SlugScriptError, validate_slug_script
 from strategy_follow_weather_sweeper.dao import (
     FollowWeatherSweeperConfigDAO,
     FollowWeatherSweeperEventDAO,
@@ -22,6 +24,15 @@ router = APIRouter(prefix="/api/follow-weather", tags=["strategy"])
 _config_dao = FollowWeatherSweeperConfigDAO()
 _event_dao = FollowWeatherSweeperEventDAO()
 _trade_dao = FollowWeatherSweeperTradeDAO()
+
+
+def _validate_params_slug_script(params_dict: dict) -> None:
+    script = params_dict.get("slug_script")
+    if script and script.strip():
+        try:
+            SlugProgram.compile(script)
+        except SlugScriptError as exc:
+            raise HTTPException(status_code=400, detail=exc.as_dict())
 
 
 # ─── Configs CRUD ───
@@ -43,17 +54,15 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
 
 @router.post("/configs")
 async def create_config(data: CreateConfigRequest, request: Request, current_user: AuthUser = Depends(get_current_user)):
+    params_dict = data.params.model_dump()
+    _validate_params_slug_script(params_dict)
     try:
         config_id = _config_dao.create({
             "owner_user_id": current_user.id,
             "account_id": data.account_id,
             "name": data.name,
             "enabled": int(data.enabled),
-            "fixed_entry_shares": data.fixed_entry_shares,
-            "entry_wait_ms": data.entry_wait_ms,
-            "stop_loss_ratio": data.stop_loss_ratio,
-            "exit_wait_ms": data.exit_wait_ms,
-            "leader_wallets": data.leader_wallets,
+            "params": params_dict,
         })
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -72,9 +81,15 @@ async def update_config(
     if not cfg or not current_user.can_view(cfg["owner_user_id"]):
         raise HTTPException(status_code=404, detail="Config not found")
 
-    updates = data.model_dump(exclude_none=True)
-    if "enabled" in updates:
-        updates["enabled"] = int(updates["enabled"])
+    updates: dict = {}
+    if data.name is not None:
+        updates["name"] = data.name
+    if data.enabled is not None:
+        updates["enabled"] = int(data.enabled)
+    if data.params is not None:
+        params_dict = data.params.model_dump()
+        _validate_params_slug_script(params_dict)
+        updates["params"] = params_dict
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -91,6 +106,21 @@ async def delete_config(config_id: int, request: Request, current_user: AuthUser
     _config_dao.soft_delete(config_id)
     await _reload(request)
     return {"status": "ok"}
+
+
+# ─── SlugScript 校验 ───
+
+
+class SlugScriptValidateRequest(BaseModel):
+    slug_script: str
+
+
+@router.post("/validate-slug-script")
+async def validate_slug_script_endpoint(
+    data: SlugScriptValidateRequest,
+    current_user: AuthUser = Depends(get_current_user),
+):
+    return validate_slug_script(data.slug_script)
 
 
 # ─── Events (执行记录) ───
@@ -182,5 +212,6 @@ async def _reload(request: Request) -> None:
     if predexon:
         current_leaders: set[str] = set()
         for strategy in pool.all_instances():
-            current_leaders.update(strategy._leader_wallets)
+            if strategy._leader_wallet:
+                current_leaders.add(strategy._leader_wallet)
         predexon.sync_leaders(current_leaders)

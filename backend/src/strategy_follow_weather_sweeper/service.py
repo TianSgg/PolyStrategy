@@ -24,6 +24,7 @@ from framework.strategy_runtime.tick_size_service import (
     TickSizeService,
 )
 from framework.strategy_runtime.tick_verifier import TickVerifier
+from framework.slug_script import SlugProgram, SlugScriptError
 from framework.user_ws import FillEvent
 from strategy_follow_weather_sweeper.dao import FollowWeatherSweeperConfigDAO, FollowWeatherSweeperTradeDAO
 from strategy_follow_weather_sweeper.internal.clob_book_bbo import ClobBookBboClient
@@ -1948,13 +1949,18 @@ class FollowSweepStrategy:
         instance._sell_error_breaker = SellErrorCircuitBreaker()
         instance._sell_error_window_sec = 300.0
 
-        leader_wallets = config_data.get("leader_wallets", [])
-        if isinstance(leader_wallets, str):
-            import json as _json
-            leader_wallets = _json.loads(leader_wallets)
-        instance._leader_wallets: set[str] = {
-            w.lower() for w in leader_wallets
-        }
+        params = config_data.get("params", {})
+        leader_wallet = config_data.get("leader_wallet") or params.get("leader_wallet", "")
+        instance._leader_wallet: str = leader_wallet.lower().strip() if leader_wallet else ""
+
+        slug_script_src = params.get("slug_script")
+        instance._slug_program: Optional[SlugProgram] = None
+        if slug_script_src and slug_script_src.strip():
+            try:
+                instance._slug_program = SlugProgram.compile(slug_script_src)
+            except SlugScriptError:
+                logger.warning("Invalid slug_script in config %d, ignoring", config_data["id"])
+
         return instance
 
     # ==================== Signal Dispatch ====================
@@ -1998,10 +2004,18 @@ class FollowSweepStrategy:
     def _should_accept_signal(self, signal: Signal) -> bool:
         payload = signal.payload
         leader = payload.get("leader_wallet", "").lower()
-        if leader and leader not in self._leader_wallets:
+        if self._leader_wallet and leader != self._leader_wallet:
             return False
-        if payload.get("outcome", "") != "no":
+        outcome_filter = self._config.get("outcome_filter", "no")
+        if outcome_filter != "all" and payload.get("outcome", "") != outcome_filter:
             return False
+        if self._slug_program is not None:
+            market_slug = signal.market_slug or ""
+            try:
+                if not self._slug_program.evaluate(market_slug):
+                    return False
+            except Exception:
+                logger.warning("SlugScript evaluation failed for %s, accepting signal", market_slug)
         return True
 
     def _on_exit_failed(

@@ -334,12 +334,7 @@ CREATE TABLE strategy_follow_weather_sweeper_configs (
   name VARCHAR(128) NOT NULL,
   enabled TINYINT(1) NOT NULL DEFAULT 0,
 
-  fixed_entry_shares DECIMAL(20,4) NOT NULL DEFAULT 100.0000,
-  entry_wait_ms INT NOT NULL DEFAULT 1200000,
-  stop_loss_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.6000,
-  exit_wait_ms INT NOT NULL DEFAULT 5000,
-
-  leader_wallets JSON NOT NULL DEFAULT ('[]'),
+  params JSON NOT NULL DEFAULT ('{}'),
 
   params_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
   deleted_at DATETIME(3) DEFAULT NULL,
