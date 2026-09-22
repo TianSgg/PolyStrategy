@@ -41,7 +41,7 @@ const DEFAULT_FORM = {
   account_id: 0,
   name: '',
   fixed_entry_shares: 100,
-  entry_wait_ms: 1200000,
+  entry_wait_min: 20,
   stop_loss_ratio: 0.6,
   exit_wait_ms: 5000,
   leader_wallet: '',
@@ -60,6 +60,11 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
   const [form, setForm] = useState(DEFAULT_FORM)
   const [saving, setSaving] = useState(false)
   const [togglingId, setTogglingId] = useState<number | null>(null)
+  const [slugValidation, setSlugValidation] = useState<{ valid: boolean; message?: string } | null>(null)
+  const [slugValidating, setSlugValidating] = useState(false)
+  const [testSlug, setTestSlug] = useState('')
+  const [testResult, setTestResult] = useState<{ result?: boolean; error?: boolean; message?: string } | null>(null)
+  const [testRunning, setTestRunning] = useState(false)
   const [expandedConfigId, setExpandedConfigId] = useState<number | null>(null)
   const [configTrades, setConfigTrades] = useState<any[]>([])
   const [tradesLoading, setTradesLoading] = useState(false)
@@ -169,9 +174,23 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
     if (!form.name.trim() || !form.account_id) return
     setSaving(true)
     try {
+      if (form.slug_script.trim()) {
+        const vRes = await apiFetch('/api/follow-weather/validate-slug-script', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slug_script: form.slug_script }),
+        })
+        const vData = await vRes.json()
+        if (!vData.valid) {
+          setSlugValidation(vData)
+          setSaving(false)
+          return
+        }
+      }
+
       const params = {
         fixed_entry_shares: form.fixed_entry_shares,
-        entry_wait_ms: form.entry_wait_ms,
+        entry_wait_ms: Math.round(form.entry_wait_min * 60000),
         stop_loss_ratio: form.stop_loss_ratio,
         exit_wait_ms: form.exit_wait_ms,
         leader_wallet: form.leader_wallet.trim().toLowerCase(),
@@ -210,7 +229,7 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
       account_id: cfg.account_id,
       name: cfg.name,
       fixed_entry_shares: p.fixed_entry_shares ?? 100,
-      entry_wait_ms: p.entry_wait_ms ?? 1200000,
+      entry_wait_min: (p.entry_wait_ms ?? 1200000) / 60000,
       stop_loss_ratio: p.stop_loss_ratio ?? 0.6,
       exit_wait_ms: p.exit_wait_ms ?? 5000,
       leader_wallet: p.leader_wallet || '',
@@ -224,6 +243,48 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
     if (!confirm('确定删除此配置?')) return
     await apiFetch(`/api/follow-weather/configs/${id}`, { method: 'DELETE' })
     await fetchConfigs()
+  }
+
+  const SLUG_SCRIPT_EXAMPLE = 'def should_include(slug):\n    if contains(slug, "weather"):\n        return True\n    return False'
+
+  const handleValidateSlugScript = async () => {
+    if (!form.slug_script.trim()) {
+      setSlugValidation({ valid: true, message: '脚本为空，不进行过滤' })
+      return
+    }
+    setSlugValidating(true)
+    setSlugValidation(null)
+    try {
+      const res = await apiFetch('/api/follow-weather/validate-slug-script', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug_script: form.slug_script }),
+      })
+      const data = await res.json()
+      setSlugValidation(data)
+    } catch {
+      setSlugValidation({ valid: false, message: '校验请求失败' })
+    } finally {
+      setSlugValidating(false)
+    }
+  }
+
+  const handleTestSlugScript = async () => {
+    if (!testSlug.trim()) return
+    setTestRunning(true)
+    setTestResult(null)
+    try {
+      const res = await apiFetch('/api/follow-weather/test-slug-script', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug_script: form.slug_script, test_slug: testSlug }),
+      })
+      setTestResult(await res.json())
+    } catch {
+      setTestResult({ error: true, message: '测试请求失败' })
+    } finally {
+      setTestRunning(false)
+    }
   }
 
   const bg = darkMode ? '#0f172a' : '#f8fafc'
@@ -677,12 +738,13 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
               {/* Entry Wait */}
               <div>
                 <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
-                  买入超时 (ms)
+                  买入超时 (分钟)
                 </label>
                 <input
                   type="number"
-                  value={form.entry_wait_ms}
-                  onChange={e => setForm({ ...form, entry_wait_ms: Number(e.target.value) })}
+                  step="1"
+                  value={form.entry_wait_min}
+                  onChange={e => setForm({ ...form, entry_wait_min: Number(e.target.value) })}
                   style={inputStyle}
                 />
               </div>
@@ -705,13 +767,27 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
 
               {/* Slug Script */}
               <div>
-                <label style={{ fontSize: '13px', color: textSecondary, marginBottom: '4px', display: 'block' }}>
-                  市场过滤脚本 (留空表示不过滤)
-                </label>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                  <label style={{ fontSize: '13px', color: textSecondary }}>
+                    市场过滤脚本 (留空表示不过滤)
+                  </label>
+                  {!form.slug_script.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => { setForm({ ...form, slug_script: SLUG_SCRIPT_EXAMPLE }); setSlugValidation(null) }}
+                      style={{
+                        padding: '2px 8px', borderRadius: '4px', border: `1px solid ${border}`,
+                        background: 'transparent', color: '#3b82f6', fontSize: '11px', cursor: 'pointer',
+                      }}
+                    >
+                      填入示例
+                    </button>
+                  )}
+                </div>
                 <textarea
                   value={form.slug_script}
-                  onChange={e => setForm({ ...form, slug_script: e.target.value })}
-                  placeholder={'def should_include(slug):\n    if contains(slug, "weather"):\n        return True\n    return False'}
+                  onChange={e => { setForm({ ...form, slug_script: e.target.value }); setSlugValidation(null) }}
+                  placeholder="留空表示不过滤，点击右上角「填入示例」快速开始"
                   rows={6}
                   style={{
                     ...inputStyle,
@@ -721,9 +797,70 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                     lineHeight: '1.5',
                   }}
                 />
-                <div style={{ fontSize: '11px', color: textSecondary, marginTop: '4px' }}>
-                  支持: contains / starts_with / ends_with / contains_any / matches
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '4px' }}>
+                  <div style={{ fontSize: '11px', color: textSecondary }}>
+                    支持: contains / starts_with / ends_with / contains_any / matches
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleValidateSlugScript}
+                    disabled={slugValidating}
+                    style={{
+                      padding: '3px 10px', borderRadius: '4px', border: `1px solid ${border}`,
+                      background: 'transparent', color: textPrimary, fontSize: '12px', cursor: 'pointer',
+                    }}
+                  >
+                    {slugValidating ? '校验中...' : '校验语法'}
+                  </button>
                 </div>
+                {slugValidation && (
+                  <div style={{
+                    marginTop: '6px', padding: '6px 10px', borderRadius: '6px', fontSize: '12px',
+                    background: slugValidation.valid ? (darkMode ? '#052e16' : '#dcfce7') : (darkMode ? '#450a0a' : '#fee2e2'),
+                    color: slugValidation.valid ? '#16a34a' : '#ef4444',
+                  }}>
+                    {slugValidation.valid ? '语法正确' : `语法错误: ${slugValidation.message}`}
+                  </div>
+                )}
+                {form.slug_script.trim() && (
+                  <div style={{ marginTop: '8px', padding: '10px', borderRadius: '6px', background: darkMode ? '#1a2332' : '#f1f5f9' }}>
+                    <div style={{ fontSize: '12px', color: textSecondary, marginBottom: '6px' }}>测试: 输入 market slug 查看过滤结果</div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <input
+                        value={testSlug}
+                        onChange={e => { setTestSlug(e.target.value); setTestResult(null) }}
+                        onKeyDown={e => { if (e.key === 'Enter') handleTestSlugScript() }}
+                        placeholder="输入 market slug 测试..."
+                        style={{ ...inputStyle, flex: 1, fontFamily: 'monospace', fontSize: '12px' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleTestSlugScript}
+                        disabled={testRunning || !testSlug.trim()}
+                        style={{
+                          padding: '6px 14px', borderRadius: '6px', border: `1px solid ${border}`,
+                          background: 'transparent', color: textPrimary, fontSize: '12px',
+                          cursor: testRunning || !testSlug.trim() ? 'not-allowed' : 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {testRunning ? '...' : '测试'}
+                      </button>
+                    </div>
+                    {testResult && (
+                      <div style={{
+                        marginTop: '6px', fontSize: '12px', fontWeight: 500,
+                        color: testResult.error ? '#ef4444' : testResult.result ? '#16a34a' : '#f59e0b',
+                      }}>
+                        {testResult.error
+                          ? testResult.message
+                          : testResult.result
+                            ? `通过 — "${testSlug}" 会被接受`
+                            : `拒绝 — "${testSlug}" 会被过滤`}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 

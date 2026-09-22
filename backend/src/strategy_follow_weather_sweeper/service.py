@@ -1894,10 +1894,16 @@ class SweepTrade:
     def _update_trade_summary(self, data: dict[str, Any]) -> None:
         if not self._trade_dao or not self._el or not self._el.event_id:
             return
+        event_id = self._el.event_id
+        dao = self._trade_dao
         try:
-            self._trade_dao.update_by_event_id(self._el.event_id, data)
-        except Exception:
-            logger.exception("Failed to update trade summary")
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, dao.update_by_event_id, event_id, data)
+        except RuntimeError:
+            try:
+                dao.update_by_event_id(event_id, data)
+            except Exception:
+                logger.exception("Failed to update trade summary")
 
 
 # ============================================================
@@ -1972,7 +1978,10 @@ class FollowSweepStrategy:
             return
         if signal.token_id in self._trades:
             return
-        if not self._should_accept_signal(signal):
+
+        filter_reason = self._check_signal_filter(signal)
+        if filter_reason:
+            asyncio.create_task(self._record_filtered_signal(signal, filter_reason))
             return
 
         el = EventLogger(
@@ -2001,22 +2010,73 @@ class FollowSweepStrategy:
         self._trades[signal.token_id] = trade
         await trade.enter(signal)
 
-    def _should_accept_signal(self, signal: Signal) -> bool:
+    def _check_signal_filter(self, signal: Signal) -> Optional[str]:
+        """Return filter reason string if signal should be rejected, None if accepted."""
         payload = signal.payload
         leader = payload.get("leader_wallet", "").lower()
         if self._leader_wallet and leader != self._leader_wallet:
-            return False
+            return f"leader_mismatch:{leader}"
         outcome_filter = self._config.get("outcome_filter", "no")
-        if outcome_filter != "all" and payload.get("outcome", "") != outcome_filter:
-            return False
+        outcome = payload.get("outcome", "")
+        if outcome_filter != "all" and outcome != outcome_filter:
+            return f"outcome_mismatch:{outcome}!={outcome_filter}"
         if self._slug_program is not None:
             market_slug = signal.market_slug or ""
             try:
                 if not self._slug_program.evaluate(market_slug):
-                    return False
+                    return f"slug_script_rejected:{market_slug}"
             except Exception:
                 logger.warning("SlugScript evaluation failed for %s, accepting signal", market_slug)
-        return True
+        return None
+
+    async def _record_filtered_signal(self, signal: Signal, reason: str) -> None:
+        logger.info("[cfg=%d] signal %s filtered: %s",
+                    self._config["id"], signal.signal_id, reason)
+        el = EventLogger(
+            table=self.EVENTS_TABLE,
+            owner_user_id=self._owner_user_id,
+            proxy_wallet=self._proxy_wallet,
+            config_id=self._config_id,
+            config_snapshot=self._config_snapshot,
+        )
+        el.start_event(
+            signal_id=signal.signal_id,
+            token_id=signal.token_id,
+            market_slug=signal.market_slug,
+            event_slug=signal.payload.get("event_slug"),
+        )
+        el.log_step("signal_filtered", {
+            "signal_id": signal.signal_id,
+            "token_id": signal.token_id,
+            "market_slug": signal.market_slug,
+            "outcome": signal.payload.get("outcome", ""),
+            "leader_wallet": signal.payload.get("leader_wallet", ""),
+            "filter_reason": reason,
+        }, phase="entry")
+        el.end_event()
+        if self._trade_dao and el.event_id:
+            trade_data = {
+                "event_id": el.event_id,
+                "config_id": self._config_id,
+                "owner_user_id": self._owner_user_id,
+                "proxy_wallet": self._proxy_wallet,
+                "signal_id": signal.signal_id,
+                "token_id": signal.token_id,
+                "market_slug": signal.market_slug,
+                "event_slug": signal.payload.get("event_slug"),
+                "outcome": signal.payload.get("outcome"),
+                "params_version": self._params_version,
+                "config_snapshot": json.dumps(self._config_snapshot, ensure_ascii=False, default=str),
+                "phase": "closed",
+                "close_reason": "filtered",
+                "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                "closed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                "duration_ms": 0,
+            }
+            try:
+                await asyncio.to_thread(self._trade_dao.insert, trade_data)
+            except Exception:
+                logger.exception("Failed to insert filtered trade summary")
 
     def _on_exit_failed(
         self, token_id: str, error_signature: str,

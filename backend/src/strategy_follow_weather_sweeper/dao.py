@@ -439,3 +439,96 @@ class FollowWeatherSweeperTradeDAO:
         if isinstance(d.get("config_snapshot"), str):
             d["config_snapshot"] = json.loads(d["config_snapshot"])
         return d
+
+
+class FollowWeatherSweeperSignalDAO:
+    """strategy_follow_weather_sweeper_signals 写入 + 查询。"""
+
+    TABLE = "strategy_follow_weather_sweeper_signals"
+
+    def insert(self, event: Dict[str, Any]) -> Optional[int]:
+        sql = f"""
+            INSERT IGNORE INTO {self.TABLE} (
+                tx_hash, log_index, order_hash,
+                leader_wallet, taker, role,
+                side, price, shares, shares_normalized, fee,
+                token_id, token_label, outcome, outcome_index,
+                complement_token_id, complement_token_label,
+                condition_id, market_slug, market_id, title, is_neg_risk,
+                status, version, event_timestamp
+            ) VALUES (
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s
+            )
+        """
+        params = (
+            event.get("tx_hash", ""),
+            event.get("log_index"),
+            event.get("order_hash"),
+            event.get("user", "").lower(),
+            event.get("taker", "").lower() if event.get("taker") else None,
+            event.get("role", "maker"),
+            event.get("side", "").upper(),
+            event.get("price", 0),
+            event.get("shares"),
+            event.get("shares_normalized"),
+            event.get("fee"),
+            event.get("token_id", ""),
+            event.get("token_label"),
+            event.get("outcome"),
+            event.get("outcome_index"),
+            event.get("complement_token_id"),
+            event.get("complement_token_label"),
+            event.get("condition_id"),
+            event.get("market_slug"),
+            event.get("market_id"),
+            event.get("title"),
+            1 if event.get("is_neg_risk") else 0,
+            event.get("status", "pending"),
+            event.get("version"),
+            event.get("timestamp"),
+        )
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+            conn.commit()
+            return cur.lastrowid if cur.rowcount > 0 else None
+
+    def list_signals(
+        self,
+        *,
+        leader_wallet: Optional[str] = None,
+        market_slug: Optional[str] = None,
+        side: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        conditions: List[str] = []
+        params: List[Any] = []
+        if leader_wallet:
+            conditions.append("leader_wallet = %s")
+            params.append(leader_wallet.lower())
+        if market_slug:
+            conditions.append("market_slug = %s")
+            params.append(market_slug)
+        if side:
+            conditions.append("side = %s")
+            params.append(side.upper())
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"""
+            SELECT * FROM {self.TABLE}
+            WHERE {where}
+            ORDER BY received_at DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]

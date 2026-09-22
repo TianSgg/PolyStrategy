@@ -426,3 +426,50 @@ CREATE TABLE strategy_follow_weather_sweeper_trades (
   KEY idx_closed_at (closed_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Follow Weather Sweeper 交易摘要';
+
+-- ============================================================
+-- Follow Weather Sweeper leader 信号记录（BUY+SELL）
+-- ============================================================
+CREATE TABLE strategy_follow_weather_sweeper_signals (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+  tx_hash VARCHAR(128) NOT NULL,
+  log_index VARCHAR(32) NULL,
+  order_hash VARCHAR(128) NULL,
+
+  leader_wallet VARCHAR(128) NOT NULL COMMENT 'maker address (user)',
+  taker VARCHAR(128) NULL,
+  role ENUM('maker','taker') NOT NULL DEFAULT 'maker',
+
+  side ENUM('BUY','SELL') NOT NULL,
+  price DECIMAL(10,6) NOT NULL,
+  shares BIGINT UNSIGNED NULL COMMENT 'raw shares (6 decimals)',
+  shares_normalized DECIMAL(20,6) NULL,
+  fee DECIMAL(20,6) NULL,
+
+  token_id VARCHAR(256) NOT NULL,
+  token_label VARCHAR(32) NULL,
+  outcome VARCHAR(32) NULL,
+  outcome_index TINYINT UNSIGNED NULL,
+  complement_token_id VARCHAR(256) NULL,
+  complement_token_label VARCHAR(32) NULL,
+
+  condition_id VARCHAR(128) NULL,
+  market_slug VARCHAR(255) NULL,
+  market_id VARCHAR(128) NULL,
+  title VARCHAR(512) NULL,
+  is_neg_risk TINYINT(1) NOT NULL DEFAULT 0,
+
+  status ENUM('pending','confirmed') NOT NULL DEFAULT 'pending',
+  version TINYINT UNSIGNED NULL COMMENT 'V1 or V2 contracts',
+  event_timestamp INT UNSIGNED NULL COMMENT 'Predexon unix timestamp',
+  received_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_tx_token (tx_hash, token_id, role),
+  KEY idx_leader (leader_wallet, received_at DESC),
+  KEY idx_market (market_slug, received_at DESC),
+  KEY idx_side (side),
+  KEY idx_received (received_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Follow Weather Sweeper leader 信号记录（BUY+SELL）';

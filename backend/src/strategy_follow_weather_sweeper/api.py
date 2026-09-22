@@ -13,6 +13,7 @@ from framework.slug_script import SlugProgram, SlugScriptError, validate_slug_sc
 from strategy_follow_weather_sweeper.dao import (
     FollowWeatherSweeperConfigDAO,
     FollowWeatherSweeperEventDAO,
+    FollowWeatherSweeperSignalDAO,
     FollowWeatherSweeperTradeDAO,
 )
 from strategy_follow_weather_sweeper.type import CreateConfigRequest, UpdateConfigRequest
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/api/follow-weather", tags=["strategy"])
 _config_dao = FollowWeatherSweeperConfigDAO()
 _event_dao = FollowWeatherSweeperEventDAO()
 _trade_dao = FollowWeatherSweeperTradeDAO()
+_signal_dao = FollowWeatherSweeperSignalDAO()
 
 
 def _validate_params_slug_script(params_dict: dict) -> None:
@@ -123,6 +125,29 @@ async def validate_slug_script_endpoint(
     return validate_slug_script(data.slug_script)
 
 
+class SlugScriptTestRequest(BaseModel):
+    slug_script: str
+    test_slug: str
+
+
+@router.post("/test-slug-script")
+async def test_slug_script_endpoint(
+    data: SlugScriptTestRequest,
+    current_user: AuthUser = Depends(get_current_user),
+):
+    if not data.slug_script.strip():
+        return {"result": True, "message": "脚本为空，默认通过"}
+    try:
+        program = SlugProgram.compile(data.slug_script)
+    except SlugScriptError as exc:
+        return {"error": True, "message": f"语法错误: {exc.message}"}
+    try:
+        result = program.evaluate(data.test_slug)
+    except Exception as exc:
+        return {"error": True, "message": f"执行错误: {exc}"}
+    return {"result": bool(result)}
+
+
 # ─── Events (执行记录) ───
 
 
@@ -200,6 +225,28 @@ async def get_trade(event_id: str, current_user: AuthUser = Depends(get_current_
     if not trade or not current_user.can_view(trade["owner_user_id"]):
         raise HTTPException(status_code=404, detail="Trade not found")
     return {"trade": trade}
+
+
+# ─── Signals (leader 信号记录) ───
+
+
+@router.get("/signals")
+async def list_signals(
+    leader_wallet: Optional[str] = Query(default=None),
+    market_slug: Optional[str] = Query(default=None),
+    side: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    signals = _signal_dao.list_signals(
+        leader_wallet=leader_wallet,
+        market_slug=market_slug,
+        side=side,
+        limit=limit,
+        offset=offset,
+    )
+    return {"signals": signals}
 
 
 # ─── Internal helpers ───

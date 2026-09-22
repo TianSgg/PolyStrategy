@@ -8,13 +8,17 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable, Optional
 
 import websockets
 
 from framework.strategy_runtime.interfaces import Signal
+from strategy_follow_weather_sweeper.dao import FollowWeatherSweeperSignalDAO
 
 logger = logging.getLogger(__name__)
+
+_signal_write_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="signal-dao")
 
 PREDEXON_WS_URL = "wss://wss.predexon.com/"
 PREDEXON_API_KEY = os.getenv("PREDEXON_API_KEY", "")
@@ -65,6 +69,7 @@ class PredexonClient:
         self.connected = False
         self._running = False
         self._subscription_id: Optional[str] = None
+        self._signal_dao = FollowWeatherSweeperSignalDAO()
         self._leader_addresses: set[str] = set()
 
     async def start(
@@ -196,6 +201,7 @@ class PredexonClient:
                 event_type = event.get("event_type")
                 if event_type != "order_filled":
                     return
+                self._persist_signal(event)
                 await self._on_signal(event)
                 return
 
@@ -213,3 +219,10 @@ class PredexonClient:
             logger.warning("[Predexon] Invalid JSON: %s", message[:100])
         except Exception as e:
             logger.error("[Predexon] Error handling message: %s", e)
+
+    def _persist_signal(self, event: dict[str, Any]) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(_signal_write_pool, self._signal_dao.insert, event)
+        except Exception:
+            logger.debug("[Predexon] Failed to persist signal", exc_info=True)
