@@ -93,7 +93,7 @@ cd ..
 | 文件 | 仓库 | 作用 |
 |------|------|------|
 | `docker-compose.infra.yml` | PolyInfra | Consul + Traefik 基础设施 |
-| `docker-compose.services.yml` | PolyStrategy | 4 个后端服务 + 前端 |
+| `docker-compose.services.yml` | PolyStrategy | 5 个后端服务 + 前端 |
 
 ### 服务名称一览
 
@@ -151,7 +151,30 @@ docker compose -f docker-compose.services.yml up -d auth-service
 docker compose -f docker-compose.services.yml up -d account-service
 docker compose -f docker-compose.services.yml up -d signal-weather-orderbook
 docker compose -f docker-compose.services.yml up -d strategy-weather-sweep
+docker compose -f docker-compose.services.yml up -d strategy-follow-weather-sweeper
 docker compose -f docker-compose.services.yml up -d frontend
+```
+
+跟随天气扫单服务的单独启动命令如下。首次启动或代码更新后使用 `--build`：
+
+```bash
+docker compose -f docker-compose.services.yml up -d --build \
+  auth-service account-service strategy-follow-weather-sweeper
+```
+
+如果鉴权和账户服务已经在运行，只启动策略服务：
+
+```bash
+docker compose -f docker-compose.services.yml up -d --build \
+  strategy-follow-weather-sweeper
+```
+
+服务默认监听 `8005`，健康检查和日志命令：
+
+```bash
+curl http://127.0.0.1:8005/health
+docker compose -f docker-compose.services.yml logs -f \
+  strategy-follow-weather-sweeper
 ```
 
 ### 停止
@@ -163,6 +186,7 @@ docker compose -f docker-compose.services.yml down
 # 停止单个服务
 docker compose -f docker-compose.services.yml stop frontend
 docker compose -f docker-compose.services.yml stop strategy-weather-sweep
+docker compose -f docker-compose.services.yml stop strategy-follow-weather-sweeper
 docker compose -f docker-compose.services.yml stop signal-weather-orderbook
 docker compose -f docker-compose.services.yml stop account-service
 docker compose -f docker-compose.services.yml stop auth-service
@@ -176,6 +200,7 @@ docker compose -f docker-compose.services.yml restart
 
 # 重启单个服务
 docker compose -f docker-compose.services.yml restart strategy-weather-sweep
+docker compose -f docker-compose.services.yml restart strategy-follow-weather-sweeper
 docker compose -f docker-compose.services.yml restart signal-weather-orderbook
 ```
 
@@ -188,6 +213,7 @@ docker compose -f docker-compose.services.yml up -d --build
 # 只重新构建某个服务
 docker compose -f docker-compose.services.yml up -d --build strategy-weather-sweep
 docker compose -f docker-compose.services.yml up -d --build signal-weather-orderbook
+docker compose -f docker-compose.services.yml up -d --build strategy-follow-weather-sweeper
 docker compose -f docker-compose.services.yml up -d --build frontend
 ```
 
@@ -202,6 +228,7 @@ docker compose -f docker-compose.services.yml logs -f
 
 # 查看单个服务日志
 docker compose -f docker-compose.services.yml logs -f strategy-weather-sweep
+docker compose -f docker-compose.services.yml logs -f strategy-follow-weather-sweeper
 docker compose -f docker-compose.services.yml logs -f signal-weather-orderbook
 
 # 查看最近 100 行日志
@@ -212,6 +239,7 @@ docker compose -f docker-compose.services.yml logs --tail=100 strategy-weather-s
 
 ```bash
 docker exec -it polystrategy-strategy-weather-sweep bash
+docker exec -it polystrategy-strategy-follow-weather-sweeper bash
 docker exec -it polystrategy-signal-weather-orderbook bash
 docker exec -it polystrategy-auth bash
 docker exec -it polystrategy-account bash

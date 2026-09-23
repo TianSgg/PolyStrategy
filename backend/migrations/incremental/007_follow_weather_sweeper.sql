@@ -2,6 +2,10 @@
 -- 007: Follow Weather Sweeper 全部表
 -- ============================================================
 
+-- This migration targets the database used by the services. Keeping the
+-- database selection here also makes it safe to run directly from a SQL GUI.
+USE polystrategy;
+
 -- ============================================================
 -- strategy_follow_weather_sweeper 配置表
 -- ============================================================
