@@ -1928,7 +1928,20 @@ class SweepTrade:
         order_detail["pre_bbo"] = self._compact_bbo(pre_bbo)
         order_detail["aft_bbo"] = self._compact_bbo(aft_bbo)
         order_detail["bbo_observation_pending"] = False
-        await self._el.update_step_detail(order_step, order_detail)
+        # Rebuild the top-level mapping so newly persisted JSON has a stable
+        # diagnostic order even when the detail originated from an older shape.
+        ordered_detail: dict[str, Any] = {}
+        for key in (
+            "order", "clob_status", "order_response_at",
+            "pre_bbo", "aft_bbo", "bbo_observation_pending",
+        ):
+            if key in order_detail:
+                ordered_detail[key] = order_detail[key]
+        ordered_detail.update({
+            key: value for key, value in order_detail.items()
+            if key not in ordered_detail
+        })
+        await self._el.update_step_detail(order_step, ordered_detail)
 
     async def _log_risk_started(
         self,

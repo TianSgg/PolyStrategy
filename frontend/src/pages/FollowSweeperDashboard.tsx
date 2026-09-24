@@ -684,15 +684,27 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                                       </div>
                                       {step.detail && Object.keys(step.detail).length > 0 && (
                                         <div style={{ fontSize: '11px', color: textSecondary, background: darkMode ? '#0f172a' : '#f1f5f9', padding: '4px 8px', borderRadius: '4px', fontFamily: 'monospace', lineHeight: '1.4' }}>
-                                          {([
-                                            ['event_id', step.event_id],
-                                            ...Object.entries(step.detail || {}).filter(([key]) => (
+                                          {(() => {
+                                            const detailEntries = Object.entries(step.detail || {}).filter(([key]) => (
                                               key !== 'event_id'
                                               && !(step.step === 'buy_order_placed' && key === 'bbo_observed_at')
-                                            )),
-                                          ] as [string, any][]).map(([k, v]) => (
+                                            ))
+                                            if (step.step === 'buy_order_placed') {
+                                              const preferredOrder = ['order', 'clob_status', 'order_response_at', 'pre_bbo', 'aft_bbo', 'bbo_observation_pending']
+                                              const detailMap = new Map(detailEntries)
+                                              const preferredKeys = new Set(preferredOrder)
+                                              const orderedEntries = preferredOrder
+                                                .filter(key => detailMap.has(key))
+                                                .map(key => [key, detailMap.get(key)] as [string, any])
+                                              detailEntries.splice(0, detailEntries.length, ...orderedEntries, ...detailEntries.filter(([key]) => !preferredKeys.has(key)))
+                                            }
+                                            return ([
+                                              ['event_id', step.event_id],
+                                              ...detailEntries,
+                                            ] as [string, any][]).map(([k, v]) => (
                                             <div key={k}><span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: {formatEventDetailValue(k, v, step.step)}</div>
-                                          ))}
+                                            ))
+                                          })()}
                                         </div>
                                       )}
                                     </div>

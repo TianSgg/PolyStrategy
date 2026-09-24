@@ -60,9 +60,23 @@ const PHASE_LABELS: Record<string, string> = {
 const PAGE_SIZE = 30
 
 function stepDetailEntries(step: EventStep): [string, any][] {
+  const detailEntries = Object.entries(step.detail || {}).filter(([key]) => key !== 'event_id')
+  if (step.step === 'buy_order_placed') {
+    const preferredOrder = ['order', 'clob_status', 'order_response_at', 'pre_bbo', 'aft_bbo', 'bbo_observation_pending']
+    const detailMap = new Map(detailEntries)
+    const orderedEntries: [string, any][] = preferredOrder
+      .filter(key => detailMap.has(key))
+      .map(key => [key, detailMap.get(key)] as [string, any])
+    const preferredKeys = new Set(preferredOrder)
+    return [
+      ['event_id', step.event_id],
+      ...orderedEntries,
+      ...detailEntries.filter(([key]) => !preferredKeys.has(key)),
+    ]
+  }
   return [
     ['event_id', step.event_id],
-    ...Object.entries(step.detail || {}).filter(([key]) => key !== 'event_id'),
+    ...detailEntries,
   ]
 }
 
