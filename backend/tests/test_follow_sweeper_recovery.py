@@ -34,9 +34,10 @@ class FakeUserWS:
 
 
 class FakeExecutor:
-    def __init__(self):
+    def __init__(self, *, query_failed=False):
         self.user_ws = FakeUserWS()
         self.cancelled = []
+        self.query_failed = query_failed
 
     async def ensure_user_ws(self):
         return self.user_ws
@@ -48,6 +49,7 @@ class FakeExecutor:
             cancelled=True,
             final_matched=Decimal("3.5"),
             status="cancelled",
+            query_failed=self.query_failed,
         )
 
 
@@ -103,4 +105,37 @@ def test_orphaned_trade_is_cancelled_and_closed_without_selling(monkeypatch):
     assert updates["entry_cost"] == "3.465"
     assert [step for _, step, _ in event_logger.steps] == [
         "force_exit_requested", "buy_cancelled", "event_closed",
+    ]
+
+
+def test_orphaned_trade_stays_active_when_final_fill_query_fails(monkeypatch):
+    event_logger = FakeEventLogger()
+    dao = FakeTradeDAO()
+    executor = FakeExecutor(query_failed=True)
+    strategy = object.__new__(service.FollowSweepStrategy)
+    strategy._config_id = 7
+    strategy._executor = executor
+    strategy._trade_dao = dao
+
+    monkeypatch.setattr(service, "EventLogger", lambda **kwargs: event_logger)
+    row = {
+        "event_id": "event-query-failed",
+        "owner_user_id": 1,
+        "proxy_wallet": "0xwallet",
+        "config_snapshot": {},
+        "phase": "entry",
+        "entry_order_id": "buy-query-failed",
+        "exit_order_id": None,
+        "entry_shares": Decimal("2"),
+        "exit_shares": Decimal("0"),
+        "entry_price": Decimal("0.99"),
+        "exit_price": None,
+        "started_at": datetime(2026, 9, 24, 0, 0, 0),
+    }
+
+    run(strategy._force_exit_orphaned_trade(row, "config_changed"))
+
+    assert dao.updates == []
+    assert [step for _, step, _ in event_logger.steps] == [
+        "force_exit_requested", "buy_cancel_failed",
     ]
