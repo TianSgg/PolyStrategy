@@ -470,7 +470,7 @@ class SweepTrade:
 
     # ==================== Entry ====================
 
-    async def enter(self, signal: Signal) -> None:
+    async def enter(self, signal: Signal, dsl_evaluation_ms: Optional[float] = None) -> None:
         orderbook_snapshot = signal.payload.get("orderbook_snapshot", {})
         enter_origin_ms = int(time.time() * 1000)
 
@@ -493,7 +493,7 @@ class SweepTrade:
                 market_slug=signal.market_slug,
                 event_slug=signal.payload.get("event_slug"),
             )
-            self._el.log_step("signal_received", {
+            signal_detail = {
                 "signal_id": signal.signal_id,
                 "token_id": signal.token_id,
                 "market_slug": signal.market_slug,
@@ -502,7 +502,10 @@ class SweepTrade:
                 "direction": signal.payload.get("direction"),
                 "risk_reference_source": "post_signal_orderbook_sync",
                 "signal_orderbook_snapshot_present": bool(orderbook_snapshot),
-            }, phase="entry")
+            }
+            if dsl_evaluation_ms is not None:
+                signal_detail["dsl_evaluation_ms"] = round(dsl_evaluation_ms, 3)
+            self._el.log_step("signal_received", signal_detail, phase="entry")
             asyncio.create_task(self._insert_trade_summary_async(signal))
 
         # --- Layer 1: buy_order_skipped (no cash) ---
@@ -2152,7 +2155,7 @@ class FollowSweepStrategy:
             book_bbo_client=self._book_bbo_client,
         )
         self._trades[signal.token_id] = trade
-        await trade.enter(signal)
+        await trade.enter(signal, dsl_evaluation_ms=filter_duration_ms)
 
     def _check_signal_filter(self, signal: Signal) -> tuple[Optional[str], Optional[float]]:
         """Return (filter_reason, filter_duration_ms). reason is None if accepted."""
@@ -2206,7 +2209,7 @@ class FollowSweepStrategy:
             "filter_reason": reason,
         }
         if filter_duration_ms is not None:
-            step_detail["filter_duration_ms"] = round(filter_duration_ms, 3)
+            step_detail["dsl_evaluation_ms"] = round(filter_duration_ms, 3)
         el.log_step("signal_filtered", step_detail, phase="entry")
         el.end_event()
         if self._trade_dao and el.event_id:
