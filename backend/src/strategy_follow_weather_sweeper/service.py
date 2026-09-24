@@ -2140,6 +2140,9 @@ class FollowSweepStrategy:
             except SlugScriptError:
                 logger.warning("Invalid slug_script in config %d, ignoring", config_data["id"])
 
+        # A restart cannot restore the in-memory SweepTrade state. Reconcile
+        # those persisted trades before this instance accepts new signals.
+        await instance._force_exit_orphaned_trades("startup_recovery", set())
         return instance
 
     # ==================== Signal Dispatch ====================
@@ -2276,7 +2279,7 @@ class FollowSweepStrategy:
         signal_received_ms: Optional[int] = None,
     ) -> None:
         logger.info("[cfg=%d] signal %s filtered: %s (%.2fms)",
-                    self._config["id"], signal.signal_id, reason,
+                    self._config_id, signal.signal_id, reason,
                     filter_duration_ms or 0)
         el = event_logger or self._create_signal_event(signal)
         signal_received_ms = signal_received_ms or int(time.time() * 1000)
@@ -2347,9 +2350,150 @@ class FollowSweepStrategy:
         await self.force_exit(reason)
 
     async def force_exit(self, reason: str = "config_disabled") -> None:
+        active_event_ids = {
+            trade._el.event_id
+            for trade in self._trades.values()
+            if trade._el and trade._el.event_id
+        }
         for trade in list(self._trades.values()):
             await trade.force_exit(reason)
+
+        # A process restart drops _trades, while the database still contains
+        # entry/exit rows and possibly live CLOB orders. Clean those rows here
+        # as well so config changes cannot leave an untracked market running.
+        await self._force_exit_orphaned_trades(reason, active_event_ids)
         self._trades.clear()
+
+    async def _force_exit_orphaned_trades(
+        self, reason: str, active_event_ids: set[str],
+    ) -> None:
+        rows = await asyncio.to_thread(self._trade_dao.list_active, self._config_id)
+        for row in rows:
+            event_id = row.get("event_id")
+            if not event_id or event_id in active_event_ids:
+                continue
+            await self._force_exit_orphaned_trade(row, reason)
+
+    async def _force_exit_orphaned_trade(
+        self, row: dict[str, Any], reason: str,
+    ) -> None:
+        event_id = row["event_id"]
+        entry_shares = Decimal(str(row.get("entry_shares") or "0"))
+        exit_shares = Decimal(str(row.get("exit_shares") or "0"))
+        entry_price = Decimal(str(row.get("entry_price") or "0"))
+        exit_price = Decimal(str(row.get("exit_price") or "0"))
+        entry_order_id = row.get("entry_order_id")
+        exit_order_id = row.get("exit_order_id")
+        position_shares = max(entry_shares - exit_shares, Decimal("0"))
+        initial_phase = "exit" if row.get("phase") == "exit" else "entry"
+
+        event_logger = EventLogger(
+            table=self.EVENTS_TABLE,
+            owner_user_id=row["owner_user_id"],
+            proxy_wallet=row["proxy_wallet"],
+            config_id=self._config_id,
+            config_snapshot=row.get("config_snapshot"),
+        )
+        try:
+            event_logger.attach_event(event_id)
+            event_logger.log_step("force_exit_requested", {
+                "reason": reason,
+                "trigger": "recovery",
+                "state_at_exit": initial_phase,
+                "position_shares": str(position_shares),
+            }, phase=initial_phase)
+
+            updates: dict[str, Any] = {
+                "entry_order_id": None,
+                "exit_order_id": None,
+            }
+            if entry_order_id:
+                cancel_result = await self._cancel_recovered_order(
+                    entry_order_id, "BUY", event_logger, initial_phase,
+                )
+                if not cancel_result.cancelled:
+                    return
+                if cancel_result.final_matched > entry_shares:
+                    entry_shares = cancel_result.final_matched
+                    updates["entry_shares"] = str(entry_shares)
+                    if entry_price > 0:
+                        updates["entry_cost"] = str(entry_shares * entry_price)
+                    position_shares = max(entry_shares - exit_shares, Decimal("0"))
+
+            if exit_order_id:
+                cancel_result = await self._cancel_recovered_order(
+                    exit_order_id, "SELL", event_logger, "exit",
+                )
+                if not cancel_result.cancelled:
+                    return
+                if cancel_result.final_matched > exit_shares:
+                    exit_shares = cancel_result.final_matched
+                    updates["exit_shares"] = str(exit_shares)
+                    if exit_price > 0:
+                        updates["exit_revenue"] = str(exit_shares * exit_price)
+                    position_shares = max(entry_shares - exit_shares, Decimal("0"))
+
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            started_at = row.get("started_at")
+            duration_ms = max(0, int((now - started_at).total_seconds() * 1000)) if started_at else 0
+            updates.update({
+                "phase": "closed",
+                "close_reason": "force_exit",
+                "closed_at": now,
+                "duration_ms": duration_ms,
+            })
+            await asyncio.to_thread(self._trade_dao.update_by_event_id, event_id, updates)
+            event_logger.log_step("event_closed", {
+                "reason": "force_exit",
+                "close_reason": "force_exit",
+                "total_position": str(position_shares),
+                "position_shares": str(position_shares),
+                "position_open": position_shares > 0,
+                "duration_ms": duration_ms,
+                "recovered_after_restart": True,
+            }, phase="exit" if position_shares > 0 else initial_phase)
+            event_logger.end_event()
+            logger.info(
+                "[cfg=%d] recovered orphan trade %s and force-exited (reason=%s)",
+                self._config_id, event_id, reason,
+            )
+        except Exception:
+            logger.exception(
+                "[cfg=%d] failed to recover orphan trade %s",
+                self._config_id, event_id,
+            )
+
+    async def _cancel_recovered_order(
+        self,
+        order_id: str,
+        side: str,
+        event_logger: EventLogger,
+        phase: str,
+    ) -> Any:
+        user_ws = await self._executor.ensure_user_ws()
+        user_ws.unwatch_order(order_id)
+        cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+        if cancel_result.cancelled and not cancel_result.query_failed:
+            event_logger.log_step("%s_cancelled" % side.lower(), {
+                "order_id": order_id,
+                "success": True,
+                "final_matched": str(cancel_result.final_matched),
+                "trigger": "recovery",
+            }, phase=phase)
+        else:
+            event_logger.log_step("%s_cancel_failed" % side.lower(), {
+                "order_id": order_id,
+                "success": False,
+                "status": cancel_result.status,
+                "cancel_error": cancel_result.cancel_error,
+                "query_failed": cancel_result.query_failed,
+                "query_error": cancel_result.query_error,
+            }, phase=phase)
+            logger.warning(
+                "[cfg=%d] recovery cancel failed: side=%s order=%s status=%s",
+                self._config_id, side, order_id, cancel_result.status,
+            )
+        return cancel_result
 
     async def drain(self) -> None:
         self._draining = True

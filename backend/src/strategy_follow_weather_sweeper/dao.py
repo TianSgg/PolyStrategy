@@ -442,6 +442,19 @@ class FollowWeatherSweeperTradeDAO:
                 row = cur.fetchone()
                 return self._format_trade_row(dict(zip(columns, row))) if row else None
 
+    def list_active(self, config_id: int) -> List[Dict[str, Any]]:
+        """返回尚未闭合的 trade，用于服务重启后的遗留交易清理。"""
+        sql = f"""
+            SELECT * FROM {self.TABLE}
+            WHERE config_id = %s AND phase IN ('entry', 'exit')
+            ORDER BY started_at
+        """
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (config_id,))
+                columns = [desc[0] for desc in cur.description]
+                return [self._format_trade_row(dict(zip(columns, row))) for row in cur.fetchall()]
+
     @staticmethod
     def _format_trade_row(d: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(d.get("config_snapshot"), str):

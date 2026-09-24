@@ -77,6 +77,25 @@ class EventLogger:
         self._sequence_no = 0
         return self._event_id
 
+    def attach_event(self, event_id: str) -> None:
+        """继续向一个已持久化的 event 追加 step。
+
+        服务重启后，内存中的 EventLogger 会丢失，但进行中的 trade 仍可能
+        存在于数据库中。恢复这类 trade 时必须复用原 event_id，避免生成
+        一个与原交易脱节的新事件。
+        """
+        sql = f"SELECT COALESCE(MAX(sequence_no), 0) FROM {self._table} WHERE event_id = %s"
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (event_id,))
+                    row = cur.fetchone()
+            self._event_id = event_id
+            self._sequence_no = int(row[0] or 0) if row else 0
+        except Exception:
+            logger.exception("Failed to attach event %s", event_id)
+            raise
+
     def log_step(
         self,
         step: str,
