@@ -82,6 +82,7 @@ class EventLogger:
         step: str,
         detail: dict[str, Any],
         phase: str = "entry",
+        occurred_at_ms: int | None = None,
     ) -> EventStepHandle | None:
         """记录一个 step 到数据库（异步写入，不阻塞事件循环）。
 
@@ -94,7 +95,11 @@ class EventLogger:
         self._sequence_no += 1
         event_id = self._event_id
         sequence_no = self._sequence_no
-        now = datetime.now(timezone.utc)
+        now = (
+            datetime.fromtimestamp(occurred_at_ms / 1000, tz=timezone.utc)
+            if occurred_at_ms is not None
+            else datetime.now(timezone.utc)
+        )
 
         if phase not in {"entry", "exit"}:
             raise ValueError(f"Unsupported event phase: {phase}")

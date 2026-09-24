@@ -470,9 +470,14 @@ class SweepTrade:
 
     # ==================== Entry ====================
 
-    async def enter(self, signal: Signal, dsl_evaluation_ms: Optional[float] = None) -> None:
+    async def enter(
+        self,
+        signal: Signal,
+        event_started: bool = False,
+        signal_received_ms: Optional[int] = None,
+    ) -> None:
         orderbook_snapshot = signal.payload.get("orderbook_snapshot", {})
-        enter_origin_ms = int(time.time() * 1000)
+        enter_origin_ms = signal_received_ms or int(time.time() * 1000)
 
         # Start the pre-order BBO request at signal receipt time. It runs in
         # parallel with sizing, event logging, and the CLOB entry request.
@@ -486,7 +491,7 @@ class SweepTrade:
         max_shares = int(available / buy_price) if buy_price > 0 else 0
         actual_shares = min(fixed_shares, Decimal(str(max_shares)))
 
-        if self._el:
+        if self._el and not event_started:
             self._el.start_event(
                 signal_id=signal.signal_id,
                 token_id=signal.token_id,
@@ -502,10 +507,15 @@ class SweepTrade:
                 "direction": signal.payload.get("direction"),
                 "risk_reference_source": "post_signal_orderbook_sync",
                 "signal_orderbook_snapshot_present": bool(orderbook_snapshot),
+                "signal_received_at": self._utc_str(enter_origin_ms),
+                "dsl_evaluation_ms": 0,
             }
-            if dsl_evaluation_ms is not None:
-                signal_detail["dsl_evaluation_ms"] = round(dsl_evaluation_ms, 3)
-            self._el.log_step("signal_received", signal_detail, phase="entry")
+            self._el.log_step(
+                "signal_received", signal_detail, phase="entry",
+                occurred_at_ms=enter_origin_ms,
+            )
+            asyncio.create_task(self._insert_trade_summary_async(signal))
+        elif self._el and event_started:
             asyncio.create_task(self._insert_trade_summary_async(signal))
 
         # --- Layer 1: buy_order_skipped (no cash) ---
@@ -2126,18 +2136,21 @@ class FollowSweepStrategy:
         if signal.token_id in self._trades:
             return
 
+        signal_received_ms = int(time.time() * 1000)
         filter_reason, filter_duration_ms = self._check_signal_filter(signal)
-        if filter_reason:
-            asyncio.create_task(self._record_filtered_signal(signal, filter_reason, filter_duration_ms))
-            return
-
-        el = EventLogger(
-            table=self.EVENTS_TABLE,
-            owner_user_id=self._owner_user_id,
-            proxy_wallet=self._proxy_wallet,
-            config_id=self._config_id,
-            config_snapshot=self._config_snapshot,
+        el = self._create_signal_event(
+            signal,
+            signal_received_ms=signal_received_ms,
+            dsl_evaluation_ms=filter_duration_ms or 0,
+            filter_reason=filter_reason,
         )
+        if filter_reason:
+            asyncio.create_task(
+                self._record_filtered_signal(
+                    signal, filter_reason, filter_duration_ms, event_logger=el,
+                )
+            )
+            return
 
         trade = SweepTrade(
             token_id=signal.token_id,
@@ -2155,7 +2168,53 @@ class FollowSweepStrategy:
             book_bbo_client=self._book_bbo_client,
         )
         self._trades[signal.token_id] = trade
-        await trade.enter(signal, dsl_evaluation_ms=filter_duration_ms)
+        await trade.enter(
+            signal,
+            event_started=True,
+            signal_received_ms=signal_received_ms,
+        )
+
+    def _create_signal_event(
+        self,
+        signal: Signal,
+        *,
+        signal_received_ms: Optional[int] = None,
+        dsl_evaluation_ms: float = 0,
+        filter_reason: Optional[str] = None,
+    ) -> EventLogger:
+        signal_received_ms = signal_received_ms or int(time.time() * 1000)
+        el = EventLogger(
+            table=self.EVENTS_TABLE,
+            owner_user_id=self._owner_user_id,
+            proxy_wallet=self._proxy_wallet,
+            config_id=self._config_id,
+            config_snapshot=self._config_snapshot,
+        )
+        el.start_event(
+            signal_id=signal.signal_id,
+            token_id=signal.token_id,
+            market_slug=signal.market_slug,
+            event_slug=signal.payload.get("event_slug"),
+        )
+        dsl_status = "disabled" if self._slug_program is None else "evaluated"
+        if filter_reason and filter_reason.startswith(("leader_mismatch:", "outcome_mismatch:")):
+            dsl_status = "skipped_by_previous_filter"
+        elif filter_reason and filter_reason.startswith("slug_script_rejected:"):
+            dsl_status = "rejected"
+        el.log_step("signal_received", {
+            "signal_id": signal.signal_id,
+            "token_id": signal.token_id,
+            "market_slug": signal.market_slug,
+            "event_slug": signal.payload.get("event_slug"),
+            "city": signal.payload.get("city"),
+            "direction": signal.payload.get("direction"),
+            "risk_reference_source": "post_signal_orderbook_sync",
+            "signal_orderbook_snapshot_present": bool(signal.payload.get("orderbook_snapshot", {})),
+            "signal_received_at": SweepTrade._utc_str(signal_received_ms),
+            "dsl_evaluation_ms": round(dsl_evaluation_ms, 3),
+            "dsl_status": dsl_status,
+        }, phase="entry", occurred_at_ms=signal_received_ms)
+        return el
 
     def _check_signal_filter(self, signal: Signal) -> tuple[Optional[str], Optional[float]]:
         """Return (filter_reason, filter_duration_ms). reason is None if accepted."""
@@ -2183,23 +2242,18 @@ class FollowSweepStrategy:
             return None, duration_ms
         return None, None
 
-    async def _record_filtered_signal(self, signal: Signal, reason: str, filter_duration_ms: Optional[float] = None) -> None:
+    async def _record_filtered_signal(
+        self,
+        signal: Signal,
+        reason: str,
+        filter_duration_ms: Optional[float] = None,
+        *,
+        event_logger: Optional[EventLogger] = None,
+    ) -> None:
         logger.info("[cfg=%d] signal %s filtered: %s (%.2fms)",
                     self._config["id"], signal.signal_id, reason,
                     filter_duration_ms or 0)
-        el = EventLogger(
-            table=self.EVENTS_TABLE,
-            owner_user_id=self._owner_user_id,
-            proxy_wallet=self._proxy_wallet,
-            config_id=self._config_id,
-            config_snapshot=self._config_snapshot,
-        )
-        el.start_event(
-            signal_id=signal.signal_id,
-            token_id=signal.token_id,
-            market_slug=signal.market_slug,
-            event_slug=signal.payload.get("event_slug"),
-        )
+        el = event_logger or self._create_signal_event(signal)
         step_detail = {
             "signal_id": signal.signal_id,
             "token_id": signal.token_id,
@@ -2208,8 +2262,6 @@ class FollowSweepStrategy:
             "leader_wallet": signal.payload.get("leader_wallet", ""),
             "filter_reason": reason,
         }
-        if filter_duration_ms is not None:
-            step_detail["dsl_evaluation_ms"] = round(filter_duration_ms, 3)
         el.log_step("signal_filtered", step_detail, phase="entry")
         el.end_event()
         if self._trade_dao and el.event_id:

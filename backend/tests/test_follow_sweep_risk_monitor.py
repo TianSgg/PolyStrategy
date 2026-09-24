@@ -58,7 +58,7 @@ class FakeEventLogger:
     def start_event(self, **kwargs):
         return self.event_id
 
-    def log_step(self, step, detail, phase="entry"):
+    def log_step(self, step, detail, phase="entry", occurred_at_ms=None):
         self.steps.append((phase, step, detail))
         if step == "buy_order_placed":
             return EventStepHandle(self.event_id, len(self.steps), None)
