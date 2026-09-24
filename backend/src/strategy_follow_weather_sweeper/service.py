@@ -2411,7 +2411,7 @@ class FollowSweepStrategy:
                 cancel_result = await self._cancel_recovered_order(
                     entry_order_id, "BUY", event_logger, initial_phase,
                 )
-                if not cancel_result.cancelled:
+                if not cancel_result.cancelled or cancel_result.query_failed:
                     return
                 if cancel_result.final_matched > entry_shares:
                     entry_shares = cancel_result.final_matched
@@ -2424,7 +2424,7 @@ class FollowSweepStrategy:
                 cancel_result = await self._cancel_recovered_order(
                     exit_order_id, "SELL", event_logger, "exit",
                 )
-                if not cancel_result.cancelled:
+                if not cancel_result.cancelled or cancel_result.query_failed:
                     return
                 if cancel_result.final_matched > exit_shares:
                     exit_shares = cancel_result.final_matched
