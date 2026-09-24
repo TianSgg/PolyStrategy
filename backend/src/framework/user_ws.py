@@ -149,6 +149,39 @@ class UserWS:
         if removed:
             logger.debug("%s unwatch_order %s", self._tag, order_id[:8])
 
+    async def reconcile_order(self, order_id: str) -> Optional[Decimal]:
+        """Reconcile cumulative fills after an order watcher is registered.
+
+        User-channel events are not replayed for a watcher that was added
+        after a fast fill. The REST snapshot closes that handoff gap; the
+        shared cumulative matcher keeps the callback idempotent with respect
+        to later WebSocket updates.
+        """
+        watch = self._watches.get(order_id)
+        if watch is None:
+            return None
+
+        try:
+            client = get_client(self._proxy_wallet)
+            info = await asyncio.to_thread(client.get_order, order_id)
+            raw_matched = info.get("size_matched", "0") if info else "0"
+            server_matched = Decimal(str(raw_matched))
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            logger.warning("%s Reconcile invalid fill amount for %s: %s", self._tag, order_id[:8], exc)
+            return None
+        except Exception as exc:
+            logger.warning("%s Reconcile failed for %s: %s", self._tag, order_id[:8], exc)
+            return None
+
+        if server_matched > watch.last_matched:
+            logger.info(
+                "%s Initial reconcile: order=%s delta=%s matched=%s",
+                self._tag, order_id[:8], server_matched - watch.last_matched,
+                server_matched,
+            )
+            self._handle_order_event(order_id, server_matched)
+        return server_matched
+
     # ==================== WS Main Loop ====================
 
     async def _run(self) -> None:

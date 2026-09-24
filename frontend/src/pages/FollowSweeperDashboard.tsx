@@ -3,6 +3,8 @@ import { apiFetch } from '../api'
 import { useBalance } from '../contexts/BalanceContext'
 import FollowSweeperTrades from './FollowSweeperTrades'
 import { badgeStyle, exitBadge, iconStyle, lifecycleBadge } from '../tradePresentation'
+import { formatEventDetailValue, formatUtcTime } from '../utils/time'
+import { polymarketEventSlug } from '../utils/polymarket'
 
 interface Account {
   id: number
@@ -149,7 +151,8 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
     setTradesLoading(true)
     try {
       const params = new URLSearchParams()
-      if (cfg.proxy_wallet) params.set('proxy_wallet', cfg.proxy_wallet)
+      // A follower can run multiple leader configurations; config_id keeps this panel isolated.
+      params.set('config_id', String(cfg.id))
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
       params.set('since', since)
       params.set('limit', '50')
@@ -576,6 +579,10 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                     {configTrades.map((t: any) => {
                       const lifecycle = lifecycleBadge(t)
                       const exit = exitBadge(t)
+                      const eventSlug = polymarketEventSlug(t.event_slug)
+                      const formatTradePrice = (price: string | null | undefined) => (
+                        price == null || price === '' ? '--' : Number(price).toFixed(4)
+                      )
                       return (
                       <div key={t.event_id}>
                         <div
@@ -602,16 +609,16 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                               </span>
                             )}
                             <span style={{ fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {t.event_slug ? (
+                              {eventSlug ? (
                                 <a
-                                  href={`https://polymarket.com/event/${encodeURIComponent(t.event_slug)}`}
+                                  href={`https://polymarket.com/event/${encodeURIComponent(eventSlug)}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={e => e.stopPropagation()}
                                   style={{ color: '#3b82f6', textDecoration: 'none' }}
                                   onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
                                   onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-                                >{t.event_slug}</a>
+                                >{eventSlug || t.market_slug}</a>
                               ) : (
                                 <span style={{ color: textPrimary }}>{t.market_slug || t.event_id.slice(0, 8)}</span>
                               )}
@@ -620,16 +627,16 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                               <span style={{ fontSize: '11px', color: textSecondary }}>
                                 买{t.entry_order_size ? (
                                   <span style={{ color: t.entry_shares && parseFloat(t.entry_shares) > 0 ? '#22c55e' : '#f59e0b', fontWeight: 500 }}>
-                                    {' '}{t.entry_shares || '0'}/{t.entry_order_size}
+                                    {' '}{t.entry_shares || '0'}/{t.entry_order_size} @ {formatTradePrice(t.entry_price)}
                                   </span>
-                                ) : ` ${t.entry_shares}`}
+                                ) : t.entry_shares ? ` ${t.entry_shares} @ ${formatTradePrice(t.entry_price)}` : ''}
                                 {(t.exit_order_size || t.exit_shares) && (
                                   <>
                                     {' '}卖{t.exit_order_size ? (
                                       <span style={{ color: t.exit_shares && parseFloat(t.exit_shares) > 0 ? '#22c55e' : '#f59e0b', fontWeight: 500 }}>
-                                        {' '}{t.exit_shares || '0'}/{t.exit_order_size}
+                                        {' '}{t.exit_shares || '0'}/{t.exit_order_size} @ {formatTradePrice(t.exit_price)}
                                       </span>
-                                    ) : ` ${t.exit_shares}`}
+                                    ) : t.exit_shares ? ` ${t.exit_shares} @ ${formatTradePrice(t.exit_price)}` : ''}
                                   </>
                                 )}
                               </span>
@@ -640,7 +647,7 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                               </span>
                             )}
                             <span style={{ color: textSecondary, fontSize: '11px' }}>
-                              {t.started_at ? new Date(t.started_at.endsWith('Z') ? t.started_at : t.started_at + 'Z').toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                              {formatUtcTime(t.started_at)}
                             </span>
                           </div>
                         </div>
@@ -672,16 +679,19 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                                         </span>
                                         <span style={{ fontSize: '12px', fontWeight: 600, color: textPrimary }}>{step.step}</span>
                                         <span style={{ fontSize: '10px', color: textSecondary, marginLeft: 'auto' }}>
-                                          {step.occurred_at ? new Date(step.occurred_at.endsWith('Z') ? step.occurred_at : step.occurred_at + 'Z').toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                                          {formatUtcTime(step.occurred_at)}
                                         </span>
                                       </div>
                                       {step.detail && Object.keys(step.detail).length > 0 && (
                                         <div style={{ fontSize: '11px', color: textSecondary, background: darkMode ? '#0f172a' : '#f1f5f9', padding: '4px 8px', borderRadius: '4px', fontFamily: 'monospace', lineHeight: '1.4' }}>
                                           {([
                                             ['event_id', step.event_id],
-                                            ...Object.entries(step.detail || {}).filter(([key]) => key !== 'event_id'),
+                                            ...Object.entries(step.detail || {}).filter(([key]) => (
+                                              key !== 'event_id'
+                                              && !(step.step === 'buy_order_placed' && key === 'bbo_observed_at')
+                                            )),
                                           ] as [string, any][]).map(([k, v]) => (
-                                            <div key={k}><span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: {typeof v === 'object' ? JSON.stringify(v) : String(v)}</div>
+                                            <div key={k}><span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: {formatEventDetailValue(k, v, step.step)}</div>
                                           ))}
                                         </div>
                                       )}

@@ -50,6 +50,7 @@ class PredexonAdapter:
                 "leader_size": event.get("shares_normalized", 0),
                 "tx_hash": tx_hash,
                 "role": event.get("role", ""),
+                "event_slug": event.get("event_slug") or event.get("eventSlug"),
                 "condition_id": event.get("condition_id", ""),
                 "title": event.get("title", ""),
                 "token_label": event.get("token_label", ""),

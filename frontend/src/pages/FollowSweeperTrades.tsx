@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { apiFetch } from '../api'
 import { badgeStyle, exitBadge, iconStyle, lifecycleBadge } from '../tradePresentation'
+import { formatEventDetailValue, formatUtcTime } from '../utils/time'
+import { polymarketEventSlug } from '../utils/polymarket'
 
 interface Trade {
   id: number
@@ -148,9 +150,7 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
   }
 
   const formatTime = (ts: string | null) => {
-    if (!ts) return '--'
-    const utc = ts.endsWith('Z') ? ts : ts + 'Z'
-    return new Date(utc).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    return formatUtcTime(ts)
   }
 
   const formatDuration = (ms: number | null) => {
@@ -258,6 +258,7 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
             const lifecycle = lifecycleBadge(t)
             const exit = exitBadge(t)
             const leaderWallet = t.signal_id?.startsWith('predexon:') ? (t.signal_id.split(':')[1] || '').slice(0, 10) : null
+            const eventSlug = polymarketEventSlug(t.event_slug)
             return (
             <div key={t.event_id}>
               <div
@@ -285,16 +286,16 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
                     </span>
                   )}
                   <span style={{ fontSize: '13px', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {t.event_slug ? (
+                    {eventSlug ? (
                       <a
-                        href={`https://polymarket.com/event/${encodeURIComponent(t.event_slug)}`}
+                        href={`https://polymarket.com/event/${encodeURIComponent(eventSlug)}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={e => e.stopPropagation()}
                         style={{ color: '#3b82f6', textDecoration: 'none' }}
                         onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
                         onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-                      >{t.event_slug}</a>
+                      >{eventSlug || t.market_slug}</a>
                     ) : (
                       <span style={{ color: textPrimary }}>{t.market_slug || t.event_id.slice(0, 8)}</span>
                     )}
@@ -378,9 +379,11 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
                               padding: '6px 10px', borderRadius: '5px',
                               fontFamily: 'monospace', wordBreak: 'break-all', lineHeight: '1.5',
                             }}>
-                              {stepDetailEntries(step).map(([k, v]) => (
+                              {stepDetailEntries(step).filter(([k]) => (
+                                !(step.step === 'buy_order_placed' && k === 'bbo_observed_at')
+                              )).map(([k, v]) => (
                                 <div key={k}>
-                                  <span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: <span style={{ color: textPrimary }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+                                  <span style={{ color: darkMode ? '#93c5fd' : '#2563eb' }}>{k}</span>: <span style={{ color: textPrimary }}>{formatEventDetailValue(k, v, step.step)}</span>
                                 </div>
                               ))}
                             </div>

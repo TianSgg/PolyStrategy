@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+import asyncio
 from typing import Optional
+from urllib.parse import quote
 
 import requests as http_requests
 
@@ -180,6 +182,7 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
     trade = _trade_dao.get_by_event_id(event_id)
     if not trade or not current_user.can_view(trade["owner_user_id"]):
         raise HTTPException(status_code=404, detail="Event not found")
+    await _enrich_event_slugs([trade])
     return {"event_id": event_id, "trade": trade, "steps": steps}
 
 
@@ -188,6 +191,7 @@ async def get_event_steps(event_id: str, current_user: AuthUser = Depends(get_cu
 
 @router.get("/trades")
 async def list_trades(
+    config_id: Optional[int] = Query(default=None),
     phase: Optional[str] = Query(default=None),
     close_reason: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
@@ -201,6 +205,7 @@ async def list_trades(
     owner_ids = current_user.visible_user_ids()
     trades = _trade_dao.list_trades(
         owner_user_ids=owner_ids,
+        config_id=config_id,
         phase=phase,
         close_reason=close_reason,
         search=search,
@@ -210,8 +215,10 @@ async def list_trades(
         limit=limit,
         offset=offset,
     )
+    await _enrich_event_slugs(trades)
     total = _trade_dao.count_trades(
         owner_user_ids=owner_ids,
+        config_id=config_id,
         phase=phase,
         close_reason=close_reason,
         search=search,
@@ -227,6 +234,7 @@ async def get_trade(event_id: str, current_user: AuthUser = Depends(get_current_
     trade = _trade_dao.get_by_event_id(event_id)
     if not trade or not current_user.can_view(trade["owner_user_id"]):
         raise HTTPException(status_code=404, detail="Trade not found")
+    await _enrich_event_slugs([trade])
     return {"trade": trade}
 
 
@@ -257,6 +265,75 @@ async def list_signals(
 GAMMA_API_URL = "https://gamma-api.polymarket.com"
 _profile_cache: dict[str, tuple[dict, float]] = {}
 _PROFILE_CACHE_TTL = 3600
+_market_event_cache: dict[str, tuple[Optional[str], float]] = {}
+_MARKET_EVENT_CACHE_TTL = 3600
+_MARKET_EVENT_NEGATIVE_CACHE_TTL = 300
+
+
+def _fetch_event_slug_by_market_slug(market_slug: str) -> Optional[str]:
+    """通过 Gamma 市场详情接口解析所属 event slug，并缓存结果。"""
+    normalized_slug = market_slug.strip().lower()
+    if not normalized_slug:
+        return None
+
+    cached = _market_event_cache.get(normalized_slug)
+    if cached:
+        cached_slug, cached_at = cached
+        ttl = _MARKET_EVENT_CACHE_TTL if cached_slug else _MARKET_EVENT_NEGATIVE_CACHE_TTL
+        if time.time() - cached_at < ttl:
+            return cached_slug
+
+    event_slug: Optional[str] = None
+    try:
+        response = http_requests.get(
+            f"{GAMMA_API_URL}/markets/slug/{quote(normalized_slug, safe='')}",
+            timeout=5,
+        )
+        if response.status_code == 200:
+            market = response.json()
+            events = market.get("events") if isinstance(market, dict) else None
+            if isinstance(events, list):
+                for event in events:
+                    if isinstance(event, dict) and event.get("slug"):
+                        event_slug = str(event["slug"]).strip()
+                        break
+            if not event_slug and isinstance(market, dict):
+                direct_slug = market.get("event_slug") or market.get("eventSlug")
+                if direct_slug:
+                    event_slug = str(direct_slug).strip()
+    except Exception:
+        logger.debug("Failed to resolve event slug for market %s", normalized_slug)
+
+    _market_event_cache[normalized_slug] = (event_slug, time.time())
+    return event_slug
+
+
+async def _enrich_event_slugs(trades: list[dict]) -> None:
+    """为 event_slug 缺失的交易补充真实事件 slug，避免前端猜测 URL。"""
+    missing_slugs = sorted({
+        str(trade.get("market_slug")).strip()
+        for trade in trades
+        if not trade.get("event_slug") and trade.get("market_slug")
+    })
+    if not missing_slugs:
+        return
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def resolve(market_slug: str) -> tuple[str, Optional[str]]:
+        async with semaphore:
+            return market_slug, await asyncio.to_thread(
+                _fetch_event_slug_by_market_slug,
+                market_slug,
+            )
+
+    results = await asyncio.gather(*(resolve(slug) for slug in missing_slugs))
+    resolved = {market_slug: event_slug for market_slug, event_slug in results if event_slug}
+    for trade in trades:
+        if not trade.get("event_slug"):
+            event_slug = resolved.get(str(trade.get("market_slug") or "").strip())
+            if event_slug:
+                trade["event_slug"] = event_slug
 
 
 def _fetch_profile(address: str) -> dict:

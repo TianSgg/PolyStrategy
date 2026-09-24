@@ -1,9 +1,9 @@
-"""Sweep 策略风控 — 基于信号时刻 mid price 的跌幅止损。
+"""Sweep 策略风控 — 基于信号后订单簿参考 mid price 的跌幅止损。
 
 设计：
-  1. 收到信号时，记录订单簿快照的 mid_price = (best_bid + best_ask) / 2
+  1. 收到信号后同步订单簿，使用同步后的 mid_price 作为参考值
   2. 通过 framework.orderbook_ws 持续接收 BBO 更新
-  3. 实时 mid_price 跌至信号时刻的 stop_loss_ratio（默认 60%）→ 触发风控
+  3. 实时 mid_price 跌至参考 mid 的 stop_loss_ratio（默认 60%）→ 触发风控
   4. 风控触发后回调策略执行平仓逻辑
 """
 from __future__ import annotations
@@ -44,6 +44,7 @@ class SweepRiskMonitor:
         self._active = False
         self._triggered = False
         self._tick_poll_task: Optional[asyncio.Task] = None
+        self._tick_check_task: Optional[asyncio.Task] = None
         self._tick_size_service = tick_size_service or TickSizeService()
         # Event loop-bound objects are created when monitoring starts, not in __init__.
         self._first_bbo_event: Optional[asyncio.Event] = None
@@ -77,15 +78,22 @@ class SweepRiskMonitor:
     def trigger_bbo(self) -> Optional[dict[str, Any]]:
         return self._trigger_bbo
 
-    async def start(self, token_id: str, orderbook_snapshot: dict) -> None:
-        """激活风控：从信号时刻的订单簿快照计算参考 mid price，订阅 BBO。"""
-        mid = self._extract_mid_price(orderbook_snapshot)
-        if mid is None or mid <= 0:
-            logger.warning("Cannot start risk monitor: invalid orderbook snapshot")
-            return
+    async def start(
+        self,
+        token_id: str,
+        orderbook_snapshot: Optional[dict] = None,
+    ) -> None:
+        """Subscribe and bootstrap risk monitoring without depending on the signal payload.
 
+        The signal source may not carry a market snapshot. In that case the
+        order-book subscription becomes the source of truth and tick polling is
+        still started even if the first BBO has not arrived yet.
+        """
         self._token_id = token_id
-        self._reference_mid = mid
+        # The signal snapshot is optional legacy input. It may be stale by the
+        # time this service receives the signal, so risk always derives its
+        # reference price from the post-signal order-book sync below.
+        self._reference_mid = None
         self._active = True
         self._triggered = False
         self._first_bbo_event = asyncio.Event()
@@ -93,24 +101,57 @@ class SweepRiskMonitor:
         self._first_bbo_snapshot = None
         self._started_at_ms = None
 
-        self._sub_id = await self._orderbook_ws.subscribe(
-            asset_id=token_id,
-            on_bbo=self._on_bbo,
-            on_tick=self._on_tick,
-        )
-        self._started_at_ms = int(time.time() * 1000)
-        self._capture_first_bbo(token_id)
+        try:
+            self._sub_id = await self._orderbook_ws.subscribe(
+                asset_id=token_id,
+                on_bbo=self._on_bbo,
+                on_tick=self._on_tick,
+            )
+            self._started_at_ms = int(time.time() * 1000)
 
-        logger.info(
-            "Risk monitor started: token=%s ref_mid=%s threshold=%s ratio=%s",
-            token_id[:10], mid, self.threshold, self._stop_loss_ratio,
-        )
+            # Prime the local order book after the signal. ``start`` itself
+            # runs in a separate task, so waiting for this REST sync never
+            # delays entry.
+            resync = getattr(self._orderbook_ws, "resync", None)
+            resync_ok = True
+            if callable(resync):
+                resync_ok = await self._resync_orderbook(resync, token_id)
 
-        # 第一重保险：订阅后立即 HTTP 检查当前 tick_size
-        asyncio.create_task(self._check_tick_now())
+            # Capture only after the post-signal resync. This avoids using a
+            # stale shared book that was populated before this signal arrived.
+            if resync_ok:
+                self._capture_first_bbo(token_id)
+            else:
+                logger.warning(
+                    "Risk monitor waiting for a fresh WS BBO after resync failure: token=%s",
+                    token_id[:10],
+                )
+            self._set_reference_from_snapshot(self._first_bbo_snapshot)
 
-        # 第二重保险：定时 HTTP 轮询 tick_size
-        self._tick_poll_task = asyncio.create_task(self._tick_poll_loop())
+            logger.info(
+                "Risk monitor started: token=%s ref_mid=%s threshold=%s ratio=%s",
+                token_id[:10], self._reference_mid, self.threshold, self._stop_loss_ratio,
+            )
+
+            # 第一重保险：订阅后立即 HTTP 检查当前 tick_size
+            self._tick_check_task = asyncio.create_task(self._check_tick_now())
+
+            # 第二重保险：定时 HTTP 轮询 tick_size
+            self._tick_poll_task = asyncio.create_task(self._tick_poll_loop())
+        except BaseException:
+            self._active = False
+            sub_id = self._sub_id
+            self._sub_id = None
+            if sub_id:
+                try:
+                    await asyncio.shield(self._orderbook_ws.unsubscribe(sub_id))
+                except BaseException:
+                    logger.warning(
+                        "Failed to clean up risk subscription after startup failure: token=%s",
+                        token_id[:10],
+                        exc_info=True,
+                    )
+            raise
 
     async def wait_for_first_bbo(self, timeout: float = 2.0) -> bool:
         """等待本次风控订阅收到首个市场 WS BBO。"""
@@ -133,9 +174,20 @@ class SweepRiskMonitor:
     async def stop(self) -> None:
         """停止监控，取消订阅。"""
         self._active = False
+        if self._tick_check_task and not self._tick_check_task.done():
+            self._tick_check_task.cancel()
+            try:
+                await self._tick_check_task
+            except asyncio.CancelledError:
+                pass
+        self._tick_check_task = None
         if self._tick_poll_task and not self._tick_poll_task.done():
             self._tick_poll_task.cancel()
-            self._tick_poll_task = None
+            try:
+                await self._tick_poll_task
+            except asyncio.CancelledError:
+                pass
+        self._tick_poll_task = None
         if self._sub_id:
             await self._orderbook_ws.unsubscribe(self._sub_id)
             self._sub_id = None
@@ -158,9 +210,12 @@ class SweepRiskMonitor:
 
         self._capture_first_bbo(asset_id, best_bid, best_ask)
 
-        bid = best_bid if best_bid is not None else Decimal("0")
-        ask = best_ask if best_ask is not None else Decimal("1")
-        current_mid = (bid + ask) / 2
+        current_mid = self._mid_from_prices(best_bid, best_ask)
+        if current_mid is None or current_mid <= 0:
+            return
+
+        if self._reference_mid is None:
+            self._reference_mid = current_mid
 
         if self.threshold is None:
             return
@@ -173,8 +228,8 @@ class SweepRiskMonitor:
             self._triggered = True
             self._active = False
             self._trigger_bbo = {
-                "best_bid": str(bid),
-                "best_ask": str(ask),
+                "best_bid": str(best_bid) if best_bid is not None else None,
+                "best_ask": str(best_ask) if best_ask is not None else None,
                 "mid": str(current_mid),
             }
             if self._on_trigger:
@@ -230,6 +285,32 @@ class SweepRiskMonitor:
             pass
 
     # ==================== Helpers ====================
+
+    async def _resync_orderbook(self, resync, token_id: str) -> bool:
+        try:
+            result = await resync(token_id)
+            return result is not False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Risk monitor orderbook resync failed: token=%s", token_id[:10], exc_info=True)
+            return False
+
+    @staticmethod
+    def _mid_from_prices(
+        best_bid: Optional[Decimal], best_ask: Optional[Decimal],
+    ) -> Optional[Decimal]:
+        """Calculate the normalized midpoint using boundary prices for gaps."""
+        bid = best_bid if best_bid is not None else Decimal("0")
+        ask = best_ask if best_ask is not None else Decimal("1")
+        return (bid + ask) / Decimal("2")
+
+    def _set_reference_from_snapshot(self, snapshot: Optional[dict]) -> None:
+        if self._reference_mid is not None or not snapshot:
+            return
+        mid = self._extract_mid_price(snapshot)
+        if mid is not None and mid > 0:
+            self._reference_mid = mid
 
     def _extract_mid_price(self, snapshot: dict) -> Optional[Decimal]:
         best_bid = self._extract_price(snapshot, "best_bid")

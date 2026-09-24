@@ -332,6 +332,7 @@ class FollowWeatherSweeperTradeDAO:
         self,
         *,
         owner_user_ids: Optional[List[int]] = None,
+        config_id: Optional[int] = None,
         phase: Optional[str] = None,
         close_reason: Optional[str] = None,
         search: Optional[str] = None,
@@ -348,6 +349,9 @@ class FollowWeatherSweeperTradeDAO:
             placeholders = ",".join(["%s"] * len(owner_user_ids))
             conditions.append(f"owner_user_id IN ({placeholders})")
             params.extend(owner_user_ids)
+        if config_id is not None:
+            conditions.append("config_id = %s")
+            params.append(config_id)
         if proxy_wallet:
             conditions.append("proxy_wallet = %s")
             params.append(proxy_wallet.lower())
@@ -385,6 +389,7 @@ class FollowWeatherSweeperTradeDAO:
         self,
         *,
         owner_user_ids: Optional[List[int]] = None,
+        config_id: Optional[int] = None,
         phase: Optional[str] = None,
         close_reason: Optional[str] = None,
         search: Optional[str] = None,
@@ -399,6 +404,9 @@ class FollowWeatherSweeperTradeDAO:
             placeholders = ",".join(["%s"] * len(owner_user_ids))
             conditions.append(f"owner_user_id IN ({placeholders})")
             params.extend(owner_user_ids)
+        if config_id is not None:
+            conditions.append("config_id = %s")
+            params.append(config_id)
         if proxy_wallet:
             conditions.append("proxy_wallet = %s")
             params.append(proxy_wallet.lower())
