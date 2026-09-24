@@ -478,9 +478,10 @@ class SweepTrade:
     ) -> None:
         orderbook_snapshot = signal.payload.get("orderbook_snapshot", {})
         enter_origin_ms = signal_received_ms or int(time.time() * 1000)
+        self._event_start_ms = enter_origin_ms
 
-        # Start the pre-order BBO request at signal receipt time. It runs in
-        # parallel with sizing, event logging, and the CLOB entry request.
+        # Use signal receipt as the latency origin. After DSL filtering,
+        # pre-BBO and CLOB entry run as parallel branches.
         pre_bbo_task = asyncio.create_task(
             self._book_bbo_client.fetch_bbo(self.token_id, enter_origin_ms)
         )
@@ -1842,7 +1843,9 @@ class SweepTrade:
                 "params_version": self._params_version,
                 "config_snapshot": json.dumps(self._config_snapshot, ensure_ascii=False, default=str),
                 "phase": "entry",
-                "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                "started_at": datetime.fromtimestamp(
+                    self._event_start_ms / 1000, tz=timezone.utc,
+                ).replace(tzinfo=None),
             })
         except Exception:
             logger.exception("Failed to insert trade summary")
@@ -2160,7 +2163,11 @@ class FollowSweepStrategy:
         if filter_reason:
             asyncio.create_task(
                 self._record_filtered_signal(
-                    signal, filter_reason, filter_duration_ms, event_logger=el,
+                    signal,
+                    filter_reason,
+                    filter_duration_ms,
+                    event_logger=el,
+                    signal_received_ms=signal_received_ms,
                 )
             )
             return
@@ -2210,9 +2217,13 @@ class FollowSweepStrategy:
             event_slug=signal.payload.get("event_slug"),
         )
         dsl_status = "disabled" if self._slug_program is None else "evaluated"
-        if filter_reason and filter_reason.startswith(("leader_mismatch:", "outcome_mismatch:")):
+        if self._slug_program is not None and filter_reason and filter_reason.startswith(
+            ("leader_mismatch:", "outcome_mismatch:")
+        ):
             dsl_status = "skipped_by_previous_filter"
-        elif filter_reason and filter_reason.startswith("slug_script_rejected:"):
+        elif self._slug_program is not None and filter_reason and filter_reason.startswith(
+            "slug_script_rejected:"
+        ):
             dsl_status = "rejected"
         el.log_step("signal_received", {
             "signal_id": signal.signal_id,
@@ -2262,11 +2273,14 @@ class FollowSweepStrategy:
         filter_duration_ms: Optional[float] = None,
         *,
         event_logger: Optional[EventLogger] = None,
+        signal_received_ms: Optional[int] = None,
     ) -> None:
         logger.info("[cfg=%d] signal %s filtered: %s (%.2fms)",
                     self._config["id"], signal.signal_id, reason,
                     filter_duration_ms or 0)
         el = event_logger or self._create_signal_event(signal)
+        signal_received_ms = signal_received_ms or int(time.time() * 1000)
+        closed_ms = int(time.time() * 1000)
         step_detail = {
             "signal_id": signal.signal_id,
             "token_id": signal.token_id,
@@ -2292,9 +2306,13 @@ class FollowSweepStrategy:
                 "config_snapshot": json.dumps(self._config_snapshot, ensure_ascii=False, default=str),
                 "phase": "closed",
                 "close_reason": "filtered",
-                "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                "closed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                "duration_ms": 0,
+                "started_at": datetime.fromtimestamp(
+                    signal_received_ms / 1000, tz=timezone.utc,
+                ).replace(tzinfo=None),
+                "closed_at": datetime.fromtimestamp(
+                    closed_ms / 1000, tz=timezone.utc,
+                ).replace(tzinfo=None),
+                "duration_ms": max(0, closed_ms - signal_received_ms),
             }
             try:
                 await asyncio.to_thread(self._trade_dao.insert, trade_data)
