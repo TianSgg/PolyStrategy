@@ -27,6 +27,9 @@ __pycache__/
 .env.production
 .env.prod
 
+# Service-local runtime configuration; commit config.example.yml templates instead.
+backend/src/**/config.yml
+
 *.key
 *.log
 logs/

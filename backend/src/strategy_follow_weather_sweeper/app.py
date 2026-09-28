@@ -20,7 +20,10 @@ from dotenv import load_dotenv
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 load_dotenv(_project_root / ".env", override=True)
 
-_config_path = Path(__file__).resolve().parent / "config.yml"
+_config_dir = Path(__file__).resolve().parent
+_config_path = _config_dir / "config.yml"
+if not _config_path.exists():
+    _config_path = _config_dir / "config.example.yml"
 with open(_config_path) as f:
     _cfg = yaml.safe_load(f)
 
@@ -152,7 +155,9 @@ async def lifespan(app: FastAPI):
     await book_bbo_client.start()
     await pool.start()
 
-    predexon = PredexonClient(api_key=_cfg.get("predexon", {}).get("api_key", ""))
+    predexon = PredexonClient(
+        api_key=os.getenv("PREDEXON_API_KEY") or _cfg.get("predexon", {}).get("api_key", "")
+    )
     for strategy in pool.all_instances():
         if strategy._leader_wallet:
             predexon.add_leader(strategy._leader_wallet)

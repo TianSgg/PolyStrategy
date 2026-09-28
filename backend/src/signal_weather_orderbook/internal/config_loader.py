@@ -8,7 +8,10 @@ import yaml
 def load_service_config(service_dir: str = None) -> dict:
     if service_dir is None:
         service_dir = Path(__file__).parent
-    config_path = Path(service_dir) / "config.yml"
+    config_dir = Path(service_dir)
+    config_path = config_dir / "config.yml"
+    if not config_path.exists():
+        config_path = config_dir / "config.example.yml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
