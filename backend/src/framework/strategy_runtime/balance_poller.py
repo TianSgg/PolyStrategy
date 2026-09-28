@@ -3,6 +3,7 @@
 设计原则：
   - 每 1 秒轮询一次 CLOB API（balance_allowance + open_orders）
   - 策略读取缓存值（instant, 零延迟）
+  - 同一 follower 被多个 config 共用时，BUY 资金预留在此处原子完成
   - 下单失败时调用 refresh() 立即刷新
   - 同一个 proxy_wallet 全局共享一个 poller 实例（多策略共用）
   - 真实可用 = USDC 余额 - 所有挂单 BUY 锁定金额
@@ -12,13 +13,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, Optional
 
 import requests
 
-from framework.trading.provider import get_client
 from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
+
+from framework.trading.provider import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,11 @@ class BalancePoller:
 
         self._collateral_balance: Decimal = Decimal("0")
         self._open_buy_locked: Decimal = Decimal("0")
+        # In-memory reservations close the race between multiple configs that
+        # share the same follower wallet while the next open-orders poll is
+        # still pending.
+        self._reserved_buy_notional: Decimal = Decimal("0")
+        self._reservation_lock = asyncio.Lock()
         self._open_orders: list = []
         self._positions: Dict[str, Decimal] = {}
         self._last_balance_poll: float = 0
@@ -64,7 +71,10 @@ class BalancePoller:
         """可用于新买单的 USDC（instant read）。"""
         return max(
             Decimal("0"),
-            self._collateral_balance - self._open_buy_locked - self._safety_buffer,
+            self._collateral_balance
+            - self._open_buy_locked
+            - self._reserved_buy_notional
+            - self._safety_buffer,
         )
 
     @property
@@ -126,15 +136,45 @@ class BalancePoller:
             return_exceptions=True,
         )
 
-    async def refresh(self) -> None:
+    async def refresh(self) -> bool:
         """下单失败后立即刷新余额（跳过等待周期）。"""
-        await self._poll_balance_and_orders()
+        return await self._poll_balance_and_orders()
+
+    async def release_buy(self, notional: Decimal) -> None:
+        """释放 BUY 预留资金。"""
+        notional = Decimal(str(notional))
+        async with self._reservation_lock:
+            self._reserved_buy_notional = max(
+                Decimal("0"), self._reserved_buy_notional - notional,
+            )
+
+    async def reserve_buy_shares(
+        self,
+        requested_shares: Decimal,
+        price: Decimal,
+        min_shares: Decimal,
+    ) -> Decimal:
+        """按最新可用余额原子计算并预留可下单份额。"""
+        requested_shares = Decimal(str(requested_shares))
+        price = Decimal(str(price))
+        min_shares = Decimal(str(min_shares))
+        if requested_shares <= 0 or price <= 0:
+            return Decimal("0")
+        async with self._reservation_lock:
+            max_shares = (self.available_cash / price).to_integral_value(
+                rounding=ROUND_DOWN,
+            )
+            actual_shares = min(requested_shares, max_shares)
+            if actual_shares < min_shares:
+                return Decimal("0")
+            self._reserved_buy_notional += actual_shares * price
+            return actual_shares
 
     async def _balance_poll_loop(self) -> None:
         while self._running:
             try:
-                await self._poll_balance_and_orders()
-                if not self._ready.is_set():
+                refreshed = await self._poll_balance_and_orders()
+                if refreshed and not self._ready.is_set():
                     self._ready.set()
             except asyncio.CancelledError:
                 break
@@ -152,13 +192,13 @@ class BalancePoller:
                 logger.exception("[BalancePoller] %s: position poll error", self._proxy_wallet[:8])
             await asyncio.sleep(POSITION_POLL_INTERVAL)
 
-    async def _poll_balance_and_orders(self) -> None:
+    async def _poll_balance_and_orders(self) -> bool:
         """轮询 CLOB: balance_allowance + open_orders。"""
         try:
             client = get_client(self._proxy_wallet)
         except RuntimeError:
             logger.warning("[BalancePoller] no client for %s", self._proxy_wallet[:8])
-            return
+            return False
 
         balance_raw, orders_raw = await asyncio.gather(
             asyncio.to_thread(self._fetch_balance, client),
@@ -189,6 +229,7 @@ class BalancePoller:
             self._open_buy_locked,
             self.available_cash,
         )
+        return balance_raw is not None and orders_raw is not None
 
     def _fetch_balance(self, client: Any) -> Optional[str]:
         try:
@@ -242,6 +283,7 @@ class BalancePoller:
             "proxy_wallet": self._proxy_wallet[:8],
             "collateral_balance": str(self._collateral_balance),
             "open_buy_locked": str(self._open_buy_locked),
+            "reserved_buy_notional": str(self._reserved_buy_notional),
             "available_cash": str(self.available_cash),
             "open_orders_count": len(self._open_orders),
             "positions_count": len(self._positions),

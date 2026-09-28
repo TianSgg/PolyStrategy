@@ -114,11 +114,32 @@ async def _dispatch_signal(event_payload: dict) -> None:
     signal = _adapter.adapt(event_payload)
     if not signal:
         return
-    for strategy in pool.all_instances():
+
+    # Route each leader signal only to configs that follow that leader.
+    # A single Predexon subscription covers the union of all leaders, but
+    # unrelated configs must not create filtered events/trades for it.
+    leader_wallet = str(signal.payload.get("leader_wallet") or "").strip().lower()
+    if not leader_wallet:
+        logger.warning(
+            "Ignoring Predexon signal without a leader wallet: %s",
+            signal.signal_id,
+        )
+        return
+    matching_strategies = [
+        strategy for strategy in pool.all_instances()
+        if strategy._leader_wallet and strategy._leader_wallet == leader_wallet
+    ]
+
+    async def dispatch_one(strategy: FollowSweepStrategy) -> None:
         try:
             await strategy.on_signal(signal)
         except Exception:
             logger.exception("Strategy error on Predexon signal %s", signal.signal_id)
+
+    # Configs sharing a leader should process the signal independently. Run
+    # them together so their shared follower-wallet reservations arbitrate
+    # funds before either order can consume the same stale balance snapshot.
+    await asyncio.gather(*(dispatch_one(strategy) for strategy in matching_strategies))
 
 
 # ==================== FastAPI App ====================

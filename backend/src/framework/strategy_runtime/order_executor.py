@@ -154,6 +154,29 @@ class OrderExecutor:
             self._poller = await get_or_create_poller(wallet)
         return self._poller
 
+    async def refresh_balance(self) -> bool:
+        """立即刷新共享 follower 钱包的余额和挂单缓存。"""
+        poller = await self.ensure_poller()
+        return await poller.refresh()
+
+    async def reserve_buy_shares(
+        self,
+        requested_shares: Decimal,
+        price: Decimal,
+        min_shares: Decimal,
+    ) -> Decimal:
+        """按共享 follower 的最新余额原子预留可下单份额。"""
+        poller = await self.ensure_poller()
+        # Do not place a BUY from an unverifiable/stale balance snapshot. The
+        # caller records this as the normal no_cash/special-case outcome.
+        if not await poller.refresh():
+            return Decimal("0")
+        return await poller.reserve_buy_shares(requested_shares, price, min_shares)
+
+    async def release_buy(self, notional: Decimal) -> None:
+        if self._poller is not None:
+            await self._poller.release_buy(notional)
+
     async def ensure_user_ws(self) -> UserWS:
         """懒加载，首次下单时创建 WS 连接。"""
         if self._user_ws is None:

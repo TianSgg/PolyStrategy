@@ -36,6 +36,7 @@ class PredexonAdapter:
         if not token_id:
             return None
 
+        leader_wallet = str(event.get("user") or "").strip().lower()
         return Signal(
             signal_id=f"predexon:{tx_hash}:{token_id}",
             signal_type="sweep",
@@ -45,7 +46,7 @@ class PredexonAdapter:
             source="predexon",
             payload={
                 "outcome": outcome,
-                "leader_wallet": event.get("user", "").lower(),
+                "leader_wallet": leader_wallet,
                 "leader_price": event.get("price", 0),
                 "leader_size": event.get("shares_normalized", 0),
                 "tx_hash": tx_hash,

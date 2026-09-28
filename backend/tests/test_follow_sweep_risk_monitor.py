@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 
 import pytest
@@ -88,6 +88,24 @@ class FakeEntryExecutor:
 
     def __init__(self):
         self.user_ws = FakeEntryUserWS()
+        self.reserved = Decimal("0")
+
+    async def refresh_balance(self):
+        return True
+
+    async def reserve_buy_shares(self, requested_shares, price, min_shares):
+        available = self.available_cash - self.reserved
+        actual = min(
+            Decimal(str(requested_shares)),
+            (available / Decimal(str(price))).to_integral_value(rounding=ROUND_DOWN),
+        )
+        if actual < Decimal(str(min_shares)):
+            return Decimal("0")
+        self.reserved += actual * Decimal(str(price))
+        return actual
+
+    async def release_buy(self, notional):
+        self.reserved = max(Decimal("0"), self.reserved - Decimal(str(notional)))
 
     async def place_order(self, **kwargs):
         return OrderResult(
