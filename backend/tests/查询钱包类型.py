@@ -1,19 +1,22 @@
 """查询 Polymarket 账户的钱包类型和代理钱包地址。"""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor" / "py-clob-client-v2"))
 
 import requests
+from dotenv import load_dotenv
 from eth_keys import keys
 from py_clob_client_v2 import ClobClient
 from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
 
 CLOB = "https://clob.polymarket.com"
 GAMMA = "https://gamma-api.polymarket.com"
-PRIVATE_KEY = "0x95c1cbc58d1cd025c779d8a7acb8ded9b854c9845d52f5b9dc7baa8ffc5e8adb"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(PROJECT_ROOT / ".env")
 
 WALLET_TYPES = {
     0: ("EOA", "外部账户 — 私钥直接控制，无代理钱包"),
@@ -69,9 +72,9 @@ def detect_type(private_key: str, proxy_wallet: str | None) -> tuple[int, dict]:
 
 
 def main():
-    pk = PRIVATE_KEY
+    pk = os.environ.get("POLYMARKET_PRIVATE_KEY", "").strip()
     if not pk:
-        print("请在脚本顶部设置 PRIVATE_KEY")
+        print("请在项目根目录 .env 中设置 POLYMARKET_PRIVATE_KEY")
         return
     eoa = eoa_address(pk)
     print(f"EOA 地址:    {eoa}")

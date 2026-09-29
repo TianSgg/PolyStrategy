@@ -61,6 +61,8 @@ async def get_config(config_id: int, current_user: AuthUser = Depends(get_curren
 
 @router.post("/configs")
 async def create_config(data: CreateConfigRequest, request: Request, current_user: AuthUser = Depends(get_current_user)):
+    if not _config_dao.account_is_available(data.account_id, current_user.visible_user_ids()):
+        raise HTTPException(status_code=400, detail="账户不存在、已删除或无权访问")
     params_dict = data.params.model_dump()
     _validate_params_slug_script(params_dict)
     try:

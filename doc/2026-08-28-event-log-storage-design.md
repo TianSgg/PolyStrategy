@@ -3,6 +3,10 @@
 > 本文档定义 `strategy_weather_sweep_events` 表中每个 step 的 `detail` JSON 结构，
 > 以及 `strategy_weather_sweep_trades` 摘要表的写入规则。
 > 涵盖买入、卖出、风控、强制退出全部场景。
+>
+> 维护说明：本文保留早期方案和场景记录，不保证所有事件名、字段与当前实现同步；
+> 修改事件协议前请以当前服务代码和数据库迁移为准。Follow Sweeper 的流程示例见
+> `2026-09-23-follow-weather-sweeper-event-flow-examples.md`。
 
 ---
 

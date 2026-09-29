@@ -39,7 +39,9 @@ CREATE TABLE accounts (
   created_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
   updated_at DATETIME(3) DEFAULT (UTC_TIMESTAMP(3) + INTERVAL 8 HOUR),
   deleted_at DATETIME(3) DEFAULT NULL,
-  UNIQUE KEY idx_wallet_address (wallet_address),
+  active_wallet_address VARCHAR(128)
+    GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN LOWER(wallet_address) ELSE NULL END) STORED,
+  UNIQUE KEY uq_accounts_active_wallet_address (active_wallet_address),
   INDEX idx_accounts_owner_user_id (owner_user_id)
 );
 

@@ -51,8 +51,8 @@ auth:8010  account:8011  signal:8001  strategy:8003  follow:8005
 mysql -u root -p < backend/migrations/schema.sql
 
 # 2. 配置环境变量
-cp backend/.env.example backend/.env
-# 编辑 backend/.env 填入实际值
+cp .env.example .env
+# 编辑项目根目录下的 .env 填入实际值
 
 # 3. 安装后端依赖
 cd backend
@@ -127,7 +127,7 @@ docker compose -f docker-compose.infra.yml down
 cd /path/to/PolyStrategy
 
 # 1. 配置环境变量
-cp backend/.env.example backend/.env
+cp .env.example .env
 # 编辑填入 MYSQL_PASSWORD, AUTH_JWT_SECRET, ENCRYPTION_KEY, CONSUL_HTTP_TOKEN 等
 
 # 2. 创建外部网络（只需执行一次）
@@ -261,7 +261,7 @@ docker compose -f docker-compose.services.yml down -v
 
 ### 环境变量
 
-服务从 `backend/.env` 加载环境变量，compose 中的 `environment` 字段可覆盖：
+本地启动脚本和 Docker Compose 从项目根目录的 `.env` 加载环境变量，compose 中的 `environment` 字段可覆盖：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|

@@ -218,6 +218,30 @@ def _ensure_global_unique_index(cursor, table: str, index_name: str, columns: st
         cursor.execute(f"CREATE UNIQUE INDEX {index_name} ON {table} ({columns})")
 
 
+def _migrate_active_wallet_unique(cursor):
+    """Keep wallet addresses unique among active accounts, but allow re-adding deleted ones."""
+    if not _column_exists(cursor, "accounts", "active_wallet_address"):
+        cursor.execute(
+            """ALTER TABLE accounts
+               ADD COLUMN active_wallet_address VARCHAR(128)
+               GENERATED ALWAYS AS (
+                 CASE WHEN deleted_at IS NULL THEN LOWER(wallet_address) ELSE NULL END
+               ) STORED"""
+        )
+
+    cursor.execute(
+        """SELECT COUNT(*) FROM information_schema.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'accounts'
+             AND INDEX_NAME = 'idx_wallet_address'"""
+    )
+    if cursor.fetchone()[0] > 0:
+        cursor.execute("ALTER TABLE accounts DROP INDEX idx_wallet_address")
+
+    _ensure_global_unique_index(
+        cursor, "accounts", "uq_accounts_active_wallet_address", "active_wallet_address"
+    )
+
+
 def _get_first_root_id(cursor) -> Optional[int]:
     # Upgrade all admins to root (admin role removed)
     cursor.execute("UPDATE users SET role = 'root' WHERE role = 'admin'")
@@ -269,7 +293,7 @@ def run_auth_migrations(hash_fn) -> int:
         root_id = _ensure_root(cursor, hash_fn)
         _add_owner_column(cursor, "accounts")
         cursor.execute("UPDATE accounts SET owner_user_id = %s WHERE owner_user_id IS NULL", (root_id,))
-        _ensure_global_unique_index(cursor, "accounts", "idx_wallet_address", "wallet_address")
+        _migrate_active_wallet_unique(cursor)
         conn.commit()
         logger.info("[Auth] Auth migrations complete; bootstrap root id=%s", root_id)
         return root_id

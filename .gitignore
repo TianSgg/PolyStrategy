@@ -22,16 +22,11 @@ __pycache__/
 # Env
 .env*
 !.env.example
-.env.development
-.env.dev
-.env.production
-.env.prod
 
 # Service-local runtime configuration; commit config.example.yml templates instead.
 backend/src/**/config.yml
 
 *.key
-*.log
 logs/
 .pids/
 
@@ -40,8 +35,5 @@ deploy/backend.service
 deploy/nginx.conf
 deploy/state/
 
-*.png
-
-scripts/
 backend/tests/analyze/
-backend/test/.consul-data/
+backend/tests/.consul-data/
