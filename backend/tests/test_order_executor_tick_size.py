@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from framework.strategy_runtime.order_executor import OrderExecutor  # noqa: E402
 from framework.strategy_runtime.tick_size_service import TickSizeFetchError  # noqa: E402
+from framework.trading.order import place_limit_order_fast  # noqa: E402
 
 
 class FakePoller:
@@ -162,3 +163,109 @@ def test_place_order_can_skip_failure_triggered_balance_refresh():
 
     assert result.status == "failed"
     executor._poller.refresh.assert_not_awaited()
+
+
+def test_fast_order_signs_and_posts_without_market_metadata_requests():
+    class FakeClient:
+        def __init__(self):
+            self.order = None
+            self.options = None
+            self._ClobClient__tick_sizes = {}
+
+        def create_order(self, order, options):
+            assert self.get_tick_size(order.token_id) == options.tick_size
+            self.order = order
+            self.options = options
+            return "signed-order"
+
+        def post_order(self, signed, order_type):
+            assert signed == "signed-order"
+            return {"status": "live", "orderID": "0xorder"}
+
+        def get_tick_size(self, token_id):
+            if token_id not in self._ClobClient__tick_sizes:
+                raise AssertionError("unexpected tick size API call")
+            return self._ClobClient__tick_sizes[token_id]
+
+        def get_neg_risk(self, token_id):
+            raise AssertionError("unexpected neg-risk API call")
+
+    client = FakeClient()
+    trace = {}
+    with patch("framework.trading.order.get_client", return_value=client):
+        result = place_limit_order_fast(
+            "0xwallet", "token", "BUY", 5.0, 0.99, "0.01", True,
+            trace=trace,
+        )
+
+    assert result["status"] == "live"
+    assert client.options.tick_size == "0.01"
+    assert client.options.neg_risk is True
+    assert client._ClobClient__tick_sizes["token"] == "0.01"
+    assert trace["sign_started_ns"] <= trace["sign_finished_ns"] <= trace["post_finished_ns"]
+
+
+def test_warmup_primes_sdk_version_and_http_connection():
+    calls = []
+
+    class FakeClient:
+        def get_server_time(self):
+            calls.append("time")
+
+        def _ClobClient__resolve_version(self):
+            calls.append("version")
+
+    executor = make_executor(FakeTickSizeService())
+    with patch("framework.strategy_runtime.order_executor.get_client", return_value=FakeClient()):
+        executor._warmup_sync("0xwallet")
+
+    assert calls == ["time", "version"]
+
+
+def test_fast_order_preserves_sdk_version_retry_without_extra_metadata_lookup():
+    class FakeClient:
+        def __init__(self):
+            self._ClobClient__tick_sizes = {}
+            self.sign_count = 0
+
+        def _retry_on_version_update(self, submit):
+            submit()
+            return submit()
+
+        def create_order(self, order, options):
+            assert self._ClobClient__tick_sizes[order.token_id] == options.tick_size
+            self.sign_count += 1
+            return f"signed-{self.sign_count}"
+
+        def post_order(self, signed, order_type):
+            return {"status": "live", "orderID": signed}
+
+    client = FakeClient()
+    with patch("framework.trading.order.get_client", return_value=client):
+        result = place_limit_order_fast("0xwallet", "token", "BUY", 5.0, 0.99, "0.01", True)
+
+    assert client.sign_count == 2
+    assert result["orderID"] == "signed-2"
+
+
+def test_fast_executor_skips_tick_and_balance_api_and_records_worker_timing():
+    class FailingService:
+        async def get(self, token_id, *, max_age_ms=None):
+            raise AssertionError("unexpected tick API call")
+
+    executor = OrderExecutor(proxy_wallet="0xwallet", tick_size_service=FailingService())
+    trace = {}
+    with patch(
+        "framework.strategy_runtime.order_executor.place_limit_order_fast",
+        return_value={"status": "live", "orderID": "0xorder"},
+    ) as place_order:
+        result = asyncio.run(executor.place_order(
+            token_id="token", side="BUY", price="0.99", size="5",
+            tick_size="0.01", neg_risk=True,
+            check_balance=False, validate_tick_size=False,
+            refresh_balance_on_failure=False, fast=True, trace=trace,
+        ))
+
+    assert result.status == "live"
+    assert place_order.call_count == 1
+    assert trace["executor_submitted_ns"] <= trace["worker_started_ns"] <= trace["executor_returned_ns"]

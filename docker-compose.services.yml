@@ -83,6 +83,7 @@ services:
     environment:
       SERVICE_NAME: polystrategy-strategy-follow-weather-sweeper
       SERVICE_PORT: "8005"
+      LOG_LEVEL: INFO
     volumes:
       - ./logs:/logs
     restart: unless-stopped

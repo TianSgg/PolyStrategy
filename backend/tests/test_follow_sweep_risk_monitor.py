@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from strategy_follow_weather_sweeper.internal.risk_monitor import SweepRiskMonitor  # noqa: E402
 from strategy_follow_weather_sweeper.service import SweepTrade  # noqa: E402
 from framework.strategy_runtime.event_logger import EventStepHandle  # noqa: E402
-from framework.strategy_runtime.interfaces import OrderResult, Signal  # noqa: E402
+from framework.strategy_runtime.interfaces import CancelResult, OrderResult, Signal  # noqa: E402
 
 
 class FakeOrderBookWS:
@@ -150,6 +150,9 @@ class NoopRisk:
     started_at_ms = 100
     reference_mid = Decimal("0.985")
     threshold = Decimal("0.5910")
+    triggered_monotonic_ns = None
+    triggered_at_ms = None
+    trigger_bbo = None
 
     def __init__(self, events=None):
         self.events = events
@@ -274,3 +277,176 @@ async def test_entry_registers_fill_watch_before_waiting_for_after_order_bbo():
     assert updated_detail["pre_bbo"]["captured_at"] == "1970-01-01T00:00:00.100Z"
     assert updated_detail["aft_bbo"]["captured_at"] == "1970-01-01T00:00:00.200Z"
     await trade.stop()
+
+
+@pytest.mark.asyncio
+async def test_entry_defers_event_write_until_after_fast_buy():
+    event_logger = FakeEventLogger()
+
+    class ObservingExecutor(FakeEntryExecutor):
+        async def place_order(self, **kwargs):
+            assert event_logger.steps == []
+            assert kwargs["fast"] is True
+            return await super().place_order(**kwargs)
+
+    bbo = BlockingEntryBbo()
+    executor = ObservingExecutor()
+    trade = SweepTrade(
+        token_id="token", market_slug="market",
+        config={"fixed_entry_shares": "20", "entry_wait_ms": 60000},
+        executor=executor, orderbook_ws=FakeOrderBookWS(),
+        event_logger=event_logger, on_closed=lambda _token: None,
+        book_bbo_client=bbo, tick_size_service=FakeTickSizeService(),
+    )
+    trade.risk = NoopRisk()
+    signal = Signal(
+        signal_id="signal-1", signal_type="sweep", token_id="token",
+        market_slug="market", occurred_at_ms=0, source="test", payload={},
+    )
+
+    await trade.enter(signal)
+
+    assert [step for _, step, _ in event_logger.steps][:2] == ["signal_received", "buy_order_placed"]
+    bbo.release_aft.set()
+    await trade.stop()
+
+
+@pytest.mark.asyncio
+async def test_risk_exit_defers_event_write_until_after_fast_sell():
+    event_logger = FakeEventLogger()
+
+    class ObservingExecutor(FakeEntryExecutor):
+        async def place_order(self, **kwargs):
+            assert event_logger.steps == []
+            assert kwargs["fast"] is True
+            assert kwargs["side"] == "SELL"
+            return OrderResult(
+                order_id="sell-1", status="filled", filled_size="10",
+                filled_price="0.01", clob_status="matched",
+            )
+
+    trade = SweepTrade(
+        token_id="token", market_slug="market", config={"stop_loss_ratio": "0.6"},
+        executor=ObservingExecutor(), orderbook_ws=FakeOrderBookWS(),
+        event_logger=event_logger, on_closed=lambda _token: None,
+        book_bbo_client=BlockingEntryBbo(), tick_size_service=FakeTickSizeService(),
+    )
+    trade.risk = NoopRisk()
+    trade.position_shares = Decimal("10")
+    trade._entry_cost = Decimal("9.90")
+
+    await trade._risk_exit()
+
+    assert [step for _, step, _ in event_logger.steps][:2] == ["risk_triggered", "sell_order_placed"]
+    assert trade.state == "closed"
+
+
+@pytest.mark.asyncio
+async def test_protective_risk_exit_defers_failure_event_until_after_sell():
+    event_logger = FakeEventLogger()
+
+    class ObservingExecutor(FakeEntryExecutor):
+        async def place_order(self, **kwargs):
+            assert event_logger.steps == []
+            assert kwargs["fast"] is True
+            assert kwargs["side"] == "SELL"
+            return OrderResult(
+                order_id="sell-1", status="filled", filled_size="10",
+                filled_price="0.01", clob_status="matched",
+            )
+
+    trade = SweepTrade(
+        token_id="token", market_slug="market", config={},
+        executor=ObservingExecutor(), orderbook_ws=FakeOrderBookWS(),
+        event_logger=event_logger, on_closed=lambda _token: None,
+        book_bbo_client=BlockingEntryBbo(), tick_size_service=FakeTickSizeService(),
+    )
+    trade.risk = NoopRisk()
+    trade.position_shares = Decimal("10")
+    trade._entry_cost = Decimal("9.90")
+
+    await trade._handle_risk_start_failure(RuntimeError("subscription failed"))
+
+    assert [step for _, step, _ in event_logger.steps][:2] == ["risk_start_failed", "sell_order_placed"]
+    assert trade.state == "closed"
+
+
+@pytest.mark.asyncio
+async def test_entry_trade_summary_insert_and_updates_follow_buy_response():
+    calls = []
+    event_logger = FakeEventLogger()
+    event_logger._config_id = 1
+    event_logger._owner_user_id = 1
+    event_logger._proxy_wallet = "0xwallet"
+
+    class FakeTradeDAO:
+        def insert(self, data):
+            calls.append("insert")
+
+        def update_by_event_id(self, event_id, data):
+            assert calls and calls[0] == "insert"
+            calls.append("update")
+
+    class ObservingExecutor(FakeEntryExecutor):
+        async def place_order(self, **kwargs):
+            assert calls == []
+            return await super().place_order(**kwargs)
+
+    bbo = BlockingEntryBbo()
+    trade = SweepTrade(
+        token_id="token", market_slug="market", config={"fixed_entry_shares": "5"},
+        executor=ObservingExecutor(), orderbook_ws=FakeOrderBookWS(),
+        event_logger=event_logger, on_closed=lambda _token: None,
+        book_bbo_client=bbo, trade_dao=FakeTradeDAO(),
+        tick_size_service=FakeTickSizeService(),
+    )
+    trade.risk = NoopRisk()
+    signal = Signal(
+        signal_id="signal-1", signal_type="sweep", token_id="token",
+        market_slug="market", occurred_at_ms=0, source="test", payload={},
+    )
+
+    await trade.enter(signal)
+    await trade._trade_summary_tail_task
+
+    assert calls[0] == "insert"
+    assert "update" in calls[1:]
+    bbo.release_aft.set()
+    await trade.stop()
+
+
+@pytest.mark.asyncio
+async def test_risk_pending_buy_reconcile_does_not_write_before_sell():
+    event_logger = FakeEventLogger()
+
+    class ObservingExecutor(FakeEntryExecutor):
+        async def cancel_order_with_fill_check(self, order_id):
+            return CancelResult(
+                order_id=order_id, cancelled=True, final_matched=Decimal("10"),
+                status="cancelled",
+            )
+
+        async def place_order(self, **kwargs):
+            assert event_logger.steps == []
+            assert kwargs["fast"] is True
+            assert kwargs["size"] == "10"
+            return OrderResult(
+                order_id="sell-1", status="filled", filled_size="10",
+                filled_price="0.01", clob_status="matched",
+            )
+
+    trade = SweepTrade(
+        token_id="token", market_slug="market", config={},
+        executor=ObservingExecutor(), orderbook_ws=FakeOrderBookWS(),
+        event_logger=event_logger, on_closed=lambda _token: None,
+        book_bbo_client=BlockingEntryBbo(), tick_size_service=FakeTickSizeService(),
+    )
+    trade.risk = NoopRisk()
+    trade.entry_order_id = "buy-1"
+    trade._order_size = Decimal("10")
+
+    await trade._risk_exit()
+
+    steps = [step for _, step, _ in event_logger.steps]
+    assert steps.index("risk_triggered") < steps.index("fill_reconciled") < steps.index("sell_order_placed")
+    assert trade.state == "closed"

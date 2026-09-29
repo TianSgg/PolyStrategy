@@ -15,10 +15,12 @@ import logging
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from framework.trading import place_limit_order, cancel_order as _cancel_order
+from framework.trading.order import place_limit_order_fast
 from framework.trading.provider import get_client
 from framework.strategy_runtime.interfaces import CancelResult, OrderResult
 from framework.strategy_runtime.balance_poller import BalancePoller, get_or_create_poller
@@ -29,6 +31,7 @@ from framework.strategy_runtime.tick_size_service import (
 from framework.user_ws import UserWS, get_or_create_user_ws
 
 logger = logging.getLogger(__name__)
+_fast_order_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fast-order")
 
 DEFAULT_GTD_SEC = 1800
 _KEEPALIVE_INTERVAL_SEC = 30
@@ -123,6 +126,16 @@ def _order_request_context(
     }
 
 
+def _place_limit_order_worker(
+    fast: bool, trace: Optional[dict[str, int]], *args: Any,
+) -> Optional[Dict[str, Any]]:
+    if trace is not None:
+        trace["worker_started_ns"] = time.monotonic_ns()
+    if fast:
+        return place_limit_order_fast(*args, trace=trace)
+    return place_limit_order(*args)
+
+
 class OrderExecutor:
     """Polymarket CLOB 下单执行器（集成余额轮询）。"""
 
@@ -197,6 +210,9 @@ class OrderExecutor:
     def _warmup_sync(self, wallet: str) -> None:
         client = get_client(wallet)
         client.get_server_time()
+        resolve_version = getattr(client, "_ClobClient__resolve_version", None)
+        if callable(resolve_version):
+            resolve_version()
 
     async def _keepalive_loop(self) -> None:
         """每 30s 发一次 /time 请求保持 HTTP 连接热。"""
@@ -235,6 +251,8 @@ class OrderExecutor:
         check_balance: bool = True,
         validate_tick_size: bool = True,
         refresh_balance_on_failure: bool = True,
+        fast: bool = False,
+        trace: Optional[dict[str, int]] = None,
     ) -> OrderResult:
         """下单。返回 OrderResult。
 
@@ -243,6 +261,8 @@ class OrderExecutor:
         validate_tick_size=False 用于风控紧急卖出：
         使用调用方提供的 tick_size，不额外请求或校验 tick size。
         """
+        if fast and (tick_size is None or neg_risk is None or validate_tick_size or check_balance):
+            raise ValueError("fast orders require explicit market parameters and cached balance")
         wallet = (proxy_wallet or self._proxy_wallet).lower()
         params = self._cached_params.get(token_id, {})
         nr = neg_risk if neg_risk is not None else params.get("neg_risk", True)
@@ -288,7 +308,7 @@ class OrderExecutor:
         else:
             ts = tick_size or params.get("tick_size", "0.01")
 
-        poller = await self.ensure_poller(wallet)
+        poller = self._poller if fast else await self.ensure_poller(wallet)
         side_upper = side.upper()
         request_context = _order_request_context(
             token_id=token_id,
@@ -320,10 +340,14 @@ class OrderExecutor:
                 )
 
         send_ns = time.monotonic_ns()
+        if trace is not None:
+            trace["executor_submitted_ns"] = send_ns
 
         try:
-            result = await asyncio.to_thread(
-                place_limit_order,
+            args = (
+                _place_limit_order_worker,
+                fast,
+                trace,
                 wallet,
                 token_id,
                 side_upper,
@@ -333,7 +357,15 @@ class OrderExecutor:
                 nr,
                 gtd_sec if side_upper == "BUY" else None,
             )
+            if fast:
+                result = await asyncio.get_running_loop().run_in_executor(
+                    _fast_order_pool, *args,
+                )
+            else:
+                result = await asyncio.to_thread(*args)
         except Exception as e:
+            if trace is not None:
+                trace["executor_returned_ns"] = time.monotonic_ns()
             error_summary = _summarize_exception(e)
             logger.error(
                 "Order failed context=%s error=%s",
@@ -341,7 +373,7 @@ class OrderExecutor:
                 error_summary,
                 exc_info=True,
             )
-            if refresh_balance_on_failure:
+            if refresh_balance_on_failure and poller is not None:
                 asyncio.create_task(poller.refresh())
             return OrderResult(
                 order_id=order_id,
@@ -353,6 +385,8 @@ class OrderExecutor:
                 error_message=error_summary["error_message"],
             )
 
+        if trace is not None:
+            trace["executor_returned_ns"] = time.monotonic_ns()
         parsed = self._parse_result(
             order_id, result, send_ns, Decimal(size), side_upper
         )
@@ -363,7 +397,7 @@ class OrderExecutor:
                 result,
                 parsed.error,
             )
-            if refresh_balance_on_failure:
+            if refresh_balance_on_failure and poller is not None:
                 asyncio.create_task(poller.refresh())
         return parsed
 
@@ -482,7 +516,7 @@ class OrderExecutor:
         side: str,
     ) -> OrderResult:
         latency_ms = (time.monotonic_ns() - send_ns) / 1_000_000
-        logger.debug("Order response latency: %.1fms", latency_ms)
+        logger.debug("Order pipeline elapsed (queue+sign+POST): %.3fms", latency_ms)
 
         if not result:
             return OrderResult(

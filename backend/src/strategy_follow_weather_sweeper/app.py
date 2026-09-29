@@ -6,6 +6,7 @@
 import asyncio
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from framework.logging import setup_logging
 setup_logging(_cfg["service"]["name"])
 
 import logging
+
+logging.getLogger("framework.strategy_runtime.balance_poller").setLevel(logging.INFO)
 
 import py_clob_client_v2
 
@@ -114,9 +117,12 @@ _adapter = PredexonAdapter()
 
 
 async def _dispatch_signal(event_payload: dict) -> None:
+    dispatch_ns = time.monotonic_ns()
     signal = _adapter.adapt(event_payload)
     if not signal:
         return
+    signal.payload["_backend_parsed_monotonic_ns"] = event_payload.get("_backend_parsed_monotonic_ns")
+    signal.payload["_backend_adapted_monotonic_ns"] = time.monotonic_ns()
 
     # Route each leader signal only to configs that follow that leader.
     # A single Predexon subscription covers the union of all leaders, but
@@ -132,6 +138,7 @@ async def _dispatch_signal(event_payload: dict) -> None:
         strategy for strategy in pool.all_instances()
         if strategy._leader_wallet and strategy._leader_wallet == leader_wallet
     ]
+    signal.payload["_backend_routed_monotonic_ns"] = time.monotonic_ns()
 
     async def dispatch_one(strategy: FollowSweepStrategy) -> None:
         try:
@@ -143,6 +150,12 @@ async def _dispatch_signal(event_payload: dict) -> None:
     # them together so their shared follower-wallet reservations arbitrate
     # funds before either order can consume the same stale balance snapshot.
     await asyncio.gather(*(dispatch_one(strategy) for strategy in matching_strategies))
+    logger.debug(
+        "Signal dispatch complete signal=%s configs=%s total_ms=%.3f",
+        signal.signal_id,
+        len(matching_strategies),
+        (time.monotonic_ns() - dispatch_ns) / 1_000_000,
+    )
 
 
 # ==================== FastAPI App ====================

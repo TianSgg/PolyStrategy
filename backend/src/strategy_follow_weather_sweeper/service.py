@@ -45,6 +45,12 @@ MIN_BUY_SHARES = Decimal("5")
 BUY_RESERVATION_SETTLE_WAIT_S = 1.2
 
 
+def _duration_ms(start_ns: Any, end_ns: Any) -> Optional[float]:
+    if not isinstance(start_ns, int) or not isinstance(end_ns, int):
+        return None
+    return round((end_ns - start_ns) / 1_000_000, 3)
+
+
 def _execution_price(result: OrderResult, limit_price: Decimal) -> Decimal:
     """Prefer the CLOB execution VWAP; retain a visible safe fallback."""
     if result.filled_price is None:
@@ -130,6 +136,9 @@ class SweepTrade:
         self._normal_sell_matched: dict[str, Decimal] = {}
         self._normal_sell_order_sizes: dict[str, Decimal] = {}
         self._buy_reservation_release_task: Optional[asyncio.Task] = None
+        self._trade_summary_insert_task: Optional[asyncio.Task] = None
+        self._trade_summary_tail_task: Optional[asyncio.Task] = None
+        self._risk_exit_in_progress = False
 
         # Fill tracking
         self._order_size = Decimal("0")        # original buy order size
@@ -159,16 +168,29 @@ class SweepTrade:
     def _event_phase(self) -> str:
         return "exit" if self._exit_started or self.exit_order_id else "entry"
 
-    def _mark_exit_started(self) -> None:
+    def _record_entry_signal(
+        self, signal: Signal, detail: Optional[dict[str, Any]], occurred_at_ms: int,
+    ) -> None:
+        if not self._el or detail is None:
+            return
+        self._el.log_step("signal_received", detail, phase="entry", occurred_at_ms=occurred_at_ms)
+        event_id = self._el.event_id
+        if self._trade_dao and event_id:
+            self._trade_summary_insert_task = asyncio.create_task(
+                self._insert_trade_summary_async(signal, event_id)
+            )
+
+    def _mark_exit_started(self, *, persist: bool = True) -> None:
         """Cross the phase boundary immediately before the first SELL attempt."""
         if self._exit_started:
             return
         self._exit_started = True
         self.state = "exit"
-        self._update_trade_summary({
-            "phase": "exit",
-            "exit_started_at": datetime.now(timezone.utc).replace(tzinfo=None),
-        })
+        if persist:
+            self._update_trade_summary({
+                "phase": "exit",
+                "exit_started_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            })
 
     async def _stop_for_cancel_query_failure(
         self, *, phase: str, side: str, order_id: str,
@@ -490,18 +512,14 @@ class SweepTrade:
         event_started: bool = False,
         signal_received_ms: Optional[int] = None,
     ) -> None:
+        enter_started_ns = time.monotonic_ns()
         orderbook_snapshot = signal.payload.get("orderbook_snapshot", {})
         enter_origin_ms = signal_received_ms or int(time.time() * 1000)
         self._event_start_ms = enter_origin_ms
 
-        # Use signal receipt as the latency origin. After DSL filtering,
-        # pre-BBO and CLOB entry run as parallel branches.
-        pre_bbo_task = asyncio.create_task(
-            self._book_bbo_client.fetch_bbo(self.token_id, enter_origin_ms)
-        )
-
         fixed_shares = Decimal(self._config.get("fixed_entry_shares", "100"))
         buy_price = Decimal("0.99")
+        signal_detail = signal.payload.pop("_deferred_signal_detail", None)
 
         if self._el and not event_started:
             self._el.start_event(
@@ -522,20 +540,16 @@ class SweepTrade:
                 "signal_received_at": self._utc_str(enter_origin_ms),
                 "dsl_evaluation_ms": 0,
             }
-            self._el.log_step(
-                "signal_received", signal_detail, phase="entry",
-                occurred_at_ms=enter_origin_ms,
-            )
-            asyncio.create_task(self._insert_trade_summary_async(signal))
-        elif self._el and event_started:
-            asyncio.create_task(self._insert_trade_summary_async(signal))
 
         # Size and reserve from the shared in-memory balance cache. The
         # background poller is the only path that refreshes it from CLOB.
+        reserve_started_ns = time.monotonic_ns()
         actual_shares = await self._executor.reserve_buy_shares(
             fixed_shares, buy_price, MIN_BUY_SHARES,
         )
+        reserve_finished_ns = time.monotonic_ns()
         if actual_shares < MIN_BUY_SHARES:
+            self._record_entry_signal(signal, signal_detail, enter_origin_ms)
             available = self._executor.available_cash
             max_shares = int(available / buy_price) if buy_price > 0 else 0
             calculated_shares = min(fixed_shares, Decimal(str(max_shares)))
@@ -545,7 +559,6 @@ class SweepTrade:
                 self.token_id[:10], available, calculated_shares,
                 fixed_shares, MIN_BUY_SHARES,
             )
-            await self._cancel_bbo_task(pre_bbo_task)
             if self._el:
                 self._el.log_step("buy_order_skipped", {
                     "status": "below_min_order_size",
@@ -565,6 +578,8 @@ class SweepTrade:
 
         reservation_notional = buy_price * actual_shares
 
+        order_submit_ns = time.monotonic_ns()
+        order_trace: dict[str, int] = {}
         order_task = asyncio.create_task(self._executor.place_order(
             token_id=self.token_id,
             side="BUY",
@@ -575,16 +590,38 @@ class SweepTrade:
             validate_tick_size=False,
             check_balance=False,
             refresh_balance_on_failure=False,
+            fast=True,
+            trace=order_trace,
         ))
+        pre_bbo_task = asyncio.create_task(
+            self._book_bbo_client.fetch_bbo(self.token_id, enter_origin_ms)
+        )
 
         try:
             result = await order_task
         except BaseException:
             await self._cancel_bbo_task(pre_bbo_task)
             await self._executor.release_buy(reservation_notional)
+            self._record_entry_signal(signal, signal_detail, enter_origin_ms)
             raise
 
         order_response_ms = int(time.time() * 1000)
+        order_returned_ns = time.monotonic_ns()
+        self._record_entry_signal(signal, signal_detail, enter_origin_ms)
+        logger.debug(
+            "Fast BUY timing signal=%s token=%s status=%s rx_to_order_ms=%s reserve_ms=%.3f "
+            "worker_queue_ms=%s client_lookup_ms=%s sign_ms=%s post_ms=%s order_total_ms=%.3f",
+            signal.signal_id,
+            self.token_id[-12:],
+            result.status,
+            _duration_ms(signal.payload.get("_backend_received_monotonic_ns"), order_submit_ns),
+            (reserve_finished_ns - reserve_started_ns) / 1_000_000,
+            _duration_ms(order_trace.get("executor_submitted_ns"), order_trace.get("worker_started_ns")),
+            _duration_ms(order_trace.get("worker_started_ns"), order_trace.get("client_ready_ns")),
+            _duration_ms(order_trace.get("sign_started_ns"), order_trace.get("sign_finished_ns")),
+            _duration_ms(order_trace.get("sign_finished_ns"), order_trace.get("post_finished_ns")),
+            (order_returned_ns - order_submit_ns) / 1_000_000,
+        )
         order_accepted = result.status in ("filled", "partial", "live")
         if order_accepted:
             # CLOB may acknowledge an order before open_orders/balance reflects
@@ -747,14 +784,14 @@ class SweepTrade:
 
     def _record_buy_fill(
         self, order_id: str, filled: Decimal, price: Decimal, *,
-        source: str, trade_id: Optional[str] = None,
+        source: str, trade_id: Optional[str] = None, persist: bool = True,
     ) -> None:
         self.position_shares += filled
         self._entry_cost += filled * price
         self._buy_fill_count += 1
         self._last_buy_fill_ms = int(time.time() * 1000)
 
-        if self._el:
+        if persist and self._el:
             detail: dict[str, Any] = {
                 "order_id": order_id,
                 "filled_size": str(filled),
@@ -766,12 +803,13 @@ class SweepTrade:
                 detail["trade_id"] = trade_id
             self._el.log_step("buy_filled", detail, phase="entry")
 
-        self._update_trade_summary({
-            "entry_price": str((self._entry_cost / self.position_shares).quantize(Decimal("0.0001"))),
-            "entry_shares": str(self.position_shares),
-            "entry_cost": str(self._entry_cost),
-            "entry_order_id": order_id,
-        })
+        if persist:
+            self._update_trade_summary({
+                "entry_price": str((self._entry_cost / self.position_shares).quantize(Decimal("0.0001"))),
+                "entry_shares": str(self.position_shares),
+                "entry_cost": str(self._entry_cost),
+                "entry_order_id": order_id,
+            })
 
     async def _record_entry_complete(self, order_id: str) -> None:
         if self.state == "closed":
@@ -1315,7 +1353,9 @@ class SweepTrade:
 
     # ==================== Risk Exit ====================
 
-    async def _cancel_order_fast(self, order_id: str, side: str, trigger: str) -> CancelResult:
+    async def _cancel_order_fast(
+        self, order_id: str, side: str, trigger: str, *, persist: bool = True,
+    ) -> CancelResult:
         user_ws = getattr(self._executor, "_user_ws", None)
         if user_ws:
             user_ws.unwatch_order(order_id)
@@ -1345,7 +1385,7 @@ class SweepTrade:
                     cancel_error_message=None if cancelled else "cancel_order returned false",
                 )
 
-        if self._el:
+        if persist and self._el:
             if cancel_result.cancelled:
                 step = "buy_cancelled" if side.upper() == "BUY" else "sell_cancelled"
             else:
@@ -1364,18 +1404,24 @@ class SweepTrade:
         if hasattr(self, "_sell_done_event"):
             self._sell_done_event.set()
 
-    async def _risk_exit(self, trigger: str = "stop_loss") -> None:
+    async def _risk_exit(
+        self, trigger: str = "stop_loss", *, failure_detail: Optional[dict[str, Any]] = None,
+    ) -> None:
         """快速风控退出：撤单后只提交一次地板价 SELL。"""
-        if self.state == "closed":
+        if self.state == "closed" or self._risk_exit_in_progress:
             return
+        self._risk_exit_in_progress = True
 
+        trigger_started_ns = self.risk.triggered_monotonic_ns or time.monotonic_ns()
+        trigger_at_ms = self.risk.triggered_at_ms or int(time.time() * 1000)
         prev_state = self.state
         close_reason = "stop_loss" if trigger == "stop_loss" else "unknown_failure"
         if self._entry_timer and not self._entry_timer.done():
             self._entry_timer.cancel()
 
-        if self._el and trigger == "stop_loss":
-            detail = {
+        trigger_detail = None
+        if trigger == "stop_loss":
+            trigger_detail = {
                 "reference_mid": str(self.risk.reference_mid),
                 "threshold": str(self.risk.threshold),
                 "stop_loss_ratio": self._config.get("stop_loss_ratio", "0.50"),
@@ -1385,11 +1431,44 @@ class SweepTrade:
                 "position_shares": str(self.position_shares),
             }
             if self.risk.trigger_bbo:
-                detail["trigger_bbo"] = self.risk.trigger_bbo
-            self._el.log_step("risk_triggered", detail, phase=self._event_phase())
+                trigger_detail["trigger_bbo"] = self.risk.trigger_bbo
 
-        await self.risk.stop()
+        trigger_phase = self._event_phase()
         cancellation_failures: list[dict[str, Any]] = []
+        cancelled_orders: list[tuple[str, str, CancelResult, int]] = []
+        reconciled_buy: Optional[dict[str, Any]] = None
+        reconciled_buy_at_ms: Optional[int] = None
+
+        def persist_preflight() -> None:
+            if self._el and failure_detail is not None:
+                self._el.log_step("risk_start_failed", failure_detail, phase=trigger_phase)
+            if self._el and trigger_detail is not None:
+                self._el.log_step(
+                    "risk_triggered", trigger_detail, phase=trigger_phase,
+                    occurred_at_ms=trigger_at_ms,
+                )
+            if reconciled_buy is not None:
+                if self._el:
+                    self._el.log_step(
+                        "fill_reconciled", reconciled_buy, phase="entry",
+                        occurred_at_ms=reconciled_buy_at_ms,
+                    )
+                self._update_trade_summary({
+                    "entry_price": str((self._entry_cost / reconciled_buy["position_after"]).quantize(Decimal("0.0001"))),
+                    "entry_shares": str(reconciled_buy["position_after"]),
+                    "entry_cost": str(self._entry_cost),
+                    "entry_order_id": reconciled_buy["order_id"],
+                })
+            if self._el:
+                for side, order_id, cancel_result, cancelled_at_ms in cancelled_orders:
+                    step = f"{side.lower()}_cancelled" if cancel_result.cancelled else f"{side.lower()}_cancel_failed"
+                    self._el.log_step(step, {
+                        "order_id": order_id,
+                        "success": cancel_result.cancelled,
+                        "trigger": trigger,
+                        "fast_path": True,
+                        **self._cancel_error_detail(cancel_result),
+                    }, phase=trigger_phase, occurred_at_ms=cancelled_at_ms)
 
         if self.entry_order_id:
             order_id = self.entry_order_id
@@ -1397,6 +1476,7 @@ class SweepTrade:
             # Cancel and fetch the final cumulative match count in this rare
             # path; otherwise a filled BUY can be mistaken for no position.
             cancel_result = await self._executor.cancel_order_with_fill_check(order_id)
+            cancelled_orders.append(("BUY", order_id, cancel_result, int(time.time() * 1000)))
             if cancel_result.query_failed:
                 cancel_detail = self._cancel_error_detail(cancel_result)
                 cancellation_failures.append({
@@ -1412,16 +1492,18 @@ class SweepTrade:
                     missed,
                     getattr(self, "buy_price", Decimal("0.99")),
                     source="risk_reconcile",
+                    persist=False,
                 )
-                if self._el:
-                    self._el.log_step("fill_reconciled", {
-                        "side": "BUY",
-                        "order_id": order_id,
-                        "clob_matched": str(cancel_result.final_matched),
-                        "memory_before": str(self.position_shares - missed),
-                        "reconciled": str(missed),
-                        "source": "risk_reconcile",
-                    }, phase="entry")
+                reconciled_buy = {
+                    "side": "BUY",
+                    "order_id": order_id,
+                    "clob_matched": str(cancel_result.final_matched),
+                    "memory_before": str(self.position_shares - missed),
+                    "position_after": self.position_shares,
+                    "reconciled": str(missed),
+                    "source": "risk_reconcile",
+                }
+                reconciled_buy_at_ms = int(time.time() * 1000)
 
             if cancel_result.cancelled or (
                 cancel_result.final_matched >= self._order_size > 0
@@ -1439,7 +1521,8 @@ class SweepTrade:
 
         if self.exit_order_id:
             order_id = self.exit_order_id
-            cancel_result = await self._cancel_order_fast(order_id, "SELL", trigger)
+            cancel_result = await self._cancel_order_fast(order_id, "SELL", trigger, persist=False)
+            cancelled_orders.append(("SELL", order_id, cancel_result, int(time.time() * 1000)))
             if cancel_result.cancelled:
                 self.exit_order_id = None
             else:
@@ -1453,6 +1536,8 @@ class SweepTrade:
                 })
 
         if self.position_shares <= 0:
+            persist_preflight()
+            await self.risk.stop()
             if cancellation_failures:
                 failure = cancellation_failures[0]
                 self._close_exit_failed(
@@ -1468,23 +1553,51 @@ class SweepTrade:
                 self._close(close_reason, phase=self._event_phase())
             return
 
-        self._mark_exit_started()
-        risk_origin_ms = int(time.time() * 1000)
+        preflight_finished_ns = time.monotonic_ns()
+        self._mark_exit_started(persist=False)
+        risk_origin_ms = trigger_at_ms
         sell_size = self.position_shares
         self.sell_price = Decimal("0.01")
-        self._update_trade_summary({"exit_order_size": str(sell_size)})
+        order_trace: dict[str, int] = {}
+        try:
+            result = await self._executor.place_order(
+                token_id=self.token_id,
+                side="SELL",
+                price="0.01",
+                size=str(sell_size),
+                tick_size=str(self._tick_size),
+                neg_risk=True,
+                check_balance=False,
+                validate_tick_size=False,
+                refresh_balance_on_failure=False,
+                fast=True,
+                trace=order_trace,
+            )
+        except BaseException:
+            persist_preflight()
+            await self.risk.stop()
+            raise
 
-        result = await self._executor.place_order(
-            token_id=self.token_id,
-            side="SELL",
-            price="0.01",
-            size=str(sell_size),
-            tick_size=str(self._tick_size),
-            neg_risk=True,
-            check_balance=False,
-            validate_tick_size=False,
-            refresh_balance_on_failure=False,
+        order_returned_ns = time.monotonic_ns()
+        persist_preflight()
+        self._update_trade_summary({
+            "phase": "exit",
+            "exit_started_at": datetime.fromtimestamp(risk_origin_ms / 1000, tz=timezone.utc).replace(tzinfo=None),
+            "exit_order_size": str(sell_size),
+        })
+        logger.debug(
+            "Fast risk SELL timing token=%s status=%s trigger_to_order_ms=%s preflight_ms=%.3f "
+            "worker_queue_ms=%s client_lookup_ms=%s sign_ms=%s post_ms=%s total_ms=%.3f",
+            self.token_id[-12:], result.status,
+            _duration_ms(trigger_started_ns, order_trace.get("executor_submitted_ns")),
+            (preflight_finished_ns - trigger_started_ns) / 1_000_000,
+            _duration_ms(order_trace.get("executor_submitted_ns"), order_trace.get("worker_started_ns")),
+            _duration_ms(order_trace.get("worker_started_ns"), order_trace.get("client_ready_ns")),
+            _duration_ms(order_trace.get("sign_started_ns"), order_trace.get("sign_finished_ns")),
+            _duration_ms(order_trace.get("sign_finished_ns"), order_trace.get("post_finished_ns")),
+            (order_returned_ns - trigger_started_ns) / 1_000_000,
         )
+        await self.risk.stop()
 
         if result.status in ("failed", "insufficient_balance"):
             error_signature = classify_sell_error(result.status, result.error)
@@ -1874,12 +1987,12 @@ class SweepTrade:
         self.state = "closed"
         self._on_closed(self.token_id)
 
-    def _insert_trade_summary(self, signal: Signal) -> None:
-        if not self._trade_dao or not self._el or not self._el.event_id:
+    def _insert_trade_summary(self, signal: Signal, event_id: str) -> None:
+        if not self._trade_dao or not self._el:
             return
         try:
             self._trade_dao.insert({
-                "event_id": self._el.event_id,
+                "event_id": event_id,
                 "config_id": self._el._config_id,
                 "owner_user_id": self._el._owner_user_id,
                 "proxy_wallet": self._el._proxy_wallet,
@@ -1902,8 +2015,36 @@ class SweepTrade:
         except Exception:
             logger.exception("Failed to insert trade summary")
 
-    async def _insert_trade_summary_async(self, signal: Signal) -> None:
-        await asyncio.to_thread(self._insert_trade_summary, signal)
+    async def _insert_trade_summary_async(self, signal: Signal, event_id: str) -> None:
+        submitted_ns = time.monotonic_ns()
+        logger.debug(
+            "Trade summary DB task submitted signal=%s token=%s",
+            signal.signal_id,
+            signal.token_id[-12:],
+        )
+        try:
+            await asyncio.to_thread(
+                self._insert_trade_summary_worker, signal, event_id, submitted_ns,
+            )
+        finally:
+            logger.debug(
+                "Trade summary DB write task finished signal=%s token=%s elapsed_ms=%.3f",
+                signal.signal_id,
+                signal.token_id[-12:],
+                (time.monotonic_ns() - submitted_ns) / 1_000_000,
+            )
+
+    def _insert_trade_summary_worker(
+        self, signal: Signal, event_id: str, submitted_ns: int,
+    ) -> None:
+        worker_started_ns = time.monotonic_ns()
+        logger.debug(
+            "Trade summary DB worker started signal=%s token=%s queue_ms=%.3f",
+            signal.signal_id,
+            signal.token_id[-12:],
+            (worker_started_ns - submitted_ns) / 1_000_000,
+        )
+        self._insert_trade_summary(signal, event_id)
 
     @staticmethod
     def _compact_bbo(snapshot: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -2081,21 +2222,22 @@ class SweepTrade:
         )
 
     async def _handle_risk_start_failure(self, exc: Exception) -> None:
-        if self._el:
-            self._el.log_step("risk_start_failed", {
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-                "action": "protective_exit",
-            }, phase=self._event_phase())
+        failure_detail = {
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "action": "protective_exit",
+        }
 
         if self.state == "closed" or self._normal_exit_started or self._exit_started:
             # A normal exit is already protecting the position. Do not start a
             # second SELL path if the asynchronous risk bootstrap reports a
             # late failure at the same time.
+            if self._el:
+                self._el.log_step("risk_start_failed", failure_detail, phase=self._event_phase())
             return
 
         try:
-            await self._risk_exit(trigger="risk_monitor_failed")
+            await self._risk_exit(trigger="risk_monitor_failed", failure_detail=failure_detail)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -2134,12 +2276,32 @@ class SweepTrade:
         dao = self._trade_dao
         try:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, dao.update_by_event_id, event_id, data)
+            previous = self._trade_summary_tail_task or self._trade_summary_insert_task
+            self._trade_summary_tail_task = loop.create_task(
+                self._write_trade_summary_update(dao, event_id, data, previous)
+            )
         except RuntimeError:
             try:
                 dao.update_by_event_id(event_id, data)
             except Exception:
                 logger.exception("Failed to update trade summary")
+
+    @staticmethod
+    async def _write_trade_summary_update(
+        dao: FollowWeatherSweeperTradeDAO,
+        event_id: str,
+        data: dict[str, Any],
+        previous: Optional[asyncio.Task],
+    ) -> None:
+        if previous is not None:
+            try:
+                await previous
+            except Exception:
+                logger.exception("Previous trade summary write failed for %s", event_id)
+        try:
+            await asyncio.to_thread(dao.update_by_event_id, event_id, data)
+        except Exception:
+            logger.exception("Failed to update trade summary for %s", event_id)
 
 
 # ============================================================
@@ -2212,6 +2374,8 @@ class FollowSweepStrategy:
     # ==================== Signal Dispatch ====================
 
     async def on_signal(self, signal: Signal) -> None:
+        handler_started_ns = time.monotonic_ns()
+        signal.payload["_handler_started_monotonic_ns"] = handler_started_ns
         if signal.signal_type != "sweep":
             return
         if self._draining:
@@ -2226,8 +2390,9 @@ class FollowSweepStrategy:
         if signal.token_id in self._trades:
             return
 
-        signal_received_ms = int(time.time() * 1000)
+        signal_received_ms = signal.payload.get("_backend_received_at_ms") or int(time.time() * 1000)
         filter_reason, filter_duration_ms = self._check_signal_filter(signal)
+        signal.payload["_filter_finished_monotonic_ns"] = time.monotonic_ns()
         el = self._create_signal_event(
             signal,
             signal_received_ms=signal_received_ms,
@@ -2235,6 +2400,10 @@ class FollowSweepStrategy:
             filter_reason=filter_reason,
         )
         if filter_reason:
+            logger.debug(
+                "Signal filtered signal=%s config=%s reason=%s filter_ms=%.3f",
+                signal.signal_id, self._config_id, filter_reason, filter_duration_ms or 0.0,
+            )
             asyncio.create_task(
                 self._record_filtered_signal(
                     signal,
@@ -2299,7 +2468,7 @@ class FollowSweepStrategy:
             "slug_script_rejected:"
         ):
             dsl_status = "rejected"
-        el.log_step("signal_received", {
+        detail = {
             "signal_id": signal.signal_id,
             "token_id": signal.token_id,
             "market_slug": signal.market_slug,
@@ -2311,7 +2480,11 @@ class FollowSweepStrategy:
             "signal_received_at": SweepTrade._utc_str(signal_received_ms),
             "dsl_evaluation_ms": round(dsl_evaluation_ms, 3),
             "dsl_status": dsl_status,
-        }, phase="entry", occurred_at_ms=signal_received_ms)
+        }
+        if filter_reason:
+            el.log_step("signal_received", detail, phase="entry", occurred_at_ms=signal_received_ms)
+        else:
+            signal.payload["_deferred_signal_detail"] = detail
         return el
 
     def _check_signal_filter(self, signal: Signal) -> tuple[Optional[str], Optional[float]]:
@@ -2331,8 +2504,7 @@ class FollowSweepStrategy:
                 accepted = self._slug_program.evaluate(market_slug)
             except Exception:
                 duration_ms = (time.monotonic() - t0) * 1000
-                logger.warning("SlugScript evaluation failed for %s (%.2fms), accepting signal",
-                               market_slug, duration_ms)
+                signal.payload["_slug_script_failed"] = True
                 return None, duration_ms
             duration_ms = (time.monotonic() - t0) * 1000
             if not accepted:

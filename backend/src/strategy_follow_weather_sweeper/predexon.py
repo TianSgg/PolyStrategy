@@ -57,6 +57,8 @@ class PredexonAdapter:
                 "token_label": event.get("token_label", ""),
                 "is_neg_risk": event.get("is_neg_risk", False),
                 "orderbook_snapshot": {},
+                "_backend_received_at_ms": event.get("_backend_received_at_ms"),
+                "_backend_received_monotonic_ns": event.get("_backend_received_monotonic_ns"),
             },
         )
 
@@ -193,6 +195,8 @@ class PredexonClient:
         )
 
     async def _handle_message(self, message: str) -> None:
+        received_ns = time.monotonic_ns()
+        received_at_ms = int(time.time() * 1000)
         try:
             data = json.loads(message)
             msg_type = data.get("type")
@@ -202,8 +206,15 @@ class PredexonClient:
                 event_type = event.get("event_type")
                 if event_type != "order_filled":
                     return
-                self._persist_signal(event)
-                await self._on_signal(event)
+                parsed_ns = time.monotonic_ns()
+                persisted_event = dict(event)
+                event["_backend_received_at_ms"] = received_at_ms
+                event["_backend_received_monotonic_ns"] = received_ns
+                event["_backend_parsed_monotonic_ns"] = parsed_ns
+                try:
+                    await self._on_signal(event)
+                finally:
+                    self._persist_signal(persisted_event)
                 return
 
             if msg_type == "connected":

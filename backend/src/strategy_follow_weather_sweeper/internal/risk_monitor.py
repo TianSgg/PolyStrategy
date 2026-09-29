@@ -51,6 +51,8 @@ class SweepRiskMonitor:
         self._first_bbo_snapshot: Optional[dict[str, Any]] = None
         self._started_at_ms: Optional[int] = None
         self._trigger_bbo: Optional[dict[str, Any]] = None
+        self._triggered_monotonic_ns: Optional[int] = None
+        self._triggered_at_ms: Optional[int] = None
 
     @property
     def is_active(self) -> bool:
@@ -78,6 +80,14 @@ class SweepRiskMonitor:
     def trigger_bbo(self) -> Optional[dict[str, Any]]:
         return self._trigger_bbo
 
+    @property
+    def triggered_monotonic_ns(self) -> Optional[int]:
+        return self._triggered_monotonic_ns
+
+    @property
+    def triggered_at_ms(self) -> Optional[int]:
+        return self._triggered_at_ms
+
     async def start(
         self,
         token_id: str,
@@ -96,6 +106,8 @@ class SweepRiskMonitor:
         self._reference_mid = None
         self._active = True
         self._triggered = False
+        self._triggered_monotonic_ns = None
+        self._triggered_at_ms = None
         self._first_bbo_event = asyncio.Event()
         self._first_bbo_event.clear()
         self._first_bbo_snapshot = None
@@ -221,10 +233,8 @@ class SweepRiskMonitor:
             return
 
         if current_mid <= self.threshold:
-            logger.warning(
-                "Risk triggered: mid=%s <= threshold=%s (ref=%s, ratio=%s)",
-                current_mid, self.threshold, self._reference_mid, self._stop_loss_ratio,
-            )
+            self._triggered_monotonic_ns = time.monotonic_ns()
+            self._triggered_at_ms = int(time.time() * 1000)
             self._triggered = True
             self._active = False
             self._trigger_bbo = {
