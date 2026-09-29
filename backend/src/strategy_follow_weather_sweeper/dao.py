@@ -336,6 +336,7 @@ class FollowWeatherSweeperTradeDAO:
         phase: Optional[str] = None,
         close_reason: Optional[str] = None,
         search: Optional[str] = None,
+        outcome: Optional[str] = None,
         proxy_wallet: Optional[str] = None,
         direction: Optional[str] = None,
         since: Optional[str] = None,
@@ -361,12 +362,15 @@ class FollowWeatherSweeperTradeDAO:
         if close_reason:
             conditions.append("close_reason = %s")
             params.append(close_reason)
+        if outcome:
+            conditions.append("LOWER(outcome) = %s")
+            params.append(outcome.lower())
         if direction:
             conditions.append("direction = %s")
             params.append(direction)
         if search:
-            conditions.append("event_slug LIKE %s")
-            params.append(f"%{search}%")
+            conditions.append("(market_slug LIKE %s OR event_slug LIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%"])
         if since:
             conditions.append("started_at >= %s")
             params.append(since)
@@ -393,6 +397,7 @@ class FollowWeatherSweeperTradeDAO:
         phase: Optional[str] = None,
         close_reason: Optional[str] = None,
         search: Optional[str] = None,
+        outcome: Optional[str] = None,
         proxy_wallet: Optional[str] = None,
         direction: Optional[str] = None,
         since: Optional[str] = None,
@@ -416,12 +421,15 @@ class FollowWeatherSweeperTradeDAO:
         if close_reason:
             conditions.append("close_reason = %s")
             params.append(close_reason)
+        if outcome:
+            conditions.append("LOWER(outcome) = %s")
+            params.append(outcome.lower())
         if direction:
             conditions.append("direction = %s")
             params.append(direction)
         if search:
-            conditions.append("event_slug LIKE %s")
-            params.append(f"%{search}%")
+            conditions.append("(market_slug LIKE %s OR event_slug LIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%"])
         if since:
             conditions.append("started_at >= %s")
             params.append(since)

@@ -14,6 +14,7 @@ interface Trade {
   token_id: string | null
   market_slug: string | null
   event_slug: string | null
+  outcome: 'yes' | 'no' | null
   phase: 'entry' | 'exit' | 'closed'
   close_reason: string | null
   entry_price: string | null
@@ -87,6 +88,7 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [walletFilter, setWalletFilter] = useState<string>('')
   const [timeRange, setTimeRange] = useState<string>('')
+  const [outcomeFilter, setOutcomeFilter] = useState<string>('')
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [page, setPage] = useState(0)
@@ -113,6 +115,7 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
       if (proxyWallet) params.set('proxy_wallet', proxyWallet)
       else if (walletFilter) params.set('proxy_wallet', walletFilter)
       if (statusFilter) params.set('phase', statusFilter)
+      if (outcomeFilter) params.set('outcome', outcomeFilter)
       if (search) params.set('search', search)
       if (timeRange) {
         const hours = { '24h': 24, '7d': 168, '30d': 720 }[timeRange]
@@ -133,7 +136,7 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, walletFilter, timeRange, search, page, proxyWallet])
+  }, [statusFilter, walletFilter, timeRange, search, outcomeFilter, page, proxyWallet])
 
   useEffect(() => { fetchTrades() }, [fetchTrades])
 
@@ -239,12 +242,21 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
           <option value="7d">7天</option>
           <option value="30d">30天</option>
         </select>
+        <select
+          value={outcomeFilter}
+          onChange={e => { setOutcomeFilter(e.target.value); setPage(0) }}
+          style={{ padding: '6px 10px', borderRadius: '6px', border: `1px solid ${border}`, background: darkMode ? '#334155' : '#f1f5f9', color: textPrimary, fontSize: '13px' }}
+        >
+          <option value="">全部方向</option>
+          <option value="yes">YES</option>
+          <option value="no">NO</option>
+        </select>
         <div style={{ flex: 1 }} />
         <input
           value={searchInput}
           onChange={e => setSearchInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSearch()}
-          placeholder="搜索 event_slug..."
+          placeholder="搜索 market_slug / event_slug..."
           style={{
             padding: '6px 12px', borderRadius: '6px', border: `1px solid ${border}`,
             background: darkMode ? '#334155' : '#f1f5f9', color: textPrimary, fontSize: '13px', width: '200px',
@@ -273,6 +285,8 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
             const exit = exitBadge(t)
             const leaderWallet = t.signal_id?.startsWith('predexon:') ? (t.signal_id.split(':')[1] || '').slice(0, 10) : null
             const eventSlug = polymarketEventSlug(t.event_slug)
+            const marketLabel = t.market_slug || t.event_slug || t.event_id.slice(0, 8)
+            const tradeLabel = `${marketLabel}${t.outcome ? ` · ${t.outcome.toUpperCase()}` : ''}`
             return (
             <div key={t.event_id}>
               <div
@@ -309,9 +323,9 @@ export default function FollowSweeperTrades({ darkMode, proxyWallet, onBack }: P
                         style={{ color: '#3b82f6', textDecoration: 'none' }}
                         onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
                         onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-                      >{eventSlug || t.market_slug}</a>
+                      >{tradeLabel}</a>
                     ) : (
-                      <span style={{ color: textPrimary }}>{t.market_slug || t.event_id.slice(0, 8)}</span>
+                      <span style={{ color: textPrimary }}>{tradeLabel}</span>
                     )}
                   </span>
                   <span style={{ fontSize: '12px', color: textSecondary }}>{formatTime(t.started_at)}</span>

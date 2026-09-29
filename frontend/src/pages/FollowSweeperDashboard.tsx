@@ -580,6 +580,8 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                       const lifecycle = lifecycleBadge(t)
                       const exit = exitBadge(t)
                       const eventSlug = polymarketEventSlug(t.event_slug)
+                      const marketLabel = t.market_slug || t.event_slug || t.event_id.slice(0, 8)
+                      const tradeLabel = `${marketLabel}${t.outcome ? ` · ${String(t.outcome).toUpperCase()}` : ''}`
                       const formatTradePrice = (price: string | null | undefined) => (
                         price == null || price === '' ? '--' : Number(price).toFixed(4)
                       )
@@ -618,9 +620,9 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
                                   style={{ color: '#3b82f6', textDecoration: 'none' }}
                                   onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
                                   onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-                                >{eventSlug || t.market_slug}</a>
+                                >{tradeLabel}</a>
                               ) : (
-                                <span style={{ color: textPrimary }}>{t.market_slug || t.event_id.slice(0, 8)}</span>
+                                <span style={{ color: textPrimary }}>{tradeLabel}</span>
                               )}
                             </span>
                             {(t.entry_order_size || t.entry_shares) && (
