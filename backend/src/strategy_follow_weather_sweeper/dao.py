@@ -32,7 +32,7 @@ class FollowWeatherSweeperConfigDAO:
                    c.params, a.proxy_wallet
             FROM {self.TABLE} c
             JOIN accounts a ON a.id = c.account_id
-            WHERE c.enabled = 1 AND c.deleted_at IS NULL
+            WHERE c.enabled = 1 AND c.deleted_at IS NULL AND a.deleted_at IS NULL
             ORDER BY c.id
         """
         with get_db() as conn:
@@ -59,9 +59,10 @@ class FollowWeatherSweeperConfigDAO:
 
     def list_by_owner(self, owner_user_id: int) -> List[Dict[str, Any]]:
         sql = f"""
-            SELECT c.*, a.proxy_wallet, a.name AS account_name
+            SELECT c.*, a.proxy_wallet,
+                   COALESCE(a.name, CONCAT('账户已删除 (#', c.account_id, ')')) AS account_name
             FROM {self.TABLE} c
-            JOIN accounts a ON a.id = c.account_id
+            LEFT JOIN accounts a ON a.id = c.account_id AND a.deleted_at IS NULL
             WHERE c.owner_user_id = %s AND c.deleted_at IS NULL
             ORDER BY c.id DESC
         """
@@ -73,9 +74,10 @@ class FollowWeatherSweeperConfigDAO:
 
     def list_all(self, owner_user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         sql = f"""
-            SELECT c.*, a.proxy_wallet, a.name AS account_name
+            SELECT c.*, a.proxy_wallet,
+                   COALESCE(a.name, CONCAT('账户已删除 (#', c.account_id, ')')) AS account_name
             FROM {self.TABLE} c
-            JOIN accounts a ON a.id = c.account_id
+            LEFT JOIN accounts a ON a.id = c.account_id AND a.deleted_at IS NULL
             WHERE c.deleted_at IS NULL
         """
         params: list = []
@@ -92,9 +94,10 @@ class FollowWeatherSweeperConfigDAO:
 
     def get_by_id(self, config_id: int) -> Optional[Dict[str, Any]]:
         sql = f"""
-            SELECT c.*, a.proxy_wallet, a.name AS account_name
+            SELECT c.*, a.proxy_wallet,
+                   COALESCE(a.name, CONCAT('账户已删除 (#', c.account_id, ')')) AS account_name
             FROM {self.TABLE} c
-            JOIN accounts a ON a.id = c.account_id
+            LEFT JOIN accounts a ON a.id = c.account_id AND a.deleted_at IS NULL
             WHERE c.id = %s AND c.deleted_at IS NULL
         """
         with get_db() as conn:
@@ -103,6 +106,24 @@ class FollowWeatherSweeperConfigDAO:
                 columns = [desc[0] for desc in cur.description]
                 row = cur.fetchone()
                 return self._format_config_row(dict(zip(columns, row))) if row else None
+
+    def account_is_available(self, account_id: int, owner_user_ids: Optional[List[int]]) -> bool:
+        if owner_user_ids is not None and not owner_user_ids:
+            return False
+        sql = f"""
+            SELECT 1 FROM accounts
+            WHERE id = %s AND deleted_at IS NULL
+        """
+        params = [account_id]
+        if owner_user_ids is not None:
+            placeholders = ",".join(["%s"] * len(owner_user_ids))
+            sql += f" AND owner_user_id IN ({placeholders})"
+            params.extend(owner_user_ids)
+        sql += " LIMIT 1"
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone() is not None
 
     def create(self, data: Dict[str, Any]) -> int:
         params_dict = data.get("params", {})

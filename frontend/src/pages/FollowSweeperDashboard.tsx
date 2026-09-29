@@ -61,6 +61,7 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<number | null>(null)
   const [slugValidation, setSlugValidation] = useState<{ valid: boolean; message?: string } | null>(null)
   const [slugValidating, setSlugValidating] = useState(false)
@@ -208,6 +209,7 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
   const handleSave = async () => {
     if (!form.name.trim() || !form.account_id) return
     setSaving(true)
+    setSaveError(null)
     try {
       if (form.slug_script.trim()) {
         const vRes = await apiFetch('/api/follow-weather/validate-slug-script', {
@@ -234,17 +236,25 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
       }
 
       if (editingId) {
-        await apiFetch(`/api/follow-weather/configs/${editingId}`, {
+        const res = await apiFetch(`/api/follow-weather/configs/${editingId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: form.name, params }),
         })
+        if (!res.ok) {
+          const error = await res.json().catch(() => ({}))
+          throw new Error(error.detail || `保存失败 (${res.status})`)
+        }
       } else {
-        await apiFetch('/api/follow-weather/configs', {
+        const res = await apiFetch('/api/follow-weather/configs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ account_id: form.account_id, name: form.name, params }),
         })
+        if (!res.ok) {
+          const error = await res.json().catch(() => ({}))
+          throw new Error(error.detail || `保存失败 (${res.status})`)
+        }
       }
       setShowForm(false)
       setEditingId(null)
@@ -252,6 +262,7 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
       await fetchConfigs()
     } catch (e) {
       console.error('Save failed', e)
+      setSaveError(e instanceof Error ? e.message : '保存配置失败')
     } finally {
       setSaving(false)
     }
@@ -750,6 +761,12 @@ export default function FollowSweeperDashboard({ darkMode }: Props) {
             <h3 style={{ margin: '0 0 24px', fontSize: '18px', fontWeight: 600, color: textPrimary }}>
               {editingId ? '编辑配置' : '新增配置'}
             </h3>
+
+            {saveError && (
+              <div role="alert" style={{ marginBottom: '16px', color: '#dc2626', fontSize: '13px' }}>
+                {saveError}
+              </div>
+            )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {/* Name */}

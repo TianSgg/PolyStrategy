@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "Polymarket WebSocket client for listening to order book",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "node ./scripts/vite-cli.mjs",
+    "build": "tsc && node ./scripts/vite-cli.mjs build",
     "start": "npx http-server ./dist"
   },
   "devDependencies": {
