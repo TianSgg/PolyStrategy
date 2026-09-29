@@ -2,7 +2,7 @@ import asyncio
 import sys
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -138,3 +138,27 @@ def test_place_order_fails_closed_when_tick_lookup_fails():
     assert result.status == "failed"
     assert "tick size refresh failed" in result.error
     assert place_order.call_count == 0
+
+
+def test_place_order_can_skip_failure_triggered_balance_refresh():
+    executor = make_executor(FakeTickSizeService())
+    executor._poller.refresh = AsyncMock()
+
+    with patch(
+        "framework.strategy_runtime.order_executor.place_limit_order",
+        return_value={"status": "rejected"},
+    ):
+        result = asyncio.run(executor.place_order(
+            token_id="token",
+            side="BUY",
+            price="0.99",
+            size="5",
+            tick_size="0.01",
+            neg_risk=True,
+            check_balance=False,
+            validate_tick_size=False,
+            refresh_balance_on_failure=False,
+        ))
+
+    assert result.status == "failed"
+    executor._poller.refresh.assert_not_awaited()

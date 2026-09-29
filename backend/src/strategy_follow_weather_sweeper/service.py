@@ -502,10 +502,6 @@ class SweepTrade:
 
         fixed_shares = Decimal(self._config.get("fixed_entry_shares", "100"))
         buy_price = Decimal("0.99")
-        await self._executor.refresh_balance()
-        available = self._executor.available_cash
-        max_shares = int(available / buy_price) if buy_price > 0 else 0
-        actual_shares = min(fixed_shares, Decimal(str(max_shares)))
 
         if self._el and not event_started:
             self._el.start_event(
@@ -534,12 +530,20 @@ class SweepTrade:
         elif self._el and event_started:
             asyncio.create_task(self._insert_trade_summary_async(signal))
 
-        # --- Layer 1: buy_order_skipped (no cash / below exchange minimum) ---
+        # Size and reserve from the shared in-memory balance cache. The
+        # background poller is the only path that refreshes it from CLOB.
+        actual_shares = await self._executor.reserve_buy_shares(
+            fixed_shares, buy_price, MIN_BUY_SHARES,
+        )
         if actual_shares < MIN_BUY_SHARES:
-            logger.warning(
-                "Insufficient cash for minimum BUY size for %s: available=%s, "
-                "requested=%s, minimum=%s",
-                self.token_id[:10], available, fixed_shares, MIN_BUY_SHARES,
+            available = self._executor.available_cash
+            max_shares = int(available / buy_price) if buy_price > 0 else 0
+            calculated_shares = min(fixed_shares, Decimal(str(max_shares)))
+            logger.error(
+                "Insufficient cached cash for minimum BUY size for %s: available=%s, "
+                "calculated=%s, requested=%s, minimum=%s",
+                self.token_id[:10], available, calculated_shares,
+                fixed_shares, MIN_BUY_SHARES,
             )
             await self._cancel_bbo_task(pre_bbo_task)
             if self._el:
@@ -547,40 +551,14 @@ class SweepTrade:
                     "status": "below_min_order_size",
                     "requested_size": str(fixed_shares),
                     "minimum_size": str(MIN_BUY_SHARES),
-                    "calculated_size": str(actual_shares),
+                    "calculated_size": str(calculated_shares),
                     "available_cash": str(available),
                 }, phase="entry")
             self._close("no_cash", phase="entry", extra={
                 "requested_size": str(fixed_shares),
                 "minimum_size": str(MIN_BUY_SHARES),
-                "calculated_size": str(actual_shares),
+                "calculated_size": str(calculated_shares),
                 "available_cash": str(available),
-                "status": "below_min_order_size",
-            })
-            return
-
-        # Reserve the final size atomically across configs sharing a follower
-        # wallet. A concurrent config may have consumed part of the balance
-        # since the first refresh, so this can legitimately shrink the size
-        # again or return zero when the minimum is no longer affordable.
-        actual_shares = await self._executor.reserve_buy_shares(
-            fixed_shares, buy_price, MIN_BUY_SHARES,
-        )
-        if actual_shares < MIN_BUY_SHARES:
-            await self._cancel_bbo_task(pre_bbo_task)
-            if self._el:
-                self._el.log_step("buy_order_skipped", {
-                    "status": "below_min_order_size",
-                    "requested_size": str(fixed_shares),
-                    "minimum_size": str(MIN_BUY_SHARES),
-                    "calculated_size": str(actual_shares),
-                    "available_cash": str(self._executor.available_cash),
-                }, phase="entry")
-            self._close("no_cash", phase="entry", extra={
-                "requested_size": str(fixed_shares),
-                "minimum_size": str(MIN_BUY_SHARES),
-                "calculated_size": str(actual_shares),
-                "available_cash": str(self._executor.available_cash),
                 "status": "below_min_order_size",
             })
             return
@@ -596,6 +574,7 @@ class SweepTrade:
             neg_risk=True,
             validate_tick_size=False,
             check_balance=False,
+            refresh_balance_on_failure=False,
         ))
 
         try:
@@ -615,7 +594,7 @@ class SweepTrade:
                 self._release_buy_reservation_after_settlement(reservation_notional)
             )
         else:
-            await self._refresh_and_release_buy_reservation(reservation_notional)
+            await self._executor.release_buy(reservation_notional)
 
         if not order_accepted:
             # Rejected orders do not need BBO details; finish the terminal path
@@ -1037,6 +1016,7 @@ class SweepTrade:
                 tick_size=str(self._tick_size),
                 neg_risk=True,
                 check_balance=False,
+                refresh_balance_on_failure=False,
             )
 
             # --- Layer 1: sell_order_failed ---
@@ -1503,6 +1483,7 @@ class SweepTrade:
             neg_risk=True,
             check_balance=False,
             validate_tick_size=False,
+            refresh_balance_on_failure=False,
         )
 
         if result.status in ("failed", "insufficient_balance"):
@@ -2135,24 +2116,12 @@ class SweepTrade:
         except Exception:
             logger.debug("BBO request failed while cancelling entry", exc_info=True)
 
-    async def _refresh_and_release_buy_reservation(self, notional: Decimal) -> None:
-        try:
-            await self._executor.refresh_balance()
-        except Exception:
-            logger.warning(
-                "Failed to refresh follower balance after BUY attempt for %s",
-                self.token_id[:10],
-                exc_info=True,
-            )
-        finally:
-            await self._executor.release_buy(notional)
-
     async def _release_buy_reservation_after_settlement(
         self, notional: Decimal,
     ) -> None:
         try:
             await asyncio.sleep(BUY_RESERVATION_SETTLE_WAIT_S)
-            await self._refresh_and_release_buy_reservation(notional)
+            await self._executor.release_buy(notional)
         except asyncio.CancelledError:
             # A stop must not strand a reservation in the shared poller.
             await self._executor.release_buy(notional)
@@ -2201,7 +2170,8 @@ class FollowSweepStrategy:
             proxy_wallet=proxy_wallet,
             tick_size_service=tick_size_service,
         )
-        await executor.ensure_poller(proxy_wallet)
+        balance_poller = await executor.ensure_poller(proxy_wallet)
+        await balance_poller.wait_ready(timeout=10.0)
         await executor.warmup()
 
         instance = cls()

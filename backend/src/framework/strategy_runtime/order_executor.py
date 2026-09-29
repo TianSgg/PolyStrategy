@@ -165,11 +165,10 @@ class OrderExecutor:
         price: Decimal,
         min_shares: Decimal,
     ) -> Decimal:
-        """按共享 follower 的最新余额原子预留可下单份额。"""
-        poller = await self.ensure_poller()
-        # Do not place a BUY from an unverifiable/stale balance snapshot. The
-        # caller records this as the normal no_cash/special-case outcome.
-        if not await poller.refresh():
+        """按共享 follower 的缓存余额原子预留可下单份额。"""
+        poller = self._poller
+        if poller is None or poller._proxy_wallet != self._proxy_wallet.lower():
+            logger.error("Balance poller is not initialized for BUY reservation")
             return Decimal("0")
         return await poller.reserve_buy_shares(requested_shares, price, min_shares)
 
@@ -235,6 +234,7 @@ class OrderExecutor:
         gtd_sec: int = DEFAULT_GTD_SEC,
         check_balance: bool = True,
         validate_tick_size: bool = True,
+        refresh_balance_on_failure: bool = True,
     ) -> OrderResult:
         """下单。返回 OrderResult。
 
@@ -341,7 +341,8 @@ class OrderExecutor:
                 error_summary,
                 exc_info=True,
             )
-            asyncio.create_task(poller.refresh())
+            if refresh_balance_on_failure:
+                asyncio.create_task(poller.refresh())
             return OrderResult(
                 order_id=order_id,
                 status="failed",
@@ -362,7 +363,8 @@ class OrderExecutor:
                 result,
                 parsed.error,
             )
-            asyncio.create_task(poller.refresh())
+            if refresh_balance_on_failure:
+                asyncio.create_task(poller.refresh())
         return parsed
 
     async def cancel_order(self, order_id: str, *, proxy_wallet: str = "") -> bool:

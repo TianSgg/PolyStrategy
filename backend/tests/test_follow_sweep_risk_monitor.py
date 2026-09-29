@@ -91,7 +91,7 @@ class FakeEntryExecutor:
         self.reserved = Decimal("0")
 
     async def refresh_balance(self):
-        return True
+        raise AssertionError("entry must use cached balance")
 
     async def reserve_buy_shares(self, requested_shares, price, min_shares):
         available = self.available_cash - self.reserved
