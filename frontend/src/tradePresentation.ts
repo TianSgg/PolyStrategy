@@ -52,6 +52,8 @@ const CLOSE_REASON_LABELS: Record<string, string> = {
 }
 
 const AMBER_OUTCOME_REASONS = new Set([
+  'force_exit',
+  'no_cash',
   'stop_loss',
   'dust_position',
   'exit_order_unfilled',
@@ -92,10 +94,7 @@ export function exitBadge(trade: TradeLike): Badge | null {
   }
 
   if (reason === 'normal_exit') return { icon: '✓', label: '正常退出', tone: 'green' }
-  if (reason === 'force_exit') {
-    return { icon: '■', label: CLOSE_REASON_LABELS[reason], tone: 'slate' }
-  }
-  if (reason === 'no_cash' || reason === 'timeout_no_fill' || reason === 'market_settled') {
+  if (reason === 'timeout_no_fill' || reason === 'market_settled') {
     return { icon: '∅', label: CLOSE_REASON_LABELS[reason], tone: 'slate' }
   }
   if (AMBER_OUTCOME_REASONS.has(reason)) {
